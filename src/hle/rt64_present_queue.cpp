@@ -303,8 +303,10 @@ namespace RT64 {
             }
         }
         
-        // [wcw] DIAGNOSTIC: if framesToPresent is 0, nothing is ever blitted to the swap chain.
-        { static int fp = 0; if ((fp++ % 60) == 0) fprintf(stderr, "[wcw][present-loop#%d] framesToPresent=%d counters.count=%u avail=%u target=%p swapValid=%d\n",
+        // [wcw] DIAGNOSTIC (env WCW_PRESENT_LOG=1): if framesToPresent is 0, nothing is ever
+        // blitted to the swap chain.
+        { static const bool wcwPlog = getenv("WCW_PRESENT_LOG") != nullptr;
+          static int fp = 0; if (((fp++ % 60) == 0) && wcwPlog) fprintf(stderr, "[wcw][present-loop#%d] framesToPresent=%d counters.count=%u avail=%u target=%p swapValid=%d\n",
             fp, framesToPresent, frameCounters.count, frameCounters.available, (void*)colorTarget, (int)swapChainValid); }
 
         for (int32_t i = 0; i < framesToPresent; i++) {
@@ -384,16 +386,20 @@ namespace RT64 {
                     }
                 }
                 
-                { // [wcw] DIAGNOSTIC: per-60-presents outcome accounting. A null source texture
-                  // means this present draws ONLY the clear -> a pure black frame on screen.
+                { // [wcw] DIAGNOSTIC (env WCW_PRESENT_LOG=1): per-60-presents outcome accounting.
+                  // A null source texture means this present draws ONLY the clear -> a pure black
+                  // frame on screen.
+                    static const bool wcwPresentLog = getenv("WCW_PRESENT_LOG") != nullptr;
                     static int prCnt = 0, prBlack = 0, prReason[4] = {};
                     static double acqSum = 0.0, acqMax = 0.0;
                     if (renderParams.texture == nullptr) prBlack++;
                     prReason[wcw_reason]++;
                     acqSum += wcwAcqMs; if (wcwAcqMs > acqMax) acqMax = wcwAcqMs;
                     if (++prCnt >= 60) {
-                        fprintf(stderr, "[wcw][present] last %d presents: black=%d | notvis=%d ok=%d empty=%d scratch=%d | acquire avg=%.1fms max=%.1fms\n",
-                            prCnt, prBlack, prReason[0], prReason[1], prReason[2], prReason[3], acqSum / prCnt, acqMax);
+                        if (wcwPresentLog) {
+                            fprintf(stderr, "[wcw][present] last %d presents: black=%d | notvis=%d ok=%d empty=%d scratch=%d | acquire avg=%.1fms max=%.1fms\n",
+                                prCnt, prBlack, prReason[0], prReason[1], prReason[2], prReason[3], acqSum / prCnt, acqMax);
+                        }
                         prCnt = prBlack = 0; prReason[0] = prReason[1] = prReason[2] = prReason[3] = 0;
                         acqSum = 0.0; acqMax = 0.0;
                     }

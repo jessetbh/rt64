@@ -1885,9 +1885,10 @@ namespace RT64 {
         screenCpuProfiler.start();
         bool fbChangesMade = false;
         bool screenChangesMade = false;
-        // [wcw] DIAGNOSTIC: once a second, report what the present path sees.
-        { static int n = 0;
-          if ((n++ % 60) == 0) {
+        // [wcw] DIAGNOSTIC (env WCW_PRESENT_LOG=1): once a second, report what the present path sees.
+        { static const bool wcwPlog = getenv("WCW_PRESENT_LOG") != nullptr;
+          static int n = 0;
+          if (((n++ % 60) == 0) && wcwPlog) {
             Framebuffer* dbgFb = framebufferManager.find(screenFbAddress);
             fprintf(stderr, "[wcw][present] visible=%d fbAddr=0x%X fbFound=%d fbW=%d viW=%d siz=%d/%d serrate=%d origin=0x%X h=%u..%u v=%u..%u xs=0x%X/0x%X ys=0x%X/0x%X\n",
                 (int)newVI.visible(), screenFbAddress, dbgFb ? 1 : 0,

@@ -452,8 +452,10 @@ namespace RT64 {
                     if (colorFb != nullptr) {
                         fbKey.colorTargetKey = RenderTargetKey(colorFb->addressStart, colorFb->width, colorFb->siz, Framebuffer::Type::Color);
                         colorTarget = &targetManager.get(fbKey.colorTargetKey);
-                        // [wcw] DIAGNOSTIC: which color targets does the workload render into?
-                        { static int rt = 0; if ((rt++ % 60) == 0) fprintf(stderr, "[wcw][render-target#%d] addr=0x%X w=%d siz=%d ptr=%p\n",
+                        // [wcw] DIAGNOSTIC (env WCW_PRESENT_LOG=1): which color targets does the
+                        // workload render into?
+                        { static const bool wcwPlog = getenv("WCW_PRESENT_LOG") != nullptr;
+                          static int rt = 0; if (((rt++ % 60) == 0) && wcwPlog) fprintf(stderr, "[wcw][render-target#%d] addr=0x%X w=%d siz=%d ptr=%p\n",
                             rt, colorFb->addressStart, (int)colorFb->width, (int)colorFb->siz, (void*)colorTarget); }
                         { // [wcw] DIAGNOSTIC (WCW_PRESENT_LUM=1): timestamped per-fbPair render log,
                           // correlated offline with the present readback CSV (same steady clock).
