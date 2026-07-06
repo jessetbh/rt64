@@ -116,6 +116,8 @@ namespace RT64 {
 
         RenderTarget *colorTarget = nullptr;
         int32_t framesToPresent = 1;
+        int wcw_reason = 0; // [wcw] DIAGNOSTIC present outcome: 0=vi-not-visible 1=ok 2=target-empty 3=scratch
+        uint32_t wcw_addr = 0; // [wcw] DIAGNOSTIC: address of the fb actually presented
         bool lockedWorkloadMutex = false;
         InterpolatedFrameCounters &frameCounters = ext.sharedResources->interpolatedFrames[ext.sharedResources->interpolatedFramesIndex];
 
@@ -127,6 +129,15 @@ namespace RT64 {
         
         // Perform any external write operations indicated by the event.
         if (!present.fbOperations.empty()) {
+            // [wcw] DIAGNOSTIC: fbOperations upload RDRAM contents ONTO render targets before
+            // presenting. WCW's fb RDRAM is never written back by RT64, so a WriteChanges op
+            // aimed at a presented fb would splat stale/black RAM over the rendered frame.
+            { static int fo = 0;
+              for (const auto &op : present.fbOperations) {
+                  if (fo < 40 || (fo % 60) == 0) fprintf(stderr, "[wcw][fbop#%d] type=%d addr=0x%X\n",
+                      fo, (int)op.type, (op.type == FramebufferOperation::Type::WriteChanges) ? op.writeChanges.address : 0);
+                  fo++;
+              } }
             const std::scoped_lock lock(screenFbChangePoolMutex);
             {
                 RenderWorkerExecution workerExecution(ext.presentGraphicsWorker);
@@ -194,9 +205,27 @@ namespace RT64 {
                     ext.sharedResources->workloadMutex.lock();
                 }
 
+                // [wcw fix] The base-frame (i=0) present samples the LIVE render target, which
+                // threadRenderFrame concurrently re-renders under workloadMutex on another GPU
+                // queue. Upstream only took the lock when interpolation was disabled, so the
+                // present blit raced the render and showed cleared/partial content — measured
+                // as 1 of every 3 presents being pure black at 20 fps (visible black flicker).
+                // Take the lock in the interpolation path too; the loop below releases it right
+                // after the i=0 present. Skip only MSAA multi-frame presents (their i=0 uses an
+                // interpolated COPY and waits on the workload queue, which would deadlock here).
+                if (!lockedWorkloadMutex && !(usingMSAA && (framesToPresent > 1))) {
+                    lockedWorkloadMutex = true;
+                    ext.sharedResources->workloadMutex.lock();
+                }
+
                 RenderTargetKey colorTargetKey(presentFb->addressStart, presentFb->width, presentFb->siz, Framebuffer::Type::Color);
                 colorTarget = &targetManager.get(colorTargetKey, true);
+                // [wcw] DIAGNOSTIC: report whether the present found a non-empty rendered target.
+                { static int pn = 0; if ((pn++ % 61) == 0) fprintf(stderr, "[wcw][blit#%d] addr=0x%X w=%d siz=%d empty=%d interp=%d\n",
+                    pn, presentFb->addressStart, (int)presentFb->width, (int)presentFb->siz, (int)colorTarget->isEmpty(), (int)presentFb->interpolationEnabled); }
                 if (!colorTarget->isEmpty()) {
+                    wcw_reason = 1;
+                    wcw_addr = presentFb->addressStart;
                     // If a depth framebuffer is about to be shown, convert it to color.
                     if (presentFb->isLastWriteDifferent(Framebuffer::Type::Color)) {
                         RenderTargetKey otherColorTargetKey(presentFb->addressStart, presentFb->width, presentFb->siz, presentFb->lastWriteType);
@@ -210,6 +239,7 @@ namespace RT64 {
                 }
                 else {
                     colorTarget = nullptr;
+                    wcw_reason = 2;
                 }
 
                 if (!present.paused && (viHistory.top().vi != present.screenVI)) {
@@ -218,6 +248,13 @@ namespace RT64 {
             }
             else {
                 uint32_t fbAddress = present.screenVI.fbAddress();
+
+                // [wcw] DIAGNOSTIC: count scratch-path presents. This path RESIZES the shared
+                // render target down to native size (destroying the rendered hi-res texture),
+                // clears it, and uploads the RDRAM copy (black — RT64 never writes back), which
+                // would wipe the rendered frame and explain the black screen.
+                { static int sp = 0; if ((sp++ % 30) == 0) fprintf(stderr, "[wcw][scratch-present#%d] fbAddr=0x%X (fb lookup MISSED)\n", sp, fbAddress); }
+                wcw_reason = 3;
 
                 // Use a scratch framebuffer to upload the RAM to the render target.
                 hlslpp::uint2 fbSize = present.screenVI.fbSize();
@@ -266,6 +303,10 @@ namespace RT64 {
             }
         }
         
+        // [wcw] DIAGNOSTIC: if framesToPresent is 0, nothing is ever blitted to the swap chain.
+        { static int fp = 0; if ((fp++ % 60) == 0) fprintf(stderr, "[wcw][present-loop#%d] framesToPresent=%d counters.count=%u avail=%u target=%p swapValid=%d\n",
+            fp, framesToPresent, frameCounters.count, frameCounters.available, (void*)colorTarget, (int)swapChainValid); }
+
         for (int32_t i = 0; i < framesToPresent; i++) {
             uint32_t frameCountersNextPresented = 0;
             if ((framesToPresent > 1) && (usingMSAA || (i > 0))) {
@@ -299,8 +340,11 @@ namespace RT64 {
 
             uint32_t swapChainIndex = 0;
             const bool presentFrame = (i < framesToPresent) && swapChainValid;
+            double wcwAcqMs = 0.0;
             if (presentFrame) {
+                auto wcwAcq0 = std::chrono::steady_clock::now();
                 swapChainValid = ext.swapChain->acquireTexture(acquiredSemaphore.get(), &swapChainIndex);
+                wcwAcqMs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - wcwAcq0).count() / 1000.0;
             }
 
             if (presentFrame && swapChainValid) {
@@ -340,6 +384,20 @@ namespace RT64 {
                     }
                 }
                 
+                { // [wcw] DIAGNOSTIC: per-60-presents outcome accounting. A null source texture
+                  // means this present draws ONLY the clear -> a pure black frame on screen.
+                    static int prCnt = 0, prBlack = 0, prReason[4] = {};
+                    static double acqSum = 0.0, acqMax = 0.0;
+                    if (renderParams.texture == nullptr) prBlack++;
+                    prReason[wcw_reason]++;
+                    acqSum += wcwAcqMs; if (wcwAcqMs > acqMax) acqMax = wcwAcqMs;
+                    if (++prCnt >= 60) {
+                        fprintf(stderr, "[wcw][present] last %d presents: black=%d | notvis=%d ok=%d empty=%d scratch=%d | acquire avg=%.1fms max=%.1fms\n",
+                            prCnt, prBlack, prReason[0], prReason[1], prReason[2], prReason[3], acqSum / prCnt, acqMax);
+                        prCnt = prBlack = 0; prReason[0] = prReason[1] = prReason[2] = prReason[3] = 0;
+                        acqSum = 0.0; acqMax = 0.0;
+                    }
+                }
                 commandList->setFramebuffer(swapChainFramebuffer);
                 commandList->clearColor();
 
@@ -358,7 +416,38 @@ namespace RT64 {
                     if (inspector != nullptr) {
                         inspector->draw(commandList);
                     }
-                    
+
+                    // [wcw] DIAGNOSTIC (env WCW_PRESENT_LUM=1): copy the finished swapchain image
+                    // into a readback buffer so the ACTUAL presented pixels can be verified CPU-side
+                    // (ground truth below the OS — screen captures are unreliable with MPO).
+                    static const bool wcwLum = getenv("WCW_PRESENT_LUM") != nullptr;
+                    // BMP dump window configurable: WCW_BMP_START (default 600), WCW_BMP_COUNT
+                    // (default 13), WCW_LUM_END (default 1500) — lets captures target any moment
+                    // (e.g. in-game menus) instead of only early boot.
+                    static const int wcwBmpStart = getenv("WCW_BMP_START") ? atoi(getenv("WCW_BMP_START")) : 600;
+                    static const int wcwBmpCount = getenv("WCW_BMP_COUNT") ? atoi(getenv("WCW_BMP_COUNT")) : 13;
+                    static const int wcwLumEnd = getenv("WCW_LUM_END") ? atoi(getenv("WCW_LUM_END")) : 1500;
+                    static std::unique_ptr<RenderBuffer> wcwReadback;
+                    static uint32_t wcwRbW = 0, wcwRbH = 0, wcwRbRow = 0;
+                    static int wcwPresentN = 0;
+                    bool wcwDoRead = false;
+                    if (wcwLum) {
+                        wcwPresentN++;
+                        if (wcwPresentN >= 240 && wcwPresentN <= wcwLumEnd) {
+                            uint32_t w = ext.swapChain->getWidth(), h = ext.swapChain->getHeight();
+                            uint32_t row = (w + 63) & ~63u;
+                            if (!wcwReadback || wcwRbW != w || wcwRbH != h) {
+                                wcwReadback = ext.device->createBuffer(RenderBufferDesc::ReadbackBuffer(uint64_t(row) * h * 4));
+                                wcwRbW = w; wcwRbH = h; wcwRbRow = row;
+                            }
+                            commandList->barriers(RenderBarrierStage::COPY, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::COPY_SOURCE));
+                            commandList->copyTextureRegion(
+                                RenderTextureCopyLocation::PlacedFootprint(wcwReadback.get(), RenderFormat::B8G8R8A8_UNORM, wcwRbW, wcwRbH, 1, wcwRbRow, 0),
+                                RenderTextureCopyLocation::Subresource(swapChainTexture));
+                            wcwDoRead = true;
+                        }
+                    }
+
                     commandList->barriers(RenderBarrierStage::NONE, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::PRESENT));
                     commandList->end();
                     const RenderCommandList *commandList = ext.presentGraphicsWorker->commandList.get();
@@ -366,6 +455,44 @@ namespace RT64 {
                     RenderCommandSemaphore *signalSemaphore = drawSemaphores[swapChainIndex].get();
                     ext.presentGraphicsWorker->commandQueue->executeCommandLists(&commandList, 1, &waitSemaphore, 1, &signalSemaphore, 1, ext.presentGraphicsWorker->commandFence.get());
                     ext.presentGraphicsWorker->wait();
+
+                    if (wcwDoRead) {
+                        const uint8_t *p = (const uint8_t *)(wcwReadback->map(0, nullptr));
+                        uint64_t sum = 0; uint32_t cnt = 0;
+                        for (uint32_t y = 0; y < wcwRbH; y += 8) {
+                            const uint8_t *rowp = p + uint64_t(y) * wcwRbRow * 4;
+                            for (uint32_t x = 0; x < wcwRbW; x += 8) {
+                                const uint8_t *px = rowp + uint64_t(x) * 4;
+                                sum += px[0] + px[1] + px[2];
+                                cnt += 3;
+                            }
+                        }
+                        static FILE *lumf = nullptr;
+                        if (lumf == nullptr) lumf = fopen("wcw_present_lum.csv", "w");
+                        if (lumf != nullptr) {
+                            double msNow = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 1000.0;
+                            fprintf(lumf, "%d,%.1f,0x%X,0x%X,%.2f\n", wcwPresentN, msNow, present.screenVI.fbAddress(), wcw_addr, double(sum) / cnt);
+                            fflush(lumf);
+                        }
+                        if (wcwPresentN >= wcwBmpStart && wcwPresentN < wcwBmpStart + wcwBmpCount) {
+                            char name[64]; snprintf(name, sizeof(name), "wcw_present_%04d.bmp", wcwPresentN);
+                            FILE *bf = fopen(name, "wb");
+                            if (bf != nullptr) {
+                                uint32_t imgSize = wcwRbW * wcwRbH * 4, fileSize = 54 + imgSize, off54 = 54, ihs = 40;
+                                int32_t negH = -int32_t(wcwRbH);
+                                uint16_t planes = 1, bpp = 32;
+                                uint8_t hdr[54] = {};
+                                hdr[0] = 'B'; hdr[1] = 'M';
+                                memcpy(hdr + 2, &fileSize, 4); memcpy(hdr + 10, &off54, 4); memcpy(hdr + 14, &ihs, 4);
+                                memcpy(hdr + 18, &wcwRbW, 4); memcpy(hdr + 22, &negH, 4);
+                                memcpy(hdr + 26, &planes, 2); memcpy(hdr + 28, &bpp, 2); memcpy(hdr + 34, &imgSize, 4);
+                                fwrite(hdr, 1, 54, bf);
+                                for (uint32_t y = 0; y < wcwRbH; y++) fwrite(p + uint64_t(y) * wcwRbRow * 4, 1, uint64_t(wcwRbW) * 4, bf);
+                                fclose(bf);
+                            }
+                        }
+                        wcwReadback->unmap();
+                    }
                 }
             }
 
@@ -460,6 +587,18 @@ namespace RT64 {
                     processCursor = threadCursor;
                     threadCursor = (threadCursor + 1) % presents.size();
                     skipPresent = (writeCursor != threadCursor);
+                    { // [wcw] DIAGNOSTIC (WCW_PRESENT_LUM=1): present-ring processing trace.
+                        static const bool wcwQlog = getenv("WCW_PRESENT_LUM") != nullptr;
+                        if (wcwQlog) {
+                            static FILE *qf = nullptr;
+                            if (qf == nullptr) qf = fopen("wcw_pring_log.csv", "w");
+                            if (qf != nullptr) {
+                                double ms = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 1000.0;
+                                fprintf(qf, "%.1f,proc,%d,%d,%d\n", ms, processCursor, writeCursor, (int)skipPresent);
+                                fflush(qf);
+                            }
+                        }
+                    }
                 }
             }
 

@@ -452,6 +452,22 @@ namespace RT64 {
                     if (colorFb != nullptr) {
                         fbKey.colorTargetKey = RenderTargetKey(colorFb->addressStart, colorFb->width, colorFb->siz, Framebuffer::Type::Color);
                         colorTarget = &targetManager.get(fbKey.colorTargetKey);
+                        // [wcw] DIAGNOSTIC: which color targets does the workload render into?
+                        { static int rt = 0; if ((rt++ % 60) == 0) fprintf(stderr, "[wcw][render-target#%d] addr=0x%X w=%d siz=%d ptr=%p\n",
+                            rt, colorFb->addressStart, (int)colorFb->width, (int)colorFb->siz, (void*)colorTarget); }
+                        { // [wcw] DIAGNOSTIC (WCW_PRESENT_LUM=1): timestamped per-fbPair render log,
+                          // correlated offline with the present readback CSV (same steady clock).
+                            static const bool wcwRlog = getenv("WCW_PRESENT_LUM") != nullptr;
+                            if (wcwRlog) {
+                                static FILE *wf = nullptr;
+                                if (wf == nullptr) wf = fopen("wcw_render_log.csv", "w");
+                                if (wf != nullptr) {
+                                    double ms = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 1000.0;
+                                    fprintf(wf, "%.1f,0x%X,%d,%d\n", ms, colorFb->addressStart, (int)f, (int)fbPair.drawColorRect.bottom(true));
+                                    fflush(wf);
+                                }
+                            }
+                        }
                     }
                     else {
                         colorTarget = nullptr;
@@ -842,6 +858,32 @@ namespace RT64 {
             framebufferRenderer->waitForUploaders();
             ext.workloadGraphicsWorker->execute();
             ext.workloadGraphicsWorker->wait();
+
+            // [wcw] DIAGNOSTIC: one-shot GPU readback of the rect vertex buffer (defaultBuffer)
+            // after the workload's GPU work completed. Compares GPU-side contents with the CPU
+            // source data — if GPU reads zeros, the upload copy is the broken link; if it matches,
+            // the vertex INPUT binding/layout is the bug.
+            { static int rbn = 0;
+              const auto& cpu = workload.drawData.triPosFloats;
+              auto& bufPair = workload.drawBuffers.triPosBuffer;
+              if ((rbn < 3) && (cpu.size() >= 8) && (bufPair.defaultBuffer != nullptr)) {
+                rbn++;
+                RenderWorker* w = ext.workloadGraphicsWorker;
+                const uint64_t bytes = 64; // 16 floats
+                std::unique_ptr<RenderBuffer> rbuf = w->device->createBuffer(RenderBufferDesc::ReadbackBuffer(bytes));
+                w->commandList->begin();
+                w->commandList->barriers(RenderBarrierStage::COPY, RenderBufferBarrier(bufPair.defaultBuffer.get(), RenderBufferAccess::READ));
+                w->commandList->copyBufferRegion(rbuf->at(0), bufPair.defaultBuffer->at(0), bytes);
+                w->commandList->end();
+                w->execute();
+                w->wait();
+                const float* g = (const float*)rbuf->map(0, nullptr);
+                fprintf(stderr, "[wcw][gpuverts#%d] GPU=(%.2f,%.2f,%.2f,%.2f)(%.2f,%.2f,%.2f,%.2f) CPU=(%.2f,%.2f,%.2f,%.2f)(%.2f,%.2f,%.2f,%.2f)\n",
+                    rbn, g[0],g[1],g[2],g[3],g[4],g[5],g[6],g[7],
+                    cpu[0],cpu[1],cpu[2],cpu[3],cpu[4],cpu[5],cpu[6],cpu[7]);
+                rbuf->unmap();
+              } }
+
             workerMutex.unlock();
 
             // Update the GPU profiler with the results from the timestamps of the frame.
@@ -904,6 +946,32 @@ namespace RT64 {
             if (processCursor >= 0) {
                 std::unique_lock<std::mutex> threadLock(threadMutex);
                 Workload &workload = workloads[processCursor];
+                // [wcw] DIAGNOSTIC: count workloads + checksum CPU-side draw data. If posFloats /
+                // rdpParams are zeros, the interpreter->drawData conversion is broken; if real,
+                // the GPU upload/consumption is the break.
+                { static int wl = 0; if ((wl++ % 61) == 0) {
+                    const auto& dd = workload.drawData;
+                    float posSum = 0.0f; for (size_t i = 0; i < dd.posFloats.size() && i < 256; i++) posSum += fabsf(dd.posFloats[i]);
+                    // [wcw] also checksum the RAW TRI (rect) vertices — the title screen is texrects,
+                    // which bind drawBuffers.triPosBuffer uploaded from drawData.triPosFloats.
+                    float rawSum = 0.0f; size_t rawN = dd.triPosFloats.size();
+                    for (size_t i = 0; i < rawN && i < 256; i++) rawSum += fabsf(dd.triPosFloats[i]);
+                    float raw0[8] = {0};
+                    for (size_t i = 0; i < 8 && i < rawN; i++) raw0[i] = dd.triPosFloats[i];
+                    fprintf(stderr, "[wcw][rawtris] count=%zu sum=%.1f v0=(%.1f,%.1f,%.1f,%.1f) v1=(%.1f,%.1f,%.1f,%.1f)\n",
+                        rawN / 4, rawSum, raw0[0], raw0[1], raw0[2], raw0[3], raw0[4], raw0[5], raw0[6], raw0[7]);
+                    uint32_t rdpSum = 0; const uint8_t* rp = (const uint8_t*)dd.rdpParams.data();
+                    for (size_t i = 0; i < dd.rdpParams.size() * sizeof(interop::RDPParams) && i < 512; i++) rdpSum += rp[i];
+                    fprintf(stderr, "[wcw][workload#%d] fbPairs=%d posFloats=%zu posSum=%.1f rdpParams=%zu rdpSum=0x%X\n",
+                        wl, (int)workload.fbPairCount, dd.posFloats.size(), posSum, dd.rdpParams.size(), rdpSum);
+                    for (uint32_t fp = 0; fp < workload.fbPairCount; fp++) {
+                        const auto& pair = workload.fbPairs[fp];
+                        fprintf(stderr, "[wcw]   fbPair[%u]: color=0x%X w=%d fmt=%d siz=%d depth=0x%X calls=%u projs=%u clearDepthOnly=%d fillRectOnly=%d drawRect=(%d,%d)-(%d,%d)\n",
+                            fp, pair.colorImage.address, (int)pair.colorImage.width, (int)pair.colorImage.fmt, (int)pair.colorImage.siz,
+                            pair.depthImage.address, pair.gameCallCount, pair.projectionCount,
+                            (int)pair.fastPaths.clearDepthOnly, (int)pair.fillRectOnly,
+                            pair.drawColorRect.left(false), pair.drawColorRect.top(false), pair.drawColorRect.right(false), pair.drawColorRect.bottom(false));
+                    } } }
                 ext.presentQueue->waitForPresentId(workload.presentId);
 
                 if (!threadsRunning) {
@@ -986,7 +1054,10 @@ namespace RT64 {
                     matchingProfiler.log();
 
                     const bool displayRateAboveOriginal = (workload.viOriginalRate > 0) && (workloadConfig.targetRate > workload.viOriginalRate);
-                    generateInterpolatedFrames = !workload.paused && displayRateAboveOriginal && !interpolationTargetKey.isEmpty();
+                    // [wcw] DIAGNOSTIC: WCW_NO_INTERP=1 disables interpolated-frame generation, to
+                    // test whether the black flicker frames are produced by the interpolation path.
+                    static const bool wcwNoInterp = getenv("WCW_NO_INTERP") != nullptr;
+                    generateInterpolatedFrames = !workload.paused && displayRateAboveOriginal && !interpolationTargetKey.isEmpty() && !wcwNoInterp;
 
                     const bool resetTicks = !generateInterpolatedFrames || (originalRateForTicks != workload.viOriginalRate) || (displayRateForTicks != workloadConfig.targetRate) || !displayRateAboveOriginal;
                     if (resetTicks) {

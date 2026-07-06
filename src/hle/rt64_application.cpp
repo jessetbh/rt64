@@ -116,6 +116,7 @@ namespace RT64 {
         }
 #   endif
 
+        fprintf(stderr, "[rt64setup] interpreter/state ok; creating window\n");
         // Create the application window.
         const char *windowTitle = "RT64";
         appWindow = std::make_unique<ApplicationWindow>();
@@ -125,12 +126,15 @@ namespace RT64 {
         else {
             appWindow->setup(windowTitle, this);
         }
+        fprintf(stderr, "[rt64setup] appWindow setup ok; detecting refresh rate\n");
 
         // Detect refresh rate from the display the window is located at.
         appWindow->detectRefreshRate();
+        fprintf(stderr, "[rt64setup] refresh rate ok\n");
 
         // Resolve the graphics API option in case it's automatic.
         chosenGraphicsAPI = UserConfiguration::resolveGraphicsAPI(userConfig.graphicsAPI);
+        fprintf(stderr, "[rt64setup] resolved API = %d\n", (int)chosenGraphicsAPI);
 
 #   ifdef _WIN64
         // Windows can try falling back to the other API option in case of failure.
@@ -181,9 +185,11 @@ namespace RT64 {
                 return SetupResult::InvalidGraphicsAPI;
             }
 
+            fprintf(stderr, "[rt64setup] render interface created = %p; creating device\n", (void*)renderInterface.get());
             if (renderInterface != nullptr) {
                 // Create the render device.
                 device = renderInterface->createDevice();
+                fprintf(stderr, "[rt64setup] createDevice -> %p\n", (void*)device.get());
             }
         }
 
@@ -511,6 +517,18 @@ namespace RT64 {
 
     void Application::updateScreen() {
         appWindow->sdlCheckFilterInstallation();
+        // [wcw] Set WCW_INSPECTOR=1 to auto-open the RT64 frame inspector at startup (it renders
+        // and is visible, but mouse interaction doesn't work yet — the frontend doesn't forward
+        // win32 messages to Application::windowMessageFilter).
+        { static bool checked = false;
+          if (!checked && (presentQueue != nullptr)) {
+            checked = true;
+            if (getenv("WCW_INSPECTOR") != nullptr) {
+                userConfig.developerMode = true;
+                processDeveloperShortcut(DeveloperShortcut::Inspector);
+                fprintf(stderr, "[wcw][inspector] auto-opened (developer mode forced)\n");
+            }
+          } }
         screenApiProfiler.logAndRestart();
         state->updateScreen(core.decodeVI(), false);
     }

@@ -348,6 +348,14 @@ namespace RT64 {
     }
     
     RenderMultisampling RasterShader::generateMultisamplingPattern(RenderSampleCounts sampleCount, bool sampleLocationsSupported) {
+        // [wcw] WORKAROUND: force single-sampling. RenderDoc proved the game renders PERFECTLY
+        // into the MSAA target (the ASMIK logo is in the framebuffer), but the MSAA resolve the
+        // present blit samples comes out black — so with MSAA the screen shows nothing. Single
+        // sampling makes the blit sample the rendered texture directly. (Root-cause the resolve
+        // path later: RenderTarget::resolveTarget / recordRasterResolve.)
+        { static bool once = false; if (!once) { once = true;
+            fprintf(stderr, "[wcw][msaa] requested sampleCount=%d (forcing 1; see resolve workaround)\n", (int)sampleCount); } }
+        sampleCount = 1;
 #   if SAMPLE_LOCATIONS_REQUIRED
         if (!sampleLocationsSupported) {
             return RenderMultisampling();

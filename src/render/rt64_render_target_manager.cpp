@@ -119,6 +119,18 @@ namespace RT64 {
             assert((storage.depthTarget == depthTarget) && "Storage does not match the requested depth target.");
             assert((colorTarget == nullptr) || (storage.colorTargetRevision == colorTarget->textureRevision) && "Storage does not match the requested color texture revision.");
             assert((depthTarget == nullptr) || (storage.depthTargetRevision == depthTarget->textureRevision) && "Storage does not match the requested depth texture revision.");
+            // [wcw] The integrity checks above are asserts only — compiled out in Release. A stale
+            // entry here makes every draw render into a destroyed texture while the present samples
+            // the new one (silent black screen). Make the check real: detect and rebuild.
+            const bool stale =
+                (storage.colorTarget != colorTarget) || (storage.depthTarget != depthTarget) ||
+                ((colorTarget != nullptr) && (storage.colorTargetRevision != colorTarget->textureRevision)) ||
+                ((depthTarget != nullptr) && (storage.depthTargetRevision != depthTarget->textureRevision));
+            if (stale) {
+                static int n = 0;
+                if (n++ < 20) fprintf(stderr, "[wcw][fbcache] STALE framebuffer storage detected - rebuilding (hit #%d)\n", n);
+                storage.setup(device, framebufferKey, colorTarget, depthTarget);
+            }
             return storage;
         }
 

@@ -401,6 +401,12 @@ namespace RT64 {
         uint32_t tmemStride, uint32_t wordsPerRow, uint32_t rowCount, uint32_t dxtIncrement = 0)
     {
         assert((!BLOCK || (rowCount == 1)) && "Load block must behave as if it only loads one row of data.");
+        // [wcw] DIAGNOSTIC: checksum the source RDRAM bytes of texture loads. If sums are zero,
+        // the game's texture data in RDRAM is zeros (game-side data bug, e.g. decompression);
+        // if nonzero, texture data is real and the problem is downstream in the texture path.
+        { static int tl = 0; if ((tl++ % 500) == 0) {
+            uint32_t sum = 0; for (uint32_t i = 0; i < 256; i++) { sum += RDRAM[(textureStart + i) ^ 3]; }
+            fprintf(stderr, "[wcw][tmemload#%d] src=0x%X words=%u rows=%u first256sum=0x%X\n", tl, textureStart, wordsPerRow, rowCount, sum); } }
         
         const uint32_t DXTSwap = 0x800;
         uint32_t textureAddress, tmemAddress, wordCount, tmemMask, tmemAdvance;
@@ -775,6 +781,8 @@ namespace RT64 {
     }
 
     void RDP::loadTLUT(uint8_t tile, uint16_t uls, uint16_t ult, uint16_t lrs, uint16_t lrt) {
+        // [wcw] DIAGNOSTIC: does the game ever load a palette via the proper TLUT command?
+        { static int lt = 0; if ((lt++ % 200) == 0) fprintf(stderr, "[wcw][loadtlut#%d] tile=%d uls=%d lrs=%d (tmem=0x%X)\n", lt, (int)tile, uls>>2, lrs>>2, (unsigned)tiles[tile].tmem << 3); }
 #ifdef LOG_LOAD_METHODS
         RT64_LOG_PRINTF("RDP::loadTLUT(tile %u, uls %u, ult %u, lrs %u, lrt %u)", tile, uls, ult, lrs, lrt);
 #endif
@@ -972,6 +980,8 @@ namespace RT64 {
     }
     
     void RDP::setScissor(uint8_t mode, int32_t ulx, int32_t uly, int32_t lrx, int32_t lry, const ExtendedAlignment &extAlignment) {
+        // [wcw] DIAGNOSTIC: log scissor settings (empty scissor clips ALL draws -> black target).
+        { static int sc = 0; if ((sc++ % 200) == 0) fprintf(stderr, "[wcw][scissor#%d] mode=%d (%d,%d)-(%d,%d)\n", sc, (int)mode, ulx>>2, uly>>2, lrx>>2, lry>>2); }
         FixedRect &scissorRect = scissorRectStack[scissorStackSize - 1];
         scissorRect.ulx = std::clamp(movedFromOrigin(ulx + extAlignment.leftOffset, extAlignment.leftOrigin), extAlignment.leftBound, extAlignment.rightBound);
         scissorRect.uly = std::clamp(uly + extAlignment.topOffset, extAlignment.topBound, extAlignment.bottomBound);
@@ -1034,6 +1044,8 @@ namespace RT64 {
 #   ifdef LOG_FILLRECT_METHODS
         RT64_LOG_PRINTF("RDP::fillRect(ulx %d, uly %d, lrx %d, lry %d)", ulx, uly, lrx, lry);
 #   endif
+        // [wcw] DIAGNOSTIC: count fill rects (clears) + log fill color occasionally.
+        { static int fr = 0; if ((fr++ % 120) == 0) fprintf(stderr, "[wcw][fillrect#%d] (%d,%d)-(%d,%d) fillColor=0x%08X\n", fr, ulx>>2, uly>>2, lrx>>2, lry>>2, fillColorStack[fillColorStackSize - 1]); }
 
         // Filter out incorrect rectangles.
         if ((lrx < ulx) || (lry < uly)) {
@@ -1318,6 +1330,17 @@ namespace RT64 {
     }
     
     void RDP::drawTexRect(int32_t ulx, int32_t uly, int32_t lrx, int32_t lry, uint8_t tile, int16_t uls, int16_t ult, int16_t dsdx, int16_t dtdy, bool flip, const ExtendedAlignment &extAlignment) {
+        // [wcw] DIAGNOSTIC: count texture rects (2D blits — logos/menus draw with these), and log
+        // the color state — if prim/env are black and the combiner multiplies by them, everything
+        // draws black (stuck intro fade).
+        { static int tr = 0; if ((tr++ % 200) == 0) {
+            const hlslpp::float4& pc = primColorStack[primColorStackSize - 1];
+            const hlslpp::float4& ec = envColorStack[envColorStackSize - 1];
+            fprintf(stderr, "[wcw][texrect#%d] (%d,%d)-(%d,%d) tilefmt=%d tilesiz=%d tlut=0x%X prim=(%.2f,%.2f,%.2f,%.2f) cc=0x%08X%08X\n",
+                tr, ulx>>2, uly>>2, lrx>>2, lry>>2,
+                (int)tiles[tile].fmt, (int)tiles[tile].siz, (unsigned)otherMode.textLUT(),
+                (float)pc.x, (float)pc.y, (float)pc.z, (float)pc.w,
+                (unsigned)colorCombinerStack[colorCombinerStackSize-1].H, (unsigned)colorCombinerStack[colorCombinerStackSize-1].L); (void)ec; } }
 #   ifdef LOG_TEXRECT_METHODS
         RT64_LOG_PRINTF("RDP::drawTexRect(ulx %d, uly %d, lrx %d, lry %d, tile %u, uls %d, ult %d, dsdx %d, dtdy %d, flip %u)", ulx, uly, lrx, lry, tile, uls, ult, dsdx, dtdy, flip);
 #   endif

@@ -131,6 +131,21 @@ namespace RT64 {
         segments[seg] = address;
     }
 
+    // [wcw fix] AKI-engine games (WCW/WWF) never load a projection matrix: they submit fully
+    // composed MVPs through G_FORCEMTX only. The projection stack top then stays at its zero
+    // reset value, which is singular — hlslpp::inverse() returns NaN and poisons every world
+    // transform (world = MVP * inv(VP)), which NaNs all GPU screen positions (black screen).
+    // Detect the never-loaded (all-zero) VP so callers can substitute identity (world = MVP).
+    static bool isMatrixZero(const hlslpp::float4x4 &m) {
+        const float *f = (const float *)&m;
+        for (int i = 0; i < 16; i++) {
+            if (f[i] != 0.0f) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     void RSP::matrixCommon(const hlslpp::float4x4 &floatMatrix, uint32_t address, uint8_t params) {
         // Projection matrix.
         hlslpp::float4x4 &viewMatrix = viewMatrixStack[projectionMatrixStackSize - 1];
@@ -465,9 +480,18 @@ namespace RT64 {
 
             uint32_t physicalAddress = projectionMatrixPhysicalAddressStack[projectionMatrixStackSize - 1];
             workload.physicalAddressTransformMap.emplace(physicalAddress, uint32_t(drawData.viewProjTransformGroups.size()));
-            drawData.viewTransforms.emplace_back(hlslpp::mul(extended.invViewMatrix, viewMatrixStack[projectionMatrixStackSize - 1]));
-            drawData.projTransforms.emplace_back(hlslpp::mul(extended.invProjMatrix, projMatrixStack[projectionMatrixStackSize - 1]));
-            drawData.viewProjTransforms.emplace_back(hlslpp::mul(extended.invViewProjMatrix, viewProjMatrixStack[projectionMatrixStackSize - 1]));
+            if (isMatrixZero(viewProjMatrixStack[projectionMatrixStackSize - 1])) {
+                // [wcw fix] no projection was ever loaded (forceMatrix-only game): use identity
+                // so viewProj * world == MVP holds with world = MVP.
+                drawData.viewTransforms.emplace_back(hlslpp::float4x4::identity());
+                drawData.projTransforms.emplace_back(hlslpp::float4x4::identity());
+                drawData.viewProjTransforms.emplace_back(hlslpp::float4x4::identity());
+            }
+            else {
+                drawData.viewTransforms.emplace_back(hlslpp::mul(extended.invViewMatrix, viewMatrixStack[projectionMatrixStackSize - 1]));
+                drawData.projTransforms.emplace_back(hlslpp::mul(extended.invProjMatrix, projMatrixStack[projectionMatrixStackSize - 1]));
+                drawData.viewProjTransforms.emplace_back(hlslpp::mul(extended.invViewProjMatrix, viewProjMatrixStack[projectionMatrixStackSize - 1]));
+            }
             drawData.viewProjTransformGroups.emplace_back(extended.curViewProjMatrixIdGroupIndex);
             drawData.rspViewports.emplace_back(viewportStack[viewportStackSize - 1]);
             drawData.viewportOrigins.emplace_back(extended.viewportOriginStack[viewportStackSize - 1]);
@@ -533,7 +557,13 @@ namespace RT64 {
             modelViewProjInserted = false;
 
             if (!projectionMatrixInversed) {
-                invViewProjMatrixStack[projectionMatrixStackSize - 1] = hlslpp::inverse(viewProjMatrixStack[projectionMatrixStackSize - 1]);
+                if (isMatrixZero(viewProjMatrixStack[projectionMatrixStackSize - 1])) {
+                    // [wcw fix] singular zero VP (forceMatrix-only game): inverse() would be NaN.
+                    invViewProjMatrixStack[projectionMatrixStackSize - 1] = hlslpp::float4x4::identity();
+                }
+                else {
+                    invViewProjMatrixStack[projectionMatrixStackSize - 1] = hlslpp::inverse(viewProjMatrixStack[projectionMatrixStackSize - 1]);
+                }
                 projectionMatrixInversed = true;
             }
 
@@ -1050,6 +1080,9 @@ namespace RT64 {
     }
 
     void RSP::drawIndexedTri(uint32_t a, uint32_t b, uint32_t c, bool rawGlobalIndices) {
+        // [wcw] DIAGNOSTIC: count triangle submissions (prints once per ~2000 tris; if this never
+        // prints, the game's display lists contain no geometry at all).
+        { static int tris = 0; if ((tris++ % 2000) == 0) fprintf(stderr, "[wcw][tri] total tris so far: %d\n", tris); }
         // Copy mode is not supported when drawing regular tris and crashes the hardware.
         const uint32_t cycleType = state->rdp->otherMode.cycleType();
         assert(cycleType != G_CYC_COPY);

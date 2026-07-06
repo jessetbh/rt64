@@ -1747,6 +1747,21 @@ namespace RT64 {
             }
         }
         
+        { // [wcw] DIAGNOSTIC (WCW_PRESENT_LUM=1): timestamped workload SUBMISSION log (game-side
+          // thread), listing the color addresses of each fbPair, to correlate with render/present.
+            static const bool wcwSlog = getenv("WCW_PRESENT_LUM") != nullptr;
+            if (wcwSlog) {
+                static FILE *sf = nullptr;
+                if (sf == nullptr) sf = fopen("wcw_submit_log.csv", "w");
+                if (sf != nullptr) {
+                    double ms = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 1000.0;
+                    for (uint32_t f = 0; f < workload.fbPairCount; f++) {
+                        fprintf(sf, "%.1f,0x%X,%u\n", ms, workload.fbPairs[f].colorImage.address, f);
+                    }
+                    fflush(sf);
+                }
+            }
+        }
         // Advance the workload queue at the end of a full synchronization.
         advanceWorkload(workload, false);
         ext.workloadQueue->advanceToNextWorkload();
@@ -1870,6 +1885,20 @@ namespace RT64 {
         screenCpuProfiler.start();
         bool fbChangesMade = false;
         bool screenChangesMade = false;
+        // [wcw] DIAGNOSTIC: once a second, report what the present path sees.
+        { static int n = 0;
+          if ((n++ % 60) == 0) {
+            Framebuffer* dbgFb = framebufferManager.find(screenFbAddress);
+            fprintf(stderr, "[wcw][present] visible=%d fbAddr=0x%X fbFound=%d fbW=%d viW=%d siz=%d/%d serrate=%d origin=0x%X h=%u..%u v=%u..%u xs=0x%X/0x%X ys=0x%X/0x%X\n",
+                (int)newVI.visible(), screenFbAddress, dbgFb ? 1 : 0,
+                dbgFb ? (int)dbgFb->width : -1, (int)screenFbSize.x,
+                dbgFb ? (int)dbgFb->siz : -1, (int)screenFbSiz,
+                (int)newVI.status.serrate, newVI.origin,
+                (unsigned)newVI.hRegion.hStart, (unsigned)newVI.hRegion.hEnd,
+                (unsigned)newVI.vRegion.vStart, (unsigned)newVI.vRegion.vEnd,
+                (unsigned)newVI.xTransform.xScale, (unsigned)newVI.xTransform.xOffset,
+                (unsigned)newVI.yTransform.yScale, (unsigned)newVI.yTransform.yOffset);
+          } }
         if (newVI.visible()) {
             // See if there's an existing framebuffer that lines up with the VI. If there is, we support reading 
             // CPU changes directly to it and recreating them in the render thread at low resolution.

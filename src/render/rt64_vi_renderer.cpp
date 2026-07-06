@@ -77,6 +77,15 @@ namespace RT64 {
         pushConstants.videoResolution = computeHDSize(hlslpp::float2(p.vi->fbSize()), p.resolutionScale, p.downsamplingScale);
         pushConstants.textureResolution = { float(p.textureWidth), float(p.textureHeight) };
         pushConstants.gamma = p.vi->gamma();
+        // [wcw] DIAGNOSTIC: the shader samples with a BORDER sampler (out of range = black).
+        // Log the size math to catch a VI-vs-texture mismatch producing an all-border quad.
+        { static int vr = 0; if ((vr++ % 120) == 0) {
+            hlslpp::uint2 fbsz = p.vi->fbSize();
+            fprintf(stderr, "[wcw][viblit#%d] vi.fbSize=%ux%u videoRes=(%.0f,%.0f) texRes=(%.0f,%.0f) gamma=%d\n",
+                vr, (unsigned)fbsz.x, (unsigned)fbsz.y,
+                (float)pushConstants.videoResolution.x, (float)pushConstants.videoResolution.y,
+                (float)pushConstants.textureResolution.x, (float)pushConstants.textureResolution.y,
+                (int)pushConstants.gamma); } }
 
         p.commandList->setPipeline(shader->pipeline.get());
         p.commandList->setGraphicsPipelineLayout(shader->pipelineLayout.get());

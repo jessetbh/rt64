@@ -20,7 +20,29 @@ namespace RT64 {
     }
 
     hlslpp::float4 VI::cropRectangle() const {
-        return { 0.0f, 0.0f, 1.0f, 1.0f };
+        // [wcw fix] Crop a few SD pixels from every edge of the scanout, like a CRT's
+        // overscan did on real hardware. WCW leaves garbage it never draws near the
+        // framebuffer edges: rows 0-3 at the top (the game parks the VI origin at
+        // fb+1 row to hide row 0; a CRT's bezel hid the rest) and a ~16x8 px block at
+        // the bottom-left (fb rows ~232-239; hardware showed only rows 1..237 of the
+        // fb — VI v=37..511 — and the bezel covered the remainder). Measured on the
+        // 480-wide match mode, 2026-07-05. Units: standard SD pixels (320x240 space);
+        // env WCW_CROP overrides as a single value or "L,T,R,B". The renderer turns
+        // this into the present scissor, so cropped edges show the border color.
+        static const hlslpp::float4 cropSD = [] {
+            float l = 4.0f, t = 4.0f, r = 4.0f, b = 8.0f;
+            const char *env = getenv("WCW_CROP");
+            if (env != nullptr) {
+                float v[4];
+                const int n = sscanf(env, "%f,%f,%f,%f", &v[0], &v[1], &v[2], &v[3]);
+                if (n == 4) { l = v[0]; t = v[1]; r = v[2]; b = v[3]; }
+                else if (n == 1) { l = t = r = b = v[0]; }
+            }
+            return hlslpp::float4(l, t, r, b);
+        }();
+        const float fl = cropSD.x / 320.0f, ft = cropSD.y / 240.0f;
+        const float fr = cropSD.z / 320.0f, fb = cropSD.w / 240.0f;
+        return { fl, ft, 1.0f - fl - fr, 1.0f - ft - fb };
     }
 
     float VI::gamma() const {
@@ -79,6 +101,10 @@ namespace RT64 {
         uint8_t siz = fbSiz();
 
         // Estimate the origin is off by one or two rows.
+        // ([wcw] note: for WCW this subtraction is REQUIRED — the game sets origin =
+        // fb + 1 row, and without the subtraction the framebuffer lookup misses and
+        // every present falls back to the slow native-res scratch path. The garbage
+        // row it re-exposes at the top is handled by cropRectangle() instead.)
         if (siz >= G_IM_SIZ_16b) {
             const bool interlacedStep = status.serrate && (vCurrentLine & 0x1);
             const uint32_t rowBytes = width * (1U << (siz - 1));

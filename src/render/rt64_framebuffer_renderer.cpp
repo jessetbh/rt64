@@ -484,6 +484,10 @@ namespace RT64 {
             worker->commandList->setGraphicsDescriptorSet(descTextureSet->get(), 1);
             worker->commandList->setGraphicsDescriptorSet(descTextureSet->get(), 2);
             worker->commandList->setGraphicsDescriptorSet(depthState ? descRealFbSet : descDummyFbSet, 3);
+            // [wcw] DIAGNOSTIC: log the actual GPU viewport used for the workload draws.
+            { static int vp = 0; if ((vp++ % 100) == 0) fprintf(stderr, "[wcw][gpuviewport#%d] x=%.1f y=%.1f w=%.1f h=%.1f minD=%.2f maxD=%.2f\n",
+                vp, framebuffer.viewport.x, framebuffer.viewport.y, framebuffer.viewport.width, framebuffer.viewport.height,
+                framebuffer.viewport.minDepth, framebuffer.viewport.maxDepth); }
             worker->commandList->setViewports(framebuffer.viewport);
         };
 
@@ -546,6 +550,15 @@ namespace RT64 {
                 assert(triangles.pipeline != nullptr);
 
                 // Draw calls can sometimes end up with empty scissors and cause validation errors. We just skip them.
+                // [wcw] DIAGNOSTIC: count draws skipped due to empty scissor vs executed, log sample rects.
+                { static int skipped = 0, executed = 0, logged = 0;
+                  if (triangles.scissor.isEmpty()) {
+                    skipped++;
+                    if (logged < 8) { logged++; fprintf(stderr, "[wcw][SKIP-emptyscissor] #%d scissor=(%d,%d)-(%d,%d) viewport=(%.1f,%.1f %.1fx%.1f)\n",
+                        skipped, triangles.scissor.left, triangles.scissor.top, triangles.scissor.right, triangles.scissor.bottom,
+                        framebuffer.viewport.x, framebuffer.viewport.y, framebuffer.viewport.width, framebuffer.viewport.height); }
+                  } else { executed++; }
+                  if (((skipped + executed) % 2000) == 1) fprintf(stderr, "[wcw][drawexec] executed=%d skippedEmptyScissor=%d\n", executed, skipped); }
                 if (triangles.scissor.isEmpty()) {
                     continue;
                 }
@@ -575,6 +588,12 @@ namespace RT64 {
                 rasterParams.screenScale = triangles.screenScale;
                 rasterParams.screenOffset = triangles.screenOffset;
                 worker->commandList->setGraphicsPushConstants(0, &rasterParams);
+
+                // [wcw] DIAGNOSTIC: log per-draw transform + count (degenerate scale = invisible).
+                { static int pd = 0; if ((pd++ % 500) == 0) fprintf(stderr, "[wcw][draw#%d] type=%d faces=%d scale=(%.3f,%.3f) offset=(%.3f,%.3f)\n",
+                    pd, (int)drawCall.type, (int)triangles.faceCount,
+                    (float)triangles.screenScale.x, (float)triangles.screenScale.y,
+                    (float)triangles.screenOffset.x, (float)triangles.screenOffset.y); }
 
                 drawCallTriangles(drawCall);
 
@@ -1607,6 +1626,8 @@ namespace RT64 {
                     {
                         triangles.shaderDesc = call.shaderDesc;
 
+                        // [wcw] NOTE (2026-06-12): forcing ubershader-only here was tested — same
+                        // all-black result, so uber and specialized raster shaders fail identically.
                         RasterShader *gpuShader = p.ubershadersOnly ? nullptr : p.rasterShaderCache->getGPUShader(call.shaderDesc);
                         if (gpuShader != nullptr) {
                             triangles.pipeline = gpuShader->pipeline.get();
@@ -1618,6 +1639,11 @@ namespace RT64 {
                                 !copyMode && call.shaderDesc.otherMode.zUpd(),
                                 (call.shaderDesc.otherMode.cvgDst() == CVG_DST_WRAP) || (call.shaderDesc.otherMode.cvgDst() == CVG_DST_SAVE));
                         }
+                        // [wcw] DIAGNOSTIC: count draws and whether they got a real pipeline.
+                        { static int dc = 0, nullpipe = 0, uber = 0;
+                          if (triangles.pipeline == nullptr) nullpipe++;
+                          if (gpuShader == nullptr) uber++;
+                          if ((dc++ % 500) == 0) fprintf(stderr, "[wcw][drawcall#%d] nullPipelines=%d uberFallbacks=%d\n", dc, nullpipe, uber); }
                         
                         triangles.faceCount = call.callDesc.triangleCount;
                         triangles.vertexTestZ = (vertexTestZCallIndex >= 0);
