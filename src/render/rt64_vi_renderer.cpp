@@ -109,7 +109,12 @@ namespace RT64 {
         // on the screen. To work around that, the viewport the buffer will be drawn in will be expanded so only
         // the region of interest is rendered. A scissor will cut it off correctly according to the coordinates
         // specified by the VI.
-        const hlslpp::float2 sdSize = removeBlackBorders ? hlslpp::float2(vi.fbSize()) : hlslpp::float2(320.0f, 240.0f);
+        // [wcw fix] The virtual SD TV is always a 4:3 frame. Deriving its size from the
+        // framebuffer's pixel dimensions gave a 2:1 "TV" for WCW's anamorphic 480x240
+        // hi-res fb, stretching the present and defeating pillarboxing in Original mode.
+        // Keep the fb's row count for scaling but force the 4:3 width.
+        const hlslpp::float2 fbSizeF = hlslpp::float2(vi.fbSize());
+        const hlslpp::float2 sdSize = removeBlackBorders ? hlslpp::float2(fbSizeF.y * (4.0f / 3.0f), fbSizeF.y) : hlslpp::float2(320.0f, 240.0f);
         const hlslpp::float2 hdSize = computeHDSize(sdSize, resolutionScale, downsamplingScale);
         const hlslpp::float2 windowSize = { float(swapChain->getWidth()), float(swapChain->getHeight()) };
 

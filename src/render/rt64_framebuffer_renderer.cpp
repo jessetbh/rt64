@@ -1452,7 +1452,12 @@ namespace RT64 {
 
         const float SimilarityPercentage = 0.1f; // TODO: Make more strict once VI ratios are in.
         const float scissorRatio = static_cast<float>(fbPair.scissorRect.width(false, true)) / static_cast<float>(fbPair.scissorRect.height(false, true));
-        const bool adjustRatio = (abs((scissorRatio / p.aspectRatioSource) - 1.0f) < SimilarityPercentage);
+        // [wcw fix] Compare the scissor against the framebuffer's own pixel ratio, not
+        // p.aspectRatioSource (now the 4:3 display ratio). The scissor is in fb pixels,
+        // so "covers the whole screen" means it matches the fb's dimensions — identical
+        // for square-pixel games (320x240), required for WCW's anamorphic 480x240 fb.
+        const float fbPixelRatio = (p.fbHeight > 0) ? (static_cast<float>(p.fbWidth) / static_cast<float>(p.fbHeight)) : p.aspectRatioSource;
+        const bool adjustRatio = (abs((scissorRatio / fbPixelRatio) - 1.0f) < SimilarityPercentage);
         const float aspectRatioScale = adjustRatio ? (p.aspectRatioTarget / p.aspectRatioSource) : 1.0f;
         InstanceDrawCall instanceDrawCall;
         interop::RenderIndices renderIndices;

@@ -131,7 +131,14 @@ namespace RT64 {
         const uint32_t referenceHeight = (viFbSize[1] > 0) ? std::max(viFbSize[1], MinimumReferenceHeight) : 240;
 
         // Compute the aspect ratio to be used for the frame.
-        workloadConfig.aspectRatioSource = (viFbSize[1] > 0) ? float(viFbSize[0]) / float(viFbSize[1]) : (4.0f / 3.0f);
+        // [wcw fix] Use the DISPLAYED aspect, not the framebuffer's pixel ratio. The VI
+        // always scans the framebuffer out into a 4:3 TV frame regardless of its pixel
+        // dimensions; WCW's match mode renders an anamorphic 480x240 hi-res fb whose
+        // pixel ratio (2:1) made Original stretch on present and collapsed Expand's
+        // widening (target = max(window, 2.0) = source, scale 1). The full-screen-
+        // scissor similarity test in the framebuffer renderer now derives the pixel
+        // ratio from the fb dimensions instead of this value.
+        workloadConfig.aspectRatioSource = 4.0f / 3.0f;
 
         const auto ratioMode = ext.sharedResources->userConfig.aspectRatio;
         switch (ratioMode) {
