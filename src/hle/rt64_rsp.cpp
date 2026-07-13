@@ -4,7 +4,9 @@
 
 #include "rt64_rsp.h"
 
+#include <array>
 #include <cassert>
+#include <unordered_map>
 
 #include "../include/rt64_extended_gbi.h"
 #include "common/rt64_common.h"
@@ -206,6 +208,22 @@ namespace RT64 {
         const uint32_t rdramAddress = fromSegmentedMasked(address);
         const FixedMatrix *fixedMatrix = reinterpret_cast<FixedMatrix *>(state->fromRDRAM(rdramAddress));
         const hlslpp::float4x4 floatMatrix = fixedMatrix->toMatrix4x4();
+
+        // [wcw2k] WCW2K_MTXLOG=1: log fixed-point G_MTX loads (address, params,
+        // translation + diagonal) to spot broken CPU-built model matrices (WM2000's
+        // in-match rope strips are placed per ring side by such matrices).
+        static const bool wcw2kMtxLog = getenv("WCW2K_MTXLOG") != nullptr;
+        if (wcw2kMtxLog) {
+            static std::unordered_map<uint32_t, uint32_t> wcw2kMtxN;
+            const uint32_t c = ++wcw2kMtxN[rdramAddress];
+            if (c <= 16 || (c & 0xFF) == 0) {
+                fprintf(stderr, "[wcw2k][mtx] addr=0x%08X p=%02X t=(%.1f,%.1f,%.1f) d=(%.2f,%.2f,%.2f) n=%u\n",
+                        rdramAddress, params,
+                        (float)floatMatrix[3][0], (float)floatMatrix[3][1], (float)floatMatrix[3][2],
+                        (float)floatMatrix[0][0], (float)floatMatrix[1][1], (float)floatMatrix[2][2], c);
+            }
+        }
+
         matrixCommon(floatMatrix, address, params);
     }
 
@@ -326,6 +344,20 @@ namespace RT64 {
         modelViewProjMatrix = fixedMatrix->toMatrix4x4();
         modelViewProjInserted = true;
         modelViewProjChanged = false;
+
+        // [wcw2k] WCW2K_MTXLOG=1: log gSPForceMatrix loads (AKI engines CPU-transform
+        // and force the combined MVP via G_MOVEMEM instead of gSPMatrix).
+        static const bool wcw2kMtxLog = getenv("WCW2K_MTXLOG") != nullptr;
+        if (wcw2kMtxLog) {
+            static std::unordered_map<uint32_t, uint32_t> wcw2kFmN;
+            const uint32_t c = ++wcw2kFmN[rdramAddress];
+            if (c <= 16 || (c & 0xFF) == 0) {
+                fprintf(stderr, "[wcw2k][fmtx] addr=0x%08X t=(%.1f,%.1f,%.1f) d=(%.3f,%.3f,%.3f) n=%u\n",
+                        rdramAddress,
+                        (float)modelViewProjMatrix[3][0], (float)modelViewProjMatrix[3][1], (float)modelViewProjMatrix[3][2],
+                        (float)modelViewProjMatrix[0][0], (float)modelViewProjMatrix[1][1], (float)modelViewProjMatrix[2][2], c);
+            }
+        }
     }
 
     static void setExtendedMatrixFloat(RSP &rsp, uint32_t address, hlslpp::float4x4 &matrix, hlslpp::float4x4 &invMatrix) {
@@ -387,6 +419,28 @@ namespace RT64 {
 
         const uint32_t rdramAddress = fromSegmentedMasked(address);
         const Vertex *dlVerts = reinterpret_cast<const Vertex *>(state->fromRDRAM(rdramAddress));
+
+        // [wcw2k] WCW2K_VTXLOG=1: identify DYNAMIC vertex buffers (CPU-written per
+        // frame, e.g. WM2000's ring ropes) by logging each G_VTX source address the
+        // first times its first-vertex XYZ changes. Static geometry logs once;
+        // per-frame buffers keep logging (rate-limited) — match the address against
+        // WCW2K_WRITEWATCH to convict the CPU writer.
+        static const bool wcw2kVtxLog = getenv("WCW2K_VTXLOG") != nullptr;
+        if (wcw2kVtxLog && (vtxCount > 0)) {
+            static std::unordered_map<uint32_t, std::array<int16_t, 3>> wcw2kLast;
+            static std::unordered_map<uint32_t, uint32_t> wcw2kChg;
+            const std::array<int16_t, 3> cur{ dlVerts[0].x, dlVerts[0].y, dlVerts[0].z };
+            auto &prev = wcw2kLast[rdramAddress];
+            if (prev != cur) {
+                prev = cur;
+                const uint32_t c = ++wcw2kChg[rdramAddress];
+                if (c <= 8 || (c & 0xFF) == 0) {
+                    fprintf(stderr, "[wcw2k][vtx] addr=0x%08X n=%u dst=%u xyz0=(%d,%d,%d) chg=%u\n",
+                            rdramAddress, vtxCount, dstIndex, cur[0], cur[1], cur[2], c);
+                }
+            }
+        }
+
         memcpy(&vertices[dstIndex], dlVerts, sizeof(Vertex) * vtxCount);
         setVertexCommon<true, sizeof(Vertex)>(rdramAddress, dstIndex, dstIndex + vtxCount);
     }
