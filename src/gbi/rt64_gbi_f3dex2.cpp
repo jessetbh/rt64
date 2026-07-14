@@ -5,6 +5,7 @@
 #include "rt64_gbi_f3dex2.h"
 
 #include <cassert>
+#include <cstdio>
 
 #include "../include/rt64_extended_gbi.h"
 #include "hle/rt64_interpreter.h"
@@ -55,6 +56,17 @@ namespace RT64 {
                 break;
             }
             default:
+                // [wcw2k] release builds compile the assert out, silently dropping any
+                // ucode-custom moveMem index (suspect for WM2000's in-match rope
+                // placement). Log loudly, rate-limited.
+                {
+                    static int wcw2kMoveMemN[256] = {};
+                    const int c = ++wcw2kMoveMemN[index];
+                    if (c <= 16 || (c & 0xFF) == 0) {
+                        fprintf(stderr, "[wcw2k][movemem] UNIMPLEMENTED index=0x%02X ofs=0x%02X w1=0x%08X n=%d\n",
+                                index, (*dl)->p0(8, 8), (*dl)->w1, c);
+                    }
+                }
                 assert(false && "Unimplemented moveMem command");
                 break;
             }

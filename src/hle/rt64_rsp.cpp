@@ -435,8 +435,12 @@ namespace RT64 {
                 prev = cur;
                 const uint32_t c = ++wcw2kChg[rdramAddress];
                 if (c <= 8 || (c & 0xFF) == 0) {
-                    fprintf(stderr, "[wcw2k][vtx] addr=0x%08X n=%u dst=%u xyz0=(%d,%d,%d) chg=%u\n",
-                            rdramAddress, vtxCount, dstIndex, cur[0], cur[1], cur[2], c);
+                    // mvp pairing: which transform is active for THIS load (identity =
+                    // the engine's CPU-projected screen-space path).
+                    fprintf(stderr, "[wcw2k][vtx] addr=0x%08X n=%u dst=%u xyz0=(%d,%d,%d) chg=%u mvpt=(%.1f,%.1f,%.1f) mvpd=(%.3f,%.3f,%.3f)\n",
+                            rdramAddress, vtxCount, dstIndex, cur[0], cur[1], cur[2], c,
+                            (float)modelViewProjMatrix[3][0], (float)modelViewProjMatrix[3][1], (float)modelViewProjMatrix[3][2],
+                            (float)modelViewProjMatrix[0][0], (float)modelViewProjMatrix[1][1], (float)modelViewProjMatrix[2][2]);
                 }
             }
         }
