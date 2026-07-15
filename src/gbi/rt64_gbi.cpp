@@ -483,12 +483,12 @@ namespace RT64 {
             return nullptr;
         }
 
-        // [wcw] DIAGNOSTIC: report which GBI the ucode hash matched.
-        fprintf(stderr, "[wcw][gbi] matched ucode: name='%s' enum=%d (text=0x%X data=0x%X)\n",
-            matchingInstance->name, (int)matchingInstance->ucode, textAddress, dataAddress);
-
         GBI &gbi = gbiCache[uint32_t(matchingInstance->ucode)];
         if (gbi.ucode == GBIUCode::Unknown) {
+            // [wcw] DIAGNOSTIC: report which GBI the ucode hash matched — once per ucode
+            // (this function runs per RSP task; the unconditional print spammed user logs).
+            fprintf(stderr, "[wcw][gbi] matched ucode: name='%s' enum=%d (text=0x%X data=0x%X)\n",
+                matchingInstance->name, (int)matchingInstance->ucode, textAddress, dataAddress);
             gbi.ucode = matchingInstance->ucode;
 
             // Common RDP functions.

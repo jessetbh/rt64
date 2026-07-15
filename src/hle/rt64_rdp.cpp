@@ -404,7 +404,7 @@ namespace RT64 {
         // [wcw] DIAGNOSTIC: checksum the source RDRAM bytes of texture loads. If sums are zero,
         // the game's texture data in RDRAM is zeros (game-side data bug, e.g. decompression);
         // if nonzero, texture data is real and the problem is downstream in the texture path.
-        { static int tl = 0; if ((tl++ % 500) == 0) {
+        { static int tl = 0; static const bool wcwTrace = getenv("WCW_TRACE") != nullptr; if (wcwTrace && (tl++ % 500) == 0) {
             uint32_t sum = 0; for (uint32_t i = 0; i < 256; i++) { sum += RDRAM[(textureStart + i) ^ 3]; }
             fprintf(stderr, "[wcw][tmemload#%d] src=0x%X words=%u rows=%u first256sum=0x%X\n", tl, textureStart, wordsPerRow, rowCount, sum); } }
         
@@ -782,7 +782,7 @@ namespace RT64 {
 
     void RDP::loadTLUT(uint8_t tile, uint16_t uls, uint16_t ult, uint16_t lrs, uint16_t lrt) {
         // [wcw] DIAGNOSTIC: does the game ever load a palette via the proper TLUT command?
-        { static int lt = 0; if ((lt++ % 200) == 0) fprintf(stderr, "[wcw][loadtlut#%d] tile=%d uls=%d lrs=%d (tmem=0x%X)\n", lt, (int)tile, uls>>2, lrs>>2, (unsigned)tiles[tile].tmem << 3); }
+        { static int lt = 0; static const bool wcwTrace = getenv("WCW_TRACE") != nullptr; if (wcwTrace && (lt++ % 200) == 0) fprintf(stderr, "[wcw][loadtlut#%d] tile=%d uls=%d lrs=%d (tmem=0x%X)\n", lt, (int)tile, uls>>2, lrs>>2, (unsigned)tiles[tile].tmem << 3); }
 #ifdef LOG_LOAD_METHODS
         RT64_LOG_PRINTF("RDP::loadTLUT(tile %u, uls %u, ult %u, lrs %u, lrt %u)", tile, uls, ult, lrs, lrt);
 #endif
@@ -981,7 +981,7 @@ namespace RT64 {
     
     void RDP::setScissor(uint8_t mode, int32_t ulx, int32_t uly, int32_t lrx, int32_t lry, const ExtendedAlignment &extAlignment) {
         // [wcw] DIAGNOSTIC: log scissor settings (empty scissor clips ALL draws -> black target).
-        { static int sc = 0; if ((sc++ % 200) == 0) fprintf(stderr, "[wcw][scissor#%d] mode=%d (%d,%d)-(%d,%d)\n", sc, (int)mode, ulx>>2, uly>>2, lrx>>2, lry>>2); }
+        { static int sc = 0; static const bool wcwTrace = getenv("WCW_TRACE") != nullptr; if (wcwTrace && (sc++ % 200) == 0) fprintf(stderr, "[wcw][scissor#%d] mode=%d (%d,%d)-(%d,%d)\n", sc, (int)mode, ulx>>2, uly>>2, lrx>>2, lry>>2); }
         FixedRect &scissorRect = scissorRectStack[scissorStackSize - 1];
         scissorRect.ulx = std::clamp(movedFromOrigin(ulx + extAlignment.leftOffset, extAlignment.leftOrigin), extAlignment.leftBound, extAlignment.rightBound);
         scissorRect.uly = std::clamp(uly + extAlignment.topOffset, extAlignment.topBound, extAlignment.bottomBound);
@@ -1045,7 +1045,7 @@ namespace RT64 {
         RT64_LOG_PRINTF("RDP::fillRect(ulx %d, uly %d, lrx %d, lry %d)", ulx, uly, lrx, lry);
 #   endif
         // [wcw] DIAGNOSTIC: count fill rects (clears) + log fill color occasionally.
-        { static int fr = 0; if ((fr++ % 120) == 0) fprintf(stderr, "[wcw][fillrect#%d] (%d,%d)-(%d,%d) fillColor=0x%08X\n", fr, ulx>>2, uly>>2, lrx>>2, lry>>2, fillColorStack[fillColorStackSize - 1]); }
+        { static int fr = 0; static const bool wcwTrace = getenv("WCW_TRACE") != nullptr; if (wcwTrace && (fr++ % 120) == 0) fprintf(stderr, "[wcw][fillrect#%d] (%d,%d)-(%d,%d) fillColor=0x%08X\n", fr, ulx>>2, uly>>2, lrx>>2, lry>>2, fillColorStack[fillColorStackSize - 1]); }
 
         // Filter out incorrect rectangles.
         if ((lrx < ulx) || (lry < uly)) {
@@ -1333,7 +1333,7 @@ namespace RT64 {
         // [wcw] DIAGNOSTIC: count texture rects (2D blits — logos/menus draw with these), and log
         // the color state — if prim/env are black and the combiner multiplies by them, everything
         // draws black (stuck intro fade).
-        { static int tr = 0; if ((tr++ % 200) == 0) {
+        { static int tr = 0; static const bool wcwTrace = getenv("WCW_TRACE") != nullptr; if (wcwTrace && (tr++ % 200) == 0) {
             const hlslpp::float4& pc = primColorStack[primColorStackSize - 1];
             const hlslpp::float4& ec = envColorStack[envColorStackSize - 1];
             fprintf(stderr, "[wcw][texrect#%d] (%d,%d)-(%d,%d) tilefmt=%d tilesiz=%d tlut=0x%X prim=(%.2f,%.2f,%.2f,%.2f) cc=0x%08X%08X\n",

@@ -133,8 +133,9 @@ namespace RT64 {
             // presenting. WCW's fb RDRAM is never written back by RT64, so a WriteChanges op
             // aimed at a presented fb would splat stale/black RAM over the rendered frame.
             { static int fo = 0;
+              static const bool wcwTrace = getenv("WCW_TRACE") != nullptr;
               for (const auto &op : present.fbOperations) {
-                  if (fo < 40 || (fo % 60) == 0) fprintf(stderr, "[wcw][fbop#%d] type=%d addr=0x%X\n",
+                  if (wcwTrace && (fo < 40 || (fo % 60) == 0)) fprintf(stderr, "[wcw][fbop#%d] type=%d addr=0x%X\n",
                       fo, (int)op.type, (op.type == FramebufferOperation::Type::WriteChanges) ? op.writeChanges.address : 0);
                   fo++;
               } }
@@ -221,7 +222,7 @@ namespace RT64 {
                 RenderTargetKey colorTargetKey(presentFb->addressStart, presentFb->width, presentFb->siz, Framebuffer::Type::Color);
                 colorTarget = &targetManager.get(colorTargetKey, true);
                 // [wcw] DIAGNOSTIC: report whether the present found a non-empty rendered target.
-                { static int pn = 0; if ((pn++ % 61) == 0) fprintf(stderr, "[wcw][blit#%d] addr=0x%X w=%d siz=%d empty=%d interp=%d\n",
+                { static int pn = 0; static const bool wcwTrace = getenv("WCW_TRACE") != nullptr; if (wcwTrace && (pn++ % 61) == 0) fprintf(stderr, "[wcw][blit#%d] addr=0x%X w=%d siz=%d empty=%d interp=%d\n",
                     pn, presentFb->addressStart, (int)presentFb->width, (int)presentFb->siz, (int)colorTarget->isEmpty(), (int)presentFb->interpolationEnabled); }
                 if (!colorTarget->isEmpty()) {
                     wcw_reason = 1;
@@ -253,7 +254,7 @@ namespace RT64 {
                 // render target down to native size (destroying the rendered hi-res texture),
                 // clears it, and uploads the RDRAM copy (black — RT64 never writes back), which
                 // would wipe the rendered frame and explain the black screen.
-                { static int sp = 0; if ((sp++ % 30) == 0) fprintf(stderr, "[wcw][scratch-present#%d] fbAddr=0x%X (fb lookup MISSED)\n", sp, fbAddress); }
+                { static int sp = 0; static const bool wcwTrace = getenv("WCW_TRACE") != nullptr; if (wcwTrace && (sp++ % 30) == 0) fprintf(stderr, "[wcw][scratch-present#%d] fbAddr=0x%X (fb lookup MISSED)\n", sp, fbAddress); }
                 wcw_reason = 3;
 
                 // Use a scratch framebuffer to upload the RAM to the render target.

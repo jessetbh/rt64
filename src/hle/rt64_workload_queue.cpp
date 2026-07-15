@@ -958,7 +958,7 @@ namespace RT64 {
                 // [wcw] DIAGNOSTIC: count workloads + checksum CPU-side draw data. If posFloats /
                 // rdpParams are zeros, the interpreter->drawData conversion is broken; if real,
                 // the GPU upload/consumption is the break.
-                { static int wl = 0; if ((wl++ % 61) == 0) {
+                { static int wl = 0; static const bool wcwTrace = getenv("WCW_TRACE") != nullptr; if (wcwTrace && (wl++ % 61) == 0) {
                     const auto& dd = workload.drawData;
                     float posSum = 0.0f; for (size_t i = 0; i < dd.posFloats.size() && i < 256; i++) posSum += fabsf(dd.posFloats[i]);
                     // [wcw] also checksum the RAW TRI (rect) vertices — the title screen is texrects,

@@ -1140,7 +1140,7 @@ namespace RT64 {
     void RSP::drawIndexedTri(uint32_t a, uint32_t b, uint32_t c, bool rawGlobalIndices) {
         // [wcw] DIAGNOSTIC: count triangle submissions (prints once per ~2000 tris; if this never
         // prints, the game's display lists contain no geometry at all).
-        { static int tris = 0; if ((tris++ % 2000) == 0) fprintf(stderr, "[wcw][tri] total tris so far: %d\n", tris); }
+        { static int tris = 0; static const bool wcwTrace = getenv("WCW_TRACE") != nullptr; if (wcwTrace && (tris++ % 2000) == 0) fprintf(stderr, "[wcw][tri] total tris so far: %d\n", tris); }
         // Copy mode is not supported when drawing regular tris and crashes the hardware.
         const uint32_t cycleType = state->rdp->otherMode.cycleType();
         assert(cycleType != G_CYC_COPY);

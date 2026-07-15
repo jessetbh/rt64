@@ -79,7 +79,7 @@ namespace RT64 {
         pushConstants.gamma = p.vi->gamma();
         // [wcw] DIAGNOSTIC: the shader samples with a BORDER sampler (out of range = black).
         // Log the size math to catch a VI-vs-texture mismatch producing an all-border quad.
-        { static int vr = 0; if ((vr++ % 120) == 0) {
+        { static int vr = 0; static const bool wcwTrace = getenv("WCW_TRACE") != nullptr; if (wcwTrace && (vr++ % 120) == 0) {
             hlslpp::uint2 fbsz = p.vi->fbSize();
             fprintf(stderr, "[wcw][viblit#%d] vi.fbSize=%ux%u videoRes=(%.0f,%.0f) texRes=(%.0f,%.0f) gamma=%d\n",
                 vr, (unsigned)fbsz.x, (unsigned)fbsz.y,
