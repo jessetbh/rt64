@@ -6,6 +6,7 @@
 
 #include <cassert>
 #include <cinttypes>
+#include <set>
 
 #include "im3d/im3d.h"
 #include "im3d/im3d_math.h"
@@ -1162,6 +1163,22 @@ namespace RT64 {
 
                         depthFb = &framebufferManager.get(depthImg.address, G_IM_SIZ_16b, colorImg.width, colorHeight);
                         depthFb->everUsedAsDepth = true;
+                    }
+
+                    // [wcw diag] WCW_FBLOG=1: log each distinct framebuffer pair (color/depth
+                    // image address, size) — for the No Mercy match-heap-vs-stale-framebuffer
+                    // writeback hunt. Dedup by address pair, print first sightings only.
+                    {
+                        static const bool wcwFbLog = getenv("WCW_FBLOG") != nullptr;
+                        if (wcwFbLog) {
+                            static std::set<uint64_t> seenPairs;
+                            const uint64_t key = (uint64_t(colorImg.address) << 32) | depthImg.address;
+                            if (seenPairs.insert(key).second) {
+                                fprintf(stderr, "[wcw][fbpair] color=0x%08X siz=%u w=%u h=%u depth=0x%08X dW=%u\n",
+                                    colorImg.address, colorImg.siz, colorImg.width, colorHeight,
+                                    depthImg.address, depthWriteWidth);
+                            }
+                        }
                     }
 
                     colorRowStart = fbPair.drawColorRect.top(false);
