@@ -146,7 +146,9 @@ namespace RT64 {
     // entityAddr is the object's own local-matrix address: a stable per-object identity across frames.
     struct WcwLocalMatrixEntry { hlslpp::float4x4 pureLocal; hlslpp::float4x4 camera; uint32_t entityAddr = 0; };
     static std::unordered_map<uint32_t, WcwLocalMatrixEntry> g_wcwLocalMatrixByAddr;
-    static constexpr uint32_t kWcwCameraMatrixAddr = 0x80062BA8;
+    // [pr5-test] The camera address differs per game (NoMercy 0x80062BA8, Wm2k 0x80057198,
+    // VPW2 0x80056F78). Each game's hook already filters on its own camera address before
+    // calling in, so opBAddr is not re-checked here.
 
     static hlslpp::float4x4 wcwMatrixFromRowMajor16(const float *m16) {
         hlslpp::float4x4 m;
@@ -160,7 +162,7 @@ namespace RT64 {
 
     extern "C" void wcw_nomercy_process_multiply(uint32_t destAddr, uint32_t opBAddr, uint32_t srcAddr, const float *aMatrix16, const float *bMatrix16) {
         std::lock_guard<std::mutex> lock(g_wcwLocalMatrixMutex);
-        if (opBAddr == kWcwCameraMatrixAddr && bMatrix16 != nullptr) {
+        if (bMatrix16 != nullptr) {
             // Only accept a real perspective camera matrix.
             const float row3_2 = bMatrix16[14];
             const float row3_3 = bMatrix16[15];
