@@ -1770,6 +1770,20 @@ namespace RT64 {
                             break;
                         }
 
+                        // WCW_RT_DUMP also lists the draws the translucency filter leaves out.
+                        if (wcwRtProj && (call.callDesc.triangleCount > 0) && wcwBlendsWithMemory(call.callDesc.otherMode)) {
+                            static const int wcwDumpExcludedAt = getenv("WCW_RT_DUMP") ? atoi(getenv("WCW_RT_DUMP")) : -1;
+                            static int wcwDumpExcludedCount = 0;
+                            if ((wcwDumpExcludedAt >= 0) && (wcwRtPresentCounter >= wcwDumpExcludedAt) && (wcwDumpExcludedCount++ < 400)) {
+                                const uint32_t v = drawData.faceIndices[call.meshDesc.faceIndicesStart];
+                                const hlslpp::float4 objPos(drawData.posFloats[v * 3 + 0], drawData.posFloats[v * 3 + 1], drawData.posFloats[v * 3 + 2], 1.0f);
+                                const hlslpp::float4 wp = hlslpp::mul(objPos, hlslpp::float4x4(drawData.worldTransforms[drawData.worldIndices[v]]));
+                                fprintf(stderr, "[wcw rt dump] EXCLUDED call %u tris=%u world=(%.1f,%.1f,%.1f) om=0x%08X/0x%08X cc=0x%08X/0x%08X\n",
+                                    d, call.callDesc.triangleCount, (float)wp.x, (float)wp.y, (float)wp.z, call.callDesc.otherMode.L, call.callDesc.otherMode.H,
+                                    call.callDesc.colorCombiner.L, call.callDesc.colorCombiner.H);
+                            }
+                        }
+
                         // AKI sets forceBlend on opaque geometry too, so translucency is read from the blender
                         // instead: draws that blend with framebuffer memory (blob shadows, decals, smoke) are
                         // left out; opaque (IN*0 + IN*1) and alpha-tested geometry is gathered.
