@@ -121,12 +121,14 @@ namespace RT64 {
         this->faceIndicesSize = faceIndicesSize;
     }
 
-    void WcwRaytracer::addMesh(uint32_t faceIndicesStart, uint32_t triangleCount, uint32_t vertexCount) {
+    void WcwRaytracer::addMesh(uint32_t faceIndicesStart, uint32_t triangleCount, uint32_t vertexCount, bool culled) {
         const uint32_t IndexStride = sizeof(uint32_t);
         const uint32_t PosStride = sizeof(float) * 4;
         meshes.emplace_back(RenderBufferReference(faceIndicesBuffer, faceIndicesStart * IndexStride), RenderBufferReference(worldPosBuffer, 0),
-            RenderFormat::R32_UINT, RenderFormat::R32G32B32_FLOAT, triangleCount * 3, vertexCount, PosStride, true);
-        meshIndexStarts.emplace_back(faceIndicesStart);
+            RenderFormat::R32_UINT, RenderFormat::R32G32B32_FLOAT, triangleCount * 3, vertexCount, PosStride, !culled);
+
+        // Culled draws are non-opaque so the trace shader sees their candidates; bit 31 flags them.
+        meshIndexStarts.emplace_back(faceIndicesStart | (culled ? WCW_RT_MESH_CULLED : 0u));
     }
 
     void WcwRaytracer::recordBuild(RenderWorker *worker) {
@@ -260,7 +262,8 @@ namespace RT64 {
         params.shadowStrength = envFloat(getenv("WCW_RT_SHADOW"), 0.45f);
         params.lightSpread = envFloat(getenv("WCW_RT_LIGHT_SPREAD"), 200.0f);
         params.lightCount = uint32_t(envFloat(getenv("WCW_RT_LIGHTS"), 4.0f));
-        params.padding = { 0.0f, 0.0f };
+        params.cullSign = envFloat(getenv("WCW_RT_CULL_SIGN"), 1.0f);
+        params.padding = 0.0f;
         void *paramsBytes = paramsBuffer->map();
         memcpy(paramsBytes, &params, sizeof(params));
         paramsBuffer->unmap();

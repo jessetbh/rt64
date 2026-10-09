@@ -14,6 +14,9 @@
 #define WCW_RT_MODE_HIT_MESH 3
 #define WCW_RT_MODE_SHADOW_OCCLUDER 4
 
+// Bit 31 of a mesh index start: N64 face culling is on for that draw.
+#define WCW_RT_MESH_CULLED 0x80000000u
+
 #ifdef HLSL_CPU
 namespace interop {
 #endif
@@ -29,7 +32,9 @@ namespace interop {
         // Lights sit at lightPosition +- lightSpread on X/Z (a ring lighting rig); 1 or 4 lights.
         float lightSpread;
         uint lightCount;
-        float2 padding;
+        // +1 or -1: which winding counts as front-facing for culled draws (WCW_RT_CULL_SIGN).
+        float cullSign;
+        float padding;
     };
 #ifdef HLSL_CPU
 };

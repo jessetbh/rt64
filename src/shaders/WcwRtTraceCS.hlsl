@@ -16,8 +16,17 @@ StructuredBuffer<uint> gFaceIndices : register(t3);
 StructuredBuffer<uint> gMeshIndexStarts : register(t4);
 RWTexture2D<float4> gOutput : register(u5);
 
+// Unnormalized: the winding (v0, v1, v2) is kept, which back-face culling relies on.
+float3 triangleCross(uint geometryIndex, uint primitiveIndex) {
+    const uint base = (gMeshIndexStarts[geometryIndex] & ~WCW_RT_MESH_CULLED) + primitiveIndex * 3;
+    const float3 v0 = gWorldPos[gFaceIndices[base + 0]].xyz;
+    const float3 v1 = gWorldPos[gFaceIndices[base + 1]].xyz;
+    const float3 v2 = gWorldPos[gFaceIndices[base + 2]].xyz;
+    return cross(v1 - v0, v2 - v0);
+}
+
 float3 triangleNormal(uint geometryIndex, uint primitiveIndex) {
-    const uint base = gMeshIndexStarts[geometryIndex] + primitiveIndex * 3;
+    const uint base = (gMeshIndexStarts[geometryIndex] & ~WCW_RT_MESH_CULLED) + primitiveIndex * 3;
     const float3 v0 = gWorldPos[gFaceIndices[base + 0]].xyz;
     const float3 v1 = gWorldPos[gFaceIndices[base + 1]].xyz;
     const float3 v2 = gWorldPos[gFaceIndices[base + 2]].xyz;
@@ -53,9 +62,19 @@ void CSMain(uint2 pixel : SV_DispatchThreadID) {
     ray.TMin = 0.0f;
     ray.TMax = length(rayEnd - rayStart);
 
-    RayQuery<RAY_FLAG_FORCE_OPAQUE> primary;
+    // Culled draws are non-opaque: commit their candidates only when front-facing, matching
+    // the raster (N64 front faces wind counter-clockwise as seen from the camera).
+    RayQuery<RAY_FLAG_NONE> primary;
     primary.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, ray);
-    primary.Proceed();
+    while (primary.Proceed()) {
+        if (primary.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE) {
+            const float3 n = triangleCross(primary.CandidateGeometryIndex(), primary.CandidatePrimitiveIndex());
+            if ((dot(n, ray.Direction) * gParams.cullSign) < 0.0f) {
+                primary.CommitNonOpaqueTriangleHit();
+            }
+        }
+    }
+
     if (primary.CommittedStatus() != COMMITTED_TRIANGLE_HIT) {
         gOutput[pixel] = float4(1.0f, 1.0f, 1.0f, 0.0f);
         return;

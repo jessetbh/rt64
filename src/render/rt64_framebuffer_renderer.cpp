@@ -1790,7 +1790,7 @@ namespace RT64 {
                         if (wcwRtProj && (instanceDrawCall.type == InstanceDrawCall::Type::IndexedTriangles) && !triangles.vertexTestZ &&
                             (call.callDesc.triangleCount > 0) && !wcwBlendsWithMemory(call.callDesc.otherMode))
                         {
-                            wcwRaytracer->addMesh(call.meshDesc.faceIndicesStart, call.callDesc.triangleCount, vertexCount);
+                            wcwRaytracer->addMesh(call.meshDesc.faceIndicesStart, call.callDesc.triangleCount, vertexCount, call.shaderDesc.flags.culling);
 
                             // WCW_RT_DUMP=<present>: dump every gathered call of the first traced scene at that present.
                             static const int wcwDumpAt = getenv("WCW_RT_DUMP") ? atoi(getenv("WCW_RT_DUMP")) : -1;

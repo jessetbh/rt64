@@ -88,7 +88,8 @@ namespace RT64 {
         bool wantsScene() const;
         void beginScene(const hlslpp::float4x4 &view, const hlslpp::float4x4 &proj, const RenderViewport &viewport,
             const RenderBuffer *worldPosBuffer, uint64_t worldPosSize, const RenderBuffer *faceIndicesBuffer, uint64_t faceIndicesSize);
-        void addMesh(uint32_t faceIndicesStart, uint32_t triangleCount, uint32_t vertexCount);
+        // culled: the draw has N64 face culling on, so primary rays skip its back faces.
+        void addMesh(uint32_t faceIndicesStart, uint32_t triangleCount, uint32_t vertexCount, bool culled);
         void recordBuild(RenderWorker *worker);
         void recordTrace(RenderWorker *worker, RenderTarget *colorTarget);
         void recordComposite(RenderWorker *worker);
