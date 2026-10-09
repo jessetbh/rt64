@@ -72,6 +72,7 @@ namespace RT64 {
         projectionIndex = -1;
         projectionMatrixChanged = false;
         projectionMatrixInversed = false;
+        wcwCameraLoaded = false;
         viewportChanged = false;
         modelViewProjMatrix = hlslpp::float4x4(0.0f);
         modelViewProjChanged = false;
@@ -380,11 +381,66 @@ namespace RT64 {
         rsp.lookAtChanged = true;
     }
 
+    // [wcw rt] AKI-engine games compose every MVP on the CPU and never load a projection, so
+    // RT64 only ever sees clip-space "world" transforms. With WCW_RT=1, a game patch hands
+    // the real camera over through G_EX_SETVIEWMATRIXFLOAT_V1 / G_EX_SETPROJMATRIXFLOAT_V1 at
+    // the start of each frame's display list, and while the projection stack has never been
+    // loaded (the forceMatrix-only signature) those commands load it instead of setting the
+    // extended correction matrices. Forced MVPs then decompose as world = MVP * inv(V * P):
+    // true model matrices, a real camera, and an unchanged raster result (viewProj * world == MVP).
+    bool RSP::setWcwCameraMatrix(uint32_t address, bool view) {
+        const int top = projectionMatrixStackSize - 1;
+        if (!wcwCameraLoaded && !isMatrixZero(viewProjMatrixStack[top])) {
+            // The game loads its own projection: keep upstream semantics.
+            return false;
+        }
+
+        // Without WCW_RT the camera is consumed and ignored, so the default path keeps the
+        // identity-VP [wcw fix] behavior and never touches the extended correction matrices.
+        static const bool wcwRt = getenv("WCW_RT") != nullptr;
+        if (!wcwRt) {
+            return true;
+        }
+
+        if (!wcwCameraLoaded) {
+            viewMatrixStack[top] = hlslpp::float4x4::identity();
+            projMatrixStack[top] = hlslpp::float4x4::identity();
+            wcwCameraLoaded = true;
+        }
+
+        const uint32_t rdramAddress = fromSegmentedMasked(address);
+        const float *floatMatrix = reinterpret_cast<const float *>(state->fromRDRAM(rdramAddress));
+        hlslpp::float4x4 &dst = view ? viewMatrixStack[top] : projMatrixStack[top];
+        for (uint32_t j = 0; j < 4; j++) {
+            for (uint32_t i = 0; i < 4; i++) {
+                dst[j][i] = floatMatrix[j * 4 + i];
+            }
+        }
+
+        viewProjMatrixStack[top] = hlslpp::mul(viewMatrixStack[top], projMatrixStack[top]);
+        if (!view) {
+            projectionMatrixSegmentedAddressStack[top] = address;
+            projectionMatrixPhysicalAddressStack[top] = rdramAddress;
+        }
+
+        projectionMatrixChanged = true;
+        projectionMatrixInversed = false;
+        return true;
+    }
+
     void RSP::setProjectionMatrixFloat(uint32_t address) {
+        if (setWcwCameraMatrix(address, false)) {
+            return;
+        }
+
         setExtendedMatrixFloat(*this, address, extended.projMatrix, extended.invProjMatrix);
     }
 
     void RSP::setViewMatrixFloat(uint32_t address) {
+        if (setWcwCameraMatrix(address, true)) {
+            return;
+        }
+
         setExtendedMatrixFloat(*this, address, extended.viewMatrix, extended.invViewMatrix);
     }
 
@@ -627,6 +683,29 @@ namespace RT64 {
 
             curTransformIndex = static_cast<uint16_t>(worldTransforms.size());
             worldTransforms.emplace_back(hlslpp::mul(hlslpp::mul(modelViewProjMatrix, invViewProjMatrixStack[projectionMatrixStackSize - 1]), extended.viewProjMatrix));
+
+            // [wcw rt] WCW_RT_LOG=1: sample decomposed world translations (static scenery must
+            // stay put while the camera moves when the camera hand-off is correct).
+            static const bool wcwRtLog = getenv("WCW_RT_LOG") != nullptr;
+            if (wcwRtLog && wcwCameraLoaded) {
+                static uint32_t wcwRtLogCount = 0;
+                if ((wcwRtLogCount++ % 997) == 0) {
+                    const hlslpp::float4x4 &w = worldTransforms.back();
+                    const hlslpp::float4x4 invView = hlslpp::inverse(viewMatrixStack[projectionMatrixStackSize - 1]);
+                    const hlslpp::float4x4 re = hlslpp::mul(w, viewProjMatrixStack[projectionMatrixStackSize - 1]);
+                    float err = 0.0f, mag = 0.0f;
+                    for (uint32_t j = 0; j < 4; j++) {
+                        for (uint32_t i = 0; i < 4; i++) {
+                            err = std::max(err, std::abs(float(re[j][i]) - float(modelViewProjMatrix[j][i])));
+                            mag = std::max(mag, std::abs(float(modelViewProjMatrix[j][i])));
+                        }
+                    }
+
+                    fprintf(stderr, "[wcw rt] world.t=(%.1f,%.1f,%.1f) world.sx=%.3f mvpErr=%g/%g eye=(%.1f,%.1f,%.1f)\n",
+                        (float)w[3][0], (float)w[3][1], (float)w[3][2], (float)hlslpp::length(w[0].xyz), err, mag,
+                        (float)invView[3][0], (float)invView[3][1], (float)invView[3][2]);
+                }
+            }
         }
 
         if (addWorldTransform) {

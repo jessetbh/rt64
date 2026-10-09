@@ -149,6 +149,10 @@ namespace RT64 {
         uint8_t curLightCount;
         bool projectionMatrixChanged;
         bool projectionMatrixInversed;
+
+        // [wcw rt] Set once a forceMatrix-only game has supplied its real camera through
+        // the float view/projection commands this display list (see setWcwCameraMatrix).
+        bool wcwCameraLoaded;
         bool viewportChanged;
         hlslpp::float4x4 modelViewProjMatrix;
         bool modelViewProjChanged;
@@ -247,6 +251,7 @@ namespace RT64 {
         void insertMatrix(uint32_t address, uint32_t value);
         void forceMatrix(uint32_t address);
         void setProjectionMatrixFloat(uint32_t address);
+        bool setWcwCameraMatrix(uint32_t address, bool view);
         void setViewMatrixFloat(uint32_t address);
         void computeModelViewProj();
         void specialComputeModelViewProj();
