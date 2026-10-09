@@ -394,7 +394,8 @@ namespace RT64 {
                 rspProcessor->process(rspParams);
             }
 
-            const bool processWorldVertices = prevFrame.matched;
+            // [wcw rt] The hybrid ray tracer builds its acceleration structures from world positions every frame.
+            const bool processWorldVertices = prevFrame.matched || WcwRaytracer::enabledByEnv();
             if (processWorldVertices) {
                 workload.resetWorldOutputBuffers();
 
@@ -899,6 +900,22 @@ namespace RT64 {
             queryPool->queryResults();
             const uint64_t *frameTimestamps = queryPool->getResults();
             rendererGPUProfiler.log(double(frameTimestamps[1] - frameTimestamps[0]) / 1000000.0);
+
+            // [wcw rt] WCW_GPU_LOG=1: average/max GPU time per workload every 300 workloads.
+            static const bool wcwGpuLog = getenv("WCW_GPU_LOG") != nullptr;
+            if (wcwGpuLog) {
+                static double wcwGpuSum = 0.0, wcwGpuMax = 0.0;
+                static uint32_t wcwGpuCount = 0;
+                const double gpuMs = double(frameTimestamps[1] - frameTimestamps[0]) / 1000000.0;
+                wcwGpuSum += gpuMs;
+                wcwGpuMax = std::max(wcwGpuMax, gpuMs);
+                if (++wcwGpuCount == 300) {
+                    fprintf(stderr, "[wcw gpu] workload GPU time avg=%.3f ms max=%.3f ms (300 workloads)\n", wcwGpuSum / wcwGpuCount, wcwGpuMax);
+                    wcwGpuSum = 0.0;
+                    wcwGpuMax = 0.0;
+                    wcwGpuCount = 0;
+                }
+            }
 
             // Indicate to the texture cache it's safe to delete the textures if no locks are active.
             ext.textureCache->decrementLock();

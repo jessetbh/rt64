@@ -440,6 +440,7 @@ namespace RT64 {
                     bool wcwDoRead = false;
                     if (wcwLum) {
                         wcwPresentN++;
+                        wcwRtPresentCounter = wcwPresentN;
                         if (wcwPresentN >= 240 && wcwPresentN <= wcwLumEnd) {
                             uint32_t w = ext.swapChain->getWidth(), h = ext.swapChain->getHeight();
                             uint32_t row = (w + 63) & ~63u;

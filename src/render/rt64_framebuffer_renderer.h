@@ -23,6 +23,7 @@
 #include "rt64_render_target.h"
 #include "rt64_rsp_processor.h"
 #include "rt64_vertex_processor.h"
+#include "rt64_wcw_raytracer.h"
 
 #if RT_ENABLED
 #   include "rt64_raytracing_resources.h"
@@ -48,6 +49,9 @@ namespace RT64 {
         RenderFramebufferStorage *fbStorage = nullptr;
         std::vector<RasterScene> rasterScenes;
         std::vector<SceneIndexPair> sceneIndices;
+
+        // [wcw rt] Index into sceneIndices after which the hybrid ray tracing pass runs (-1: none).
+        int32_t wcwRtSceneSlot = -1;
 #   if RT_ENABLED
         std::vector<RaytracingScene> rtScenes;
 #   endif
@@ -110,6 +114,7 @@ namespace RT64 {
         std::unique_ptr<RaytracingResources> rtResources;
         bool rtSupport = false;
 #   endif
+        std::unique_ptr<WcwRaytracer> wcwRaytracer;
 
         struct Framebuffer {
             std::unique_ptr<RenderBuffer> paramsBuffer;

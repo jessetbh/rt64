@@ -50,6 +50,18 @@ namespace interop {
 };
 
 namespace RT64 {
+    static const void *wcwDumpScene = nullptr;
+
+    // [wcw rt] True when either blender cycle reads framebuffer memory (G_BL_CLR_MEM = 1 in the
+    // P or M input of othermode L bits 16-31), i.e. the draw is translucent.
+    static bool wcwBlendsWithMemory(const interop::OtherMode &otherMode) {
+        const uint32_t blender = otherMode.L >> 16;
+        const uint32_t p1 = (blender >> 14) & 0x3;
+        const uint32_t p2 = (blender >> 12) & 0x3;
+        const uint32_t m1 = (blender >> 6) & 0x3;
+        const uint32_t m2 = (blender >> 4) & 0x3;
+        return (p1 == 1) || (p2 == 1) || (m1 == 1) || (m2 == 1);
+    }
     // Helper functions.
     
     RenderRect convertFixedRect(FixedRect rect, hlslpp::float2 resScale, int32_t fbWidth, float aspectRatioScale, float extOriginPercentage, int32_t horizontalMisalignment, uint16_t leftOrigin, uint16_t rightOrigin) {
@@ -152,6 +164,12 @@ namespace RT64 {
         shaderUploader = std::make_unique<BufferUploader>(worker->device);
         descCommonSet = std::make_unique<FramebufferRendererDescriptorCommonSet>(shaderLibrary->samplerLibrary, worker->device->getCapabilities().raytracing, worker->device);
 
+        // [wcw rt] Hybrid ray tracing (WCW_RT=1, D3D12 + DXR 1.1 only).
+        if (rtSupport && WcwRaytracer::enabledByEnv()) {
+            const RenderShaderFormat wcwShaderFormat = (graphicsAPI == UserConfiguration::GraphicsAPI::D3D12) ? RenderShaderFormat::DXIL : RenderShaderFormat::SPIRV;
+            wcwRaytracer = std::make_unique<WcwRaytracer>(worker->device, wcwShaderFormat);
+        }
+
 #   if RT_ENABLED
         if (rtSupport) {
             this->rtSupport = rtSupport;
@@ -172,6 +190,10 @@ namespace RT64 {
         hitGroupVector.clear();
         renderIndicesVector.clear();
         rspSmoothNormalVector.clear();
+        if (wcwRaytracer != nullptr) {
+            wcwRaytracer->reset();
+        }
+
         frameParams.viewUbershaders = ubershadersVisible;
         frameParams.ditherNoiseStrength = ditherNoiseStrength;
         framebufferCount = 0;
@@ -1226,6 +1248,10 @@ namespace RT64 {
             vertexProcessor->recordCommandList(worker, shaderLibrary, outputBuffers);
         }
 
+        if (wcwRaytracer != nullptr) {
+            wcwRaytracer->recordBuild(worker);
+        }
+
 #   if RT_ENABLED
         if (rtEnabled) {
             assert(rtResources != nullptr);
@@ -1269,6 +1295,7 @@ namespace RT64 {
         worker->commandList->barriers(RenderBarrierStage::GRAPHICS, startBarriers);
 
         bool depthState = false;
+        int32_t wcwSceneCursor = 0;
         worker->commandList->setFramebuffer(targetDrawCall.fbStorage->colorDepthWrite.get());
         for (const auto &pair : targetDrawCall.sceneIndices) {
 #       if RT_ENABLED
@@ -1317,6 +1344,13 @@ namespace RT64 {
                 const RasterScene &rasterScene = targetDrawCall.rasterScenes[pair.first];
                 submitDepthAccess(worker, targetDrawCall.fbStorage, false, depthState);
                 submitRasterScene(worker, framebuffer, targetDrawCall.fbStorage, rasterScene, depthState);
+            }
+
+            // [wcw rt] Hybrid ray tracing pass over the traced projection's raster result.
+            if ((wcwRaytracer != nullptr) && (wcwSceneCursor++ == targetDrawCall.wcwRtSceneSlot)) {
+                wcwRaytracer->recordTrace(worker, targetDrawCall.fbStorage->colorTarget);
+                worker->commandList->setFramebuffer(depthState ? targetDrawCall.fbStorage->colorWriteDepthRead.get() : targetDrawCall.fbStorage->colorDepthWrite.get());
+                wcwRaytracer->recordComposite(worker);
             }
         }
     }
@@ -1450,6 +1484,7 @@ namespace RT64 {
 
         targetDrawCall.fbStorage = p.fbStorage;
         targetDrawCall.sceneIndices.clear();
+        targetDrawCall.wcwRtSceneSlot = -1;
 
         const float SimilarityPercentage = 0.1f; // TODO: Make more strict once VI ratios are in.
         const float scissorRatio = static_cast<float>(fbPair.scissorRect.width(false, true)) / static_cast<float>(fbPair.scissorRect.height(false, true));
@@ -1529,6 +1564,32 @@ namespace RT64 {
                 }
 
                 viewportClip = convertViewportRect(viewport.rect(viewportClipRatios), p.resolutionScale, p.fbWidth, projInvRatioScale, extOriginPercentage, 0.0f, viewportOrigin, viewportOrigin);
+            }
+
+            // [wcw rt] The first perspective projection becomes the traced scene. (AKI games draw
+            // without the Z-buffer, back to front, so depth writes can't identify the 3D scene.)
+            const bool wcwRtProj = (wcwRaytracer != nullptr) && wcwRaytracer->wantsScene() && (proj.type == Projection::Type::Perspective) &&
+                (p.fbStorage->colorTarget != nullptr) && proj.usesViewport();
+            {
+                static const bool wcwRtLog = getenv("WCW_RT_LOG") != nullptr;
+                static uint32_t wcwProjLogCount = 0;
+                if (wcwRtLog && (wcwRaytracer != nullptr) && ((wcwProjLogCount++ % 200) == 0)) {
+                    fprintf(stderr, "[wcw rt] fb %u proj %u: type=%d depthWrite=%d color=%d usesViewport=%d calls=%u wants=%d\n",
+                        p.fbPairIndex, pr, int(proj.type), fbPair.depthWrite, p.fbStorage->colorTarget != nullptr, proj.usesViewport(), proj.gameCallCount, wcwRaytracer->wantsScene());
+                }
+            }
+
+            if (wcwRtProj) {
+                // The projection processor only fills the modified transforms on some frames.
+                const bool modified = proj.transformsIndex < drawData.modViewTransforms.size();
+                const auto &wcwView = modified ? drawData.modViewTransforms[proj.transformsIndex] : drawData.viewTransforms[proj.transformsIndex];
+                const auto &wcwProj = modified ? drawData.modProjTransforms[proj.transformsIndex] : drawData.projTransforms[proj.transformsIndex];
+                // The real viewport (unit clip ratios), not the guard-band clip rect used for scissoring.
+                const int16_t unitClipRatios[4] = { 1, 1, -1, -1 };
+                const RenderViewport wcwViewport = convertViewportRect(drawData.rspViewports[proj.transformsIndex].rect(unitClipRatios), p.resolutionScale, p.fbWidth,
+                    projInvRatioScale, extOriginPercentage, 0.0f, viewportOrigin, viewportOrigin);
+                wcwRaytracer->beginScene(wcwView, wcwProj, wcwViewport,
+                    worldPosRes, outputBuffers.worldPosBuffer.allocatedSize, indexRes, uint64_t(indexCount) * IndexStride);
             }
 
             for (uint32_t d = 0; (d < proj.gameCallCount) && (globalCallIndex < p.maxGameCall); d++) {
@@ -1709,6 +1770,42 @@ namespace RT64 {
                             break;
                         }
 
+                        // AKI sets forceBlend on opaque geometry too, so translucency is read from the blender
+                        // instead: draws that blend with framebuffer memory (blob shadows, decals, smoke) are
+                        // left out; opaque (IN*0 + IN*1) and alpha-tested geometry is gathered.
+                        if (wcwRtProj && (instanceDrawCall.type == InstanceDrawCall::Type::IndexedTriangles) && !triangles.vertexTestZ &&
+                            (call.callDesc.triangleCount > 0) && !wcwBlendsWithMemory(call.callDesc.otherMode))
+                        {
+                            wcwRaytracer->addMesh(call.meshDesc.faceIndicesStart, call.callDesc.triangleCount, vertexCount);
+
+                            // WCW_RT_DUMP=<present>: dump every gathered call of the first traced scene at that present.
+                            static const int wcwDumpAt = getenv("WCW_RT_DUMP") ? atoi(getenv("WCW_RT_DUMP")) : -1;
+                            static bool wcwDumped = false;
+                            if ((wcwDumpAt >= 0) && (wcwRtPresentCounter >= wcwDumpAt) && (!wcwDumped || (d > 0 && wcwDumpScene == p.curWorkload))) {
+                                wcwDumped = true;
+                                wcwDumpScene = p.curWorkload;
+                                const uint32_t v = drawData.faceIndices[call.meshDesc.faceIndicesStart];
+                                const uint32_t wi = drawData.worldIndices[v];
+                                const auto &w = drawData.worldTransforms[wi];
+                                const auto &rdp = call.callDesc.rdpParams;
+                                fprintf(stderr, "[wcw rt dump] present=%d mesh=%zu call %u tris=%u wIdx=%u w.t=(%.1f,%.1f,%.1f) w.sx=%.3f vtxA=%u primA=%.2f envA=%.2f geo=0x%X om=0x%08X/0x%08X cc=0x%08X/0x%08X tex=%u\n",
+                                    int(wcwRtPresentCounter), wcwRaytracer->meshes.size() - 1, d, call.callDesc.triangleCount, wi, (float)w[3][0], (float)w[3][1], (float)w[3][2],
+                                    std::sqrt(w[0][0] * w[0][0] + w[0][1] * w[0][1] + w[0][2] * w[0][2]), drawData.normColBytes[v * 4 + 3],
+                                    (float)rdp.primColor.w, (float)rdp.envColor.w, call.callDesc.geometryMode, call.callDesc.otherMode.L, call.callDesc.otherMode.H,
+                                    call.callDesc.colorCombiner.L, call.callDesc.colorCombiner.H, call.callDesc.textureOn);
+                                const hlslpp::float4 objPos(drawData.posFloats[v * 3 + 0], drawData.posFloats[v * 3 + 1], drawData.posFloats[v * 3 + 2], 1.0f);
+                                const hlslpp::float4x4 worldM = drawData.worldTransforms[wi];
+                                const hlslpp::float4x4 vpM = drawData.viewProjTransforms[drawData.viewProjIndices[v]];
+                                const hlslpp::float4 wp = hlslpp::mul(objPos, worldM);
+                                const hlslpp::float4 clip = hlslpp::mul(wp, vpM);
+                                const hlslpp::float4 &cpuT = drawData.posTransformed[v];
+                                fprintf(stderr, "[wcw rt dump]   v=%u obj=(%.1f,%.1f,%.1f) world=(%.1f,%.1f,%.1f) ndc=(%.3f,%.3f) posTransformed=(%.1f,%.1f,%.1f,%.1f) screen=(%.1f,%.1f) modifyOps=%zu\n",
+                                    v, (float)objPos.x, (float)objPos.y, (float)objPos.z, (float)wp.x, (float)wp.y, (float)wp.z,
+                                    (float)(clip.x / clip.w), (float)(clip.y / clip.w), (float)cpuT.x, (float)cpuT.y, (float)cpuT.z, (float)cpuT.w,
+                                    (float)drawData.posScreen[v].x, (float)drawData.posScreen[v].y, drawData.modifyPosUints.size() / 2);
+                            }
+                        }
+
                         triangles.scissor = convertFixedRect(call.callDesc.scissorRect, p.resolutionScale, p.fbWidth, invRatioScale, extOriginPercentage, int32_t(horizontalMisalignment), call.callDesc.scissorLeftOrigin, call.callDesc.scissorRightOrigin);
 
                         bool usesViewport = (proj.type == Projection::Type::Perspective) || (proj.type == Projection::Type::Orthographic);
@@ -1784,6 +1881,12 @@ namespace RT64 {
 
                 instanceDrawCallVector.push_back(instanceDrawCall);
                 globalCallIndex++;
+            }
+
+            // [wcw rt] Close the raster scene so the ray tracing pass runs before later (HUD) draws.
+            if (wcwRtProj) {
+                checkRasterScene(rasterScene);
+                targetDrawCall.wcwRtSceneSlot = int32_t(targetDrawCall.sceneIndices.size()) - 1;
             }
         }
 
