@@ -552,6 +552,12 @@ namespace RT64 {
             timingPixels = rectWidth * rectHeight;
             timingFullScreen = boundsFullScreen;
             timingTraceHeight = traceHeight;
+            static const bool traceLog = getenv("WCW_RT_TRACELOG") != nullptr;
+            if (traceLog && ((frameCounter % 100) == 0)) {
+                fprintf(stderr, "[wcw rt trace] frame %llu slot %u target %p %ux%u rect (%u,%u)-(%u,%u) of %ux%u meshes %u tris %u vp=(%.0f,%.0f %.0fx%.0f)\n",
+                    (unsigned long long)frameCounter, currentSlot, (void *)colorTarget, outputWidth, outputHeight, traceRect[0], traceRect[1], traceRect[2], traceRect[3],
+                    traceWidth, traceHeight, timingMeshes, timingTriangles, viewport.x, viewport.y, viewport.width, viewport.height);
+            }
         }
 
         // Shadow mode: temporal resolve of the jittered samples into this slot's history.
