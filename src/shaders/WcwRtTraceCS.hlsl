@@ -331,11 +331,13 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
 
     float lit = 0.0f;
     int occluderId = -1;
-    const uint samples = max(gParams.samplesPerLight, 1);
-    for (uint i = 0; i < lightCount * samples; i++) {
+    // Heavier lights cast proportionally darker shadows, so their sampling noise shows more:
+    // each light gets samples in proportion to its preset weight (key light 2 -> twice the rays).
+    uint i = 0;
+    for (uint l = 0; l < lightCount; l++)
+    for (uint s = 0, samples = max(gParams.samplesPerLight, 1) * uint(clamp(round(gParams.lights[l].w), 1.0f, 4.0f)); s < samples; s++, i++) {
         // Area light: jittered samples on the light's panel (soft penumbrae, refined over
         // frames by the resolve pass).
-        const uint l = i / samples;
         const uint seed = gParams.frameIndex * 64 + i * 2;
         const float2 jitter = float2(noise(pixel, seed), noise(pixel + uint2(37, 113), seed + 1)) - 0.5f;
         const float2 offset = jitter * gParams.lightSize;
