@@ -64,8 +64,10 @@ void CSMain(uint2 pixel : SV_DispatchThreadID) {
 
     // Culled draws are non-opaque: commit their candidates only when front-facing, matching
     // the raster (N64 front faces wind counter-clockwise as seen from the camera).
+    // Primary rays only see this workload's geometry (instance mask 0x1); the other workloads'
+    // geometry (0x2) is drawn and shaded by their own passes but still casts shadows here.
     RayQuery<RAY_FLAG_NONE> primary;
-    primary.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, ray);
+    primary.TraceRayInline(gScene, RAY_FLAG_NONE, 0x1, ray);
     while (primary.Proceed()) {
         if (primary.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE) {
             const float3 n = triangleCross(primary.CandidateGeometryIndex(), primary.CandidatePrimitiveIndex());
@@ -103,12 +105,44 @@ void CSMain(uint2 pixel : SV_DispatchThreadID) {
     }
 
     const float3 hitPos = ray.Origin + ray.Direction * hitT;
-    const float2 lightOffsets[4] = { float2(-1.0f, -1.0f), float2(1.0f, -1.0f), float2(-1.0f, 1.0f), float2(1.0f, 1.0f) };
-    const uint lightCount = clamp(gParams.lightCount, 1, 4);
+    if (gParams.mode == WCW_RT_MODE_HIT_POSITION) {
+        // R/B: 50-unit X/Z grid; G: height in 0..300.
+        const float2 grid = step(0.5f, frac(hitPos.xz / 50.0f));
+        gOutput[pixel] = float4(grid.x, saturate(hitPos.y / 300.0f), grid.y, 0.85f);
+        return;
+    }
+
+    if (gParams.mode == WCW_RT_MODE_SHADOW_DISTANCE) {
+        // Key light only, closest hit: red = hit distance / light distance, blue = unoccluded.
+        const float3 toLight = gParams.lightPosition.xyz - hitPos;
+        const float lightDist = length(toLight);
+        RayDesc probe;
+        probe.Origin = hitPos + normal * 0.5f;
+        probe.Direction = toLight / lightDist;
+        probe.TMin = 0.5f;
+        probe.TMax = lightDist;
+        RayQuery<RAY_FLAG_FORCE_OPAQUE> q;
+        q.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, probe);
+        q.Proceed();
+        if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+            gOutput[pixel] = float4(saturate(q.CommittedRayT() / lightDist), 0.0f, 0.0f, 0.85f);
+        }
+        else {
+            gOutput[pixel] = float4(0.0f, 0.0f, 1.0f, 0.85f);
+        }
+
+        return;
+    }
+
+    const float2 lightOffsets[5] = { float2(0.0f, 0.0f), float2(-1.0f, -1.0f), float2(1.0f, -1.0f), float2(-1.0f, 1.0f), float2(1.0f, 1.0f) };
+    const uint fillCount = min(gParams.lightCount, 4);
+    const float keyWeight = (fillCount > 0) ? gParams.keyWeight : 1.0f;
+    const float fillWeight = (fillCount > 0) ? (1.0f - keyWeight) / float(fillCount) : 0.0f;
     float lit = 0.0f;
     int occluderId = -1;
-    for (uint l = 0; l < lightCount; l++) {
-        const float2 offset = (lightCount > 1) ? lightOffsets[l] * gParams.lightSpread : float2(0.0f, 0.0f);
+    for (uint l = 0; l <= fillCount; l++) {
+        const float2 offset = lightOffsets[l] * gParams.lightSpread;
+        const float weight = (l == 0) ? keyWeight : fillWeight;
         const float3 lightPos = gParams.lightPosition.xyz + float3(offset.x, 0.0f, offset.y);
         const float3 toLight = lightPos - hitPos;
         const float lightDist = length(toLight);
@@ -125,7 +159,7 @@ void CSMain(uint2 pixel : SV_DispatchThreadID) {
             occluderId = int(shadow.CommittedGeometryIndex());
         }
         else {
-            lit += 1.0f;
+            lit += weight;
         }
     }
 
@@ -140,6 +174,6 @@ void CSMain(uint2 pixel : SV_DispatchThreadID) {
         return;
     }
 
-    const float factor = 1.0f - gParams.shadowStrength * (1.0f - lit / float(lightCount));
+    const float factor = 1.0f - gParams.shadowStrength * (1.0f - lit);
     gOutput[pixel] = float4(factor, factor, factor, 1.0f);
 }

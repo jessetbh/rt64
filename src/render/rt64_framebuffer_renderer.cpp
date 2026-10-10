@@ -4,6 +4,8 @@
 
 #include "rt64_framebuffer_renderer.h"
 
+#include <cfloat>
+
 #include "../include/rt64_extended_gbi.h"
 
 #include "common/rt64_elapsed_timer.h"
@@ -51,6 +53,40 @@ namespace interop {
 
 namespace RT64 {
     static const void *wcwDumpScene = nullptr;
+    struct WcwRayTestVertex { float x, y, z, mesh; };
+    static std::vector<WcwRayTestVertex> wcwRayTestTris;
+    static bool wcwRayTestDone = false;
+
+    static void wcwRunRayTest() {
+        const float lx = getenv("WCW_RT_LIGHT_X") ? float(atof(getenv("WCW_RT_LIGHT_X"))) : 0.0f;
+        const float ly = getenv("WCW_RT_LIGHT_Y") ? float(atof(getenv("WCW_RT_LIGHT_Y"))) : 460.0f;
+        const float lz = getenv("WCW_RT_LIGHT_Z") ? float(atof(getenv("WCW_RT_LIGHT_Z"))) : 0.0f;
+        const float origins[5][3] = { { -40.0f, 90.5f, 0.0f }, { -30.0f, 90.5f, -10.0f }, { -60.0f, 90.5f, 10.0f }, { 0.0f, 90.5f, 0.0f }, { -20.0f, 90.5f, 20.0f } };
+        fprintf(stderr, "[wcw rt raytest] %zu triangles, light=(%.0f,%.0f,%.0f)\n", wcwRayTestTris.size() / 3, lx, ly, lz);
+        for (const auto &o : origins) {
+            float dx = lx - o[0], dy = ly - o[1], dz = lz - o[2];
+            const float len = std::sqrt(dx * dx + dy * dy + dz * dz);
+            dx /= len; dy /= len; dz /= len;
+            float bestT = FLT_MAX; int bestMesh = -1;
+            for (size_t t = 0; t + 2 < wcwRayTestTris.size(); t += 3) {
+                const auto &a = wcwRayTestTris[t], &b = wcwRayTestTris[t + 1], &c = wcwRayTestTris[t + 2];
+                const float e1x = b.x - a.x, e1y = b.y - a.y, e1z = b.z - a.z, e2x = c.x - a.x, e2y = c.y - a.y, e2z = c.z - a.z;
+                const float px = dy * e2z - dz * e2y, py = dz * e2x - dx * e2z, pz = dx * e2y - dy * e2x;
+                const float det = e1x * px + e1y * py + e1z * pz;
+                if (std::abs(det) < 1e-8f) continue;
+                const float inv = 1.0f / det;
+                const float sx = o[0] - a.x, sy = o[1] - a.y, sz = o[2] - a.z;
+                const float u = (sx * px + sy * py + sz * pz) * inv;
+                if ((u < 0.0f) || (u > 1.0f)) continue;
+                const float qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x;
+                const float vv = (dx * qx + dy * qy + dz * qz) * inv;
+                if ((vv < 0.0f) || (u + vv > 1.0f)) continue;
+                const float tt = (e2x * qx + e2y * qy + e2z * qz) * inv;
+                if ((tt > 0.5f) && (tt < len) && (tt < bestT)) { bestT = tt; bestMesh = int(a.mesh); }
+            }
+            fprintf(stderr, "[wcw rt raytest] from (%.0f,%.1f,%.0f): %s t=%.1f mesh=%d\n", o[0], o[1], o[2], (bestMesh >= 0) ? "HIT" : "miss", (bestMesh >= 0) ? bestT : 0.0f, bestMesh);
+        }
+    }
 
     // [wcw rt] True when either blender cycle reads framebuffer memory (G_BL_CLR_MEM = 1 in the
     // P or M input of othermode L bits 16-31), i.e. the draw is translucent.
@@ -61,6 +97,25 @@ namespace RT64 {
         const uint32_t m1 = (blender >> 6) & 0x3;
         const uint32_t m2 = (blender >> 4) & 0x3;
         return (p1 == 1) || (p2 == 1) || (m1 == 1) || (m2 == 1);
+    }
+
+    // [wcw rt] AKI blob shadows: small translucent quads lying flat (constant world Y) on the
+    // mat under each wrestler. The ray-traced shadows replace them.
+    static bool wcwIsBlobShadow(const DrawData &drawData, uint32_t faceIndicesStart, uint32_t triangleCount, const interop::OtherMode &otherMode) {
+        if ((triangleCount == 0) || (triangleCount > 4) || !wcwBlendsWithMemory(otherMode)) {
+            return false;
+        }
+
+        float minY = FLT_MAX, maxY = -FLT_MAX;
+        for (uint32_t i = 0; i < triangleCount * 3; i++) {
+            const uint32_t v = drawData.faceIndices[faceIndicesStart + i];
+            const hlslpp::float4 objPos(drawData.posFloats[v * 3 + 0], drawData.posFloats[v * 3 + 1], drawData.posFloats[v * 3 + 2], 1.0f);
+            const float y = hlslpp::mul(objPos, hlslpp::float4x4(drawData.worldTransforms[drawData.worldIndices[v]])).y;
+            minY = std::min(minY, y);
+            maxY = std::max(maxY, y);
+        }
+
+        return (maxY - minY) < 0.5f;
     }
     // Helper functions.
     
@@ -1792,6 +1847,17 @@ namespace RT64 {
                         {
                             wcwRaytracer->addMesh(call.meshDesc.faceIndicesStart, call.callDesc.triangleCount, vertexCount, call.shaderDesc.flags.culling);
 
+                            // WCW_RT_RAYTEST=<present>: CPU copy of the gathered triangles for a reference ray test.
+                            static const int wcwRayTestAt = getenv("WCW_RT_RAYTEST") ? atoi(getenv("WCW_RT_RAYTEST")) : -1;
+                            if ((wcwRayTestAt >= 0) && (wcwRtPresentCounter >= wcwRayTestAt) && !wcwRayTestDone) {
+                                for (uint32_t i = 0; i < call.callDesc.triangleCount * 3; i++) {
+                                    const uint32_t v = drawData.faceIndices[call.meshDesc.faceIndicesStart + i];
+                                    const hlslpp::float4 objPos(drawData.posFloats[v * 3 + 0], drawData.posFloats[v * 3 + 1], drawData.posFloats[v * 3 + 2], 1.0f);
+                                    const hlslpp::float4 wp = hlslpp::mul(objPos, hlslpp::float4x4(drawData.worldTransforms[drawData.worldIndices[v]]));
+                                    wcwRayTestTris.push_back({ float(wp.x), float(wp.y), float(wp.z), float(wcwRaytracer->meshes.size() - 1) });
+                                }
+                            }
+
                             // WCW_RT_DUMP=<present>: dump every gathered call of the first traced scene at that present.
                             static const int wcwDumpAt = getenv("WCW_RT_DUMP") ? atoi(getenv("WCW_RT_DUMP")) : -1;
                             static bool wcwDumped = false;
@@ -1817,6 +1883,9 @@ namespace RT64 {
                                     v, (float)objPos.x, (float)objPos.y, (float)objPos.z, (float)wp.x, (float)wp.y, (float)wp.z,
                                     (float)(clip.x / clip.w), (float)(clip.y / clip.w), (float)cpuT.x, (float)cpuT.y, (float)cpuT.z, (float)cpuT.w,
                                     (float)drawData.posScreen[v].x, (float)drawData.posScreen[v].y, drawData.modifyPosUints.size() / 2);
+                                fprintf(stderr, "[wcw rt dump]   W rows: (%.3f %.3f %.3f %.4f) (%.3f %.3f %.3f %.4f) (%.3f %.3f %.3f %.4f) (%.1f %.1f %.1f %.4f)\n",
+                                    (float)w[0][0], (float)w[0][1], (float)w[0][2], (float)w[0][3], (float)w[1][0], (float)w[1][1], (float)w[1][2], (float)w[1][3],
+                                    (float)w[2][0], (float)w[2][1], (float)w[2][2], (float)w[2][3], (float)w[3][0], (float)w[3][1], (float)w[3][2], (float)w[3][3]);
                             }
                         }
 
@@ -1890,7 +1959,13 @@ namespace RT64 {
                 else 
 #           endif
                 {
-                    rasterScene.instanceIndices.push_back(instanceIndex);
+                    // [wcw rt] With ray-traced shadows on, the game's blob shadows are not drawn.
+                    const bool wcwSkipBlob = (wcwRaytracer != nullptr) && wcwRaytracer->replacesBlobShadows() && (proj.type == Projection::Type::Perspective) &&
+                        (instanceDrawCall.type == InstanceDrawCall::Type::IndexedTriangles) &&
+                        wcwIsBlobShadow(drawData, call.meshDesc.faceIndicesStart, call.callDesc.triangleCount, call.callDesc.otherMode);
+                    if (!wcwSkipBlob) {
+                        rasterScene.instanceIndices.push_back(instanceIndex);
+                    }
                 }
 
                 instanceDrawCallVector.push_back(instanceDrawCall);
@@ -1898,6 +1973,11 @@ namespace RT64 {
             }
 
             // [wcw rt] Close the raster scene so the ray tracing pass runs before later (HUD) draws.
+            if (wcwRtProj && !wcwRayTestTris.empty() && !wcwRayTestDone) {
+                wcwRayTestDone = true;
+                wcwRunRayTest();
+            }
+
             if (wcwRtProj) {
                 checkRasterScene(rasterScene);
                 targetDrawCall.wcwRtSceneSlot = int32_t(targetDrawCall.sceneIndices.size()) - 1;

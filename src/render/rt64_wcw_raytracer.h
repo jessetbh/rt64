@@ -46,16 +46,33 @@ namespace RT64 {
         RenderViewport viewport;
         bool structuresBuilt = false;
 
+        // AKI games build one frame from several RSP workloads (WCW: ring and wrestlers apart),
+        // and each workload gets its own pass. Every workload slot keeps its bottom-level
+        // structure so the others' passes can include it as a shadow caster: slots before the
+        // current one are from this frame, later ones from the previous frame (one frame stale).
+        static const uint32_t MaxSlots = 8;
+        struct Slot {
+            std::unique_ptr<RenderBuffer> blasBuffer;
+            std::unique_ptr<RenderAccelerationStructure> blas;
+            uint64_t blasBufferSize = 0;
+            uint64_t builtFrame = 0;
+            bool valid = false;
+        };
+
+        Slot slots[MaxSlots];
+        uint32_t currentSlot = 0;
+        uint32_t workloadInFrame = 0;
+        uint64_t lastPresentId = UINT64_MAX;
+        uint64_t frameCounter = 0;
+        std::vector<RenderTopLevelASInstance> instances;
+
         // Acceleration structures (grow-only).
         RenderBottomLevelASBuildInfo blasInfo;
         RenderTopLevelASBuildInfo tlasInfo;
-        std::unique_ptr<RenderBuffer> blasBuffer;
         std::unique_ptr<RenderBuffer> tlasBuffer;
         std::unique_ptr<RenderBuffer> scratchBuffer;
         std::unique_ptr<RenderBuffer> instancesBuffer;
-        std::unique_ptr<RenderAccelerationStructure> blas;
         std::unique_ptr<RenderAccelerationStructure> tlas;
-        uint64_t blasBufferSize = 0;
         uint64_t tlasBufferSize = 0;
         uint64_t scratchBufferSize = 0;
         uint64_t instancesBufferSize = 0;
@@ -85,7 +102,12 @@ namespace RT64 {
 
         WcwRaytracer(RenderDevice *device, RenderShaderFormat shaderFormat);
         void reset();
+        // Called before each workload is recorded. Workloads sharing a presentId belong to the
+        // same displayed frame; the slot is the workload's index within it.
+        void beginWorkload(uint64_t presentId);
         bool wantsScene() const;
+        // Shadow mode drops the game's blob shadows (WCW_RT_KEEP_BLOBS=1 keeps them).
+        bool replacesBlobShadows() const;
         void beginScene(const hlslpp::float4x4 &view, const hlslpp::float4x4 &proj, const RenderViewport &viewport,
             const RenderBuffer *worldPosBuffer, uint64_t worldPosSize, const RenderBuffer *faceIndicesBuffer, uint64_t faceIndicesSize);
         // culled: the draw has N64 face culling on, so primary rays skip its back faces.

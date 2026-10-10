@@ -630,6 +630,10 @@ namespace RT64 {
             // Add all framebuffer pairs to the framebuffer renderer and setup the operations.
             scratchFbChangePool.reset();
             fbManager.resetOperations();
+            if (framebufferRenderer->wcwRaytracer != nullptr) {
+                framebufferRenderer->wcwRaytracer->beginWorkload(workload.presentId);
+            }
+
             framebufferRenderer->resetFramebuffers(ext.workloadGraphicsWorker, ubershadersVisible, workload.extended.ditherNoiseStrength, targetManager.multisampling);
 
 #       if RT_ENABLED

@@ -97,6 +97,19 @@ namespace RT64 {
         paramsBuffer = device->createBuffer(RenderBufferDesc::UploadBuffer(alignUp(sizeof(interop::WcwRtParams), 256), RenderBufferFlag::CONSTANT));
     }
 
+    void WcwRaytracer::beginWorkload(uint64_t presentId) {
+        if (presentId != lastPresentId) {
+            lastPresentId = presentId;
+            workloadInFrame = 0;
+            frameCounter++;
+        }
+        else {
+            workloadInFrame++;
+        }
+
+        currentSlot = std::min(workloadInFrame, MaxSlots - 1);
+    }
+
     void WcwRaytracer::reset() {
         sceneActive = false;
         structuresBuilt = false;
@@ -106,6 +119,11 @@ namespace RT64 {
 
     bool WcwRaytracer::wantsScene() const {
         return supported && !sceneActive;
+    }
+
+    bool WcwRaytracer::replacesBlobShadows() const {
+        static const bool keepBlobs = getenv("WCW_RT_KEEP_BLOBS") != nullptr;
+        return supported && (mode == WCW_RT_MODE_SHADOW) && !keepBlobs;
     }
 
     void WcwRaytracer::beginScene(const hlslpp::float4x4 &view, const hlslpp::float4x4 &proj, const RenderViewport &viewport,
@@ -133,21 +151,35 @@ namespace RT64 {
 
     void WcwRaytracer::recordBuild(RenderWorker *worker) {
         structuresBuilt = false;
+        Slot &slot = slots[currentSlot];
         if (!sceneActive || meshes.empty()) {
+            slot.valid = false;
             return;
         }
 
         // Bottom level: every gathered draw call is one geometry over the shared world position buffer.
         device->setBottomLevelASBuildInfo(blasInfo, meshes.data(), uint32_t(meshes.size()), true, false);
-        if (blasInfo.accelerationStructureSize > blasBufferSize) {
-            blasBufferSize = alignUp((blasInfo.accelerationStructureSize * 3) / 2, 256);
-            blasBuffer = device->createBuffer(RenderBufferDesc::AccelerationStructureBuffer(blasBufferSize));
-            blas = device->createAccelerationStructure(RenderAccelerationStructureDesc(RenderAccelerationStructureType::BOTTOM_LEVEL, RenderBufferReference(blasBuffer.get()), blasBufferSize));
+        if (blasInfo.accelerationStructureSize > slot.blasBufferSize) {
+            slot.blasBufferSize = alignUp((blasInfo.accelerationStructureSize * 3) / 2, 256);
+            slot.blasBuffer = device->createBuffer(RenderBufferDesc::AccelerationStructureBuffer(slot.blasBufferSize));
+            slot.blas = device->createAccelerationStructure(RenderAccelerationStructureDesc(RenderAccelerationStructureType::BOTTOM_LEVEL, RenderBufferReference(slot.blasBuffer.get()), slot.blasBufferSize));
         }
 
-        // Top level: a single identity instance.
-        RenderTopLevelASInstance instance(RenderBufferReference(blasBuffer.get()), 0, 0xFF, 0, true, RenderAffineTransform());
-        device->setTopLevelASBuildInfo(tlasInfo, &instance, 1, true, false);
+        slot.valid = true;
+        slot.builtFrame = frameCounter;
+
+        // Top level: this workload's geometry (mask 0x1: primary and shadow rays) plus the other
+        // workload slots built this frame or the previous one (mask 0x2: shadow rays only).
+        instances.clear();
+        instances.emplace_back(RenderBufferReference(slot.blasBuffer.get()), 0, 0x1, 0, true, RenderAffineTransform());
+        for (uint32_t s = 0; s < MaxSlots; s++) {
+            const Slot &other = slots[s];
+            if ((s != currentSlot) && other.valid && ((frameCounter - other.builtFrame) <= 1)) {
+                instances.emplace_back(RenderBufferReference(other.blasBuffer.get()), s + 1, 0x2, 0, true, RenderAffineTransform());
+            }
+        }
+
+        device->setTopLevelASBuildInfo(tlasInfo, instances.data(), uint32_t(instances.size()), true, false);
         if (tlasInfo.accelerationStructureSize > tlasBufferSize) {
             tlasBufferSize = alignUp((tlasInfo.accelerationStructureSize * 3) / 2, 256);
             tlasBuffer = device->createBuffer(RenderBufferDesc::AccelerationStructureBuffer(tlasBufferSize));
@@ -181,8 +213,8 @@ namespace RT64 {
         memcpy(meshStartsBytes, meshIndexStarts.data(), meshStartsSize);
         meshStartsBuffer->unmap();
 
-        worker->commandList->buildBottomLevelAS(blas.get(), RenderBufferReference(scratchBuffer.get(), 0), blasInfo);
-        worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderBufferBarrier(blasBuffer.get(), RenderBufferAccess::READ));
+        worker->commandList->buildBottomLevelAS(slot.blas.get(), RenderBufferReference(scratchBuffer.get(), 0), blasInfo);
+        worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderBufferBarrier(slot.blasBuffer.get(), RenderBufferAccess::READ));
         worker->commandList->buildTopLevelAS(tlas.get(), RenderBufferReference(scratchBuffer.get(), blasScratch), RenderBufferReference(instancesBuffer.get()), tlasInfo);
         worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderBufferBarrier(tlasBuffer.get(), RenderBufferAccess::READ));
         structuresBuilt = true;
@@ -196,8 +228,8 @@ namespace RT64 {
                     triangleCount += mesh.indexCount / 3;
                 }
 
-                fprintf(stderr, "[wcw rt] build #%u: %zu meshes, %u triangles, blas=%llu tlas=%llu scratch=%llu vp=(%.0f,%.0f %.0fx%.0f)\n",
-                    buildCount, meshes.size(), triangleCount, (unsigned long long)blasInfo.accelerationStructureSize,
+                fprintf(stderr, "[wcw rt] build #%u slot %u (+%zu other): %zu meshes, %u triangles, blas=%llu tlas=%llu scratch=%llu vp=(%.0f,%.0f %.0fx%.0f)\n",
+                    buildCount, currentSlot, instances.size() - 1, meshes.size(), triangleCount, (unsigned long long)blasInfo.accelerationStructureSize,
                     (unsigned long long)tlasInfo.accelerationStructureSize, (unsigned long long)requiredScratch,
                     viewport.x, viewport.y, viewport.width, viewport.height);
             }
@@ -259,11 +291,11 @@ namespace RT64 {
         params.viewport = hlslpp::float4(viewport.x, viewport.y, viewport.width, viewport.height);
         params.resolution = { outputWidth, outputHeight };
         params.mode = mode;
-        params.shadowStrength = envFloat(getenv("WCW_RT_SHADOW"), 0.45f);
+        params.shadowStrength = envFloat(getenv("WCW_RT_SHADOW"), 0.6f);
         params.lightSpread = envFloat(getenv("WCW_RT_LIGHT_SPREAD"), 200.0f);
         params.lightCount = uint32_t(envFloat(getenv("WCW_RT_LIGHTS"), 4.0f));
         params.cullSign = envFloat(getenv("WCW_RT_CULL_SIGN"), 1.0f);
-        params.padding = 0.0f;
+        params.keyWeight = envFloat(getenv("WCW_RT_KEY_WEIGHT"), 0.5f);
         void *paramsBytes = paramsBuffer->map();
         memcpy(paramsBytes, &params, sizeof(params));
         paramsBuffer->unmap();

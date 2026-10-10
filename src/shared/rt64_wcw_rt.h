@@ -13,6 +13,8 @@
 #define WCW_RT_MODE_SHADOW 2
 #define WCW_RT_MODE_HIT_MESH 3
 #define WCW_RT_MODE_SHADOW_OCCLUDER 4
+#define WCW_RT_MODE_HIT_POSITION 5
+#define WCW_RT_MODE_SHADOW_DISTANCE 6
 
 // Bit 31 of a mesh index start: N64 face culling is on for that draw.
 #define WCW_RT_MESH_CULLED 0x80000000u
@@ -29,12 +31,13 @@ namespace interop {
         uint2 resolution;
         uint mode;
         float shadowStrength;
-        // Lights sit at lightPosition +- lightSpread on X/Z (a ring lighting rig); 1 or 4 lights.
+        // A key light at lightPosition (weight keyWeight) plus lightCount fill lights at
+        // lightPosition +- lightSpread on X/Z (a ring lighting rig) sharing the rest.
         float lightSpread;
         uint lightCount;
         // +1 or -1: which winding counts as front-facing for culled draws (WCW_RT_CULL_SIGN).
         float cullSign;
-        float padding;
+        float keyWeight;
     };
 #ifdef HLSL_CPU
 };
