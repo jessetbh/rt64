@@ -1,0 +1,16 @@
+# AKI Recomp — S-Video into a US Sony Trinitron (aperture grille; cylindrical tube, flat vertically).
+#reference "../slang-shaders/crt/crt-guest-advanced-ntsc.slangp"
+
+# Signal: S-Video (A&F 0.0) — separate luma/chroma, no dot crawl or rainbowing.
+cust_artifacting = "0.000000"
+cust_fringing = "0.000000"
+
+# Tube: Trinitron aperture grille.
+CP = "5.000000"
+shadowMask = "6.000000"
+maskstr = "0.450000"
+warpX = "0.030000"
+warpY = "0.000000"
+csize = "0.020000"
+glow = "0.060000"
+halation = "0.030000"

@@ -1,0 +1,4 @@
+# AKI Recomp: Blur Busters CRT Beam Simulator, fractional-ratio variant (see shaders/aki-beam-simulator.slang).
+shaders = 1
+
+shader0 = ../shaders/aki-beam-simulator.slang

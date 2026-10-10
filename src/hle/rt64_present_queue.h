@@ -6,6 +6,7 @@
 
 #include "common/rt64_profiling_timer.h"
 #include "gui/rt64_inspector.h"
+#include "render/rt64_crt_filter.h"
 #include "render/rt64_vi_renderer.h"
 
 #include "rt64_application_window.h"
@@ -52,6 +53,7 @@ namespace RT64 {
         std::unique_ptr<RenderCommandSemaphore> acquiredSemaphore;
         std::vector<std::unique_ptr<RenderCommandSemaphore>> drawSemaphores;
         std::unique_ptr<VIRenderer> viRenderer;
+        std::unique_ptr<CrtFilter> crtFilter;
         std::unique_ptr<Inspector> inspector;
         ProfilingTimer presentProfiler = ProfilingTimer(120);
         Timestamp presentTimestamp;
@@ -68,6 +70,7 @@ namespace RT64 {
         void waitForPresentId(uint64_t waitId);
         void setup(const External &ext);
         void threadPresent(const Present &present, bool &swapChainValid);
+        void threadBeamPresent(bool &swapChainValid);
         void skipInterpolation();
         void notifyPresentId(const Present &present);
         void threadAdvanceBarrier();

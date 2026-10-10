@@ -44,7 +44,12 @@ namespace RT64 {
     void VIRenderer::render(const RenderParams &p) {
         const ShaderRecord *shader = nullptr;
         const RenderSampler *sampler = nullptr;
-        switch (p.filtering) {
+        const bool offscreen = (p.outputWidth > 0) && (p.outputHeight > 0);
+        if (offscreen) {
+            shader = &p.shaderLibrary->videoInterfaceBox;
+            sampler = p.shaderLibrary->samplerLibrary.linear.borderBorder.get();
+        }
+        else switch (p.filtering) {
         case UserConfiguration::Filtering::Nearest:
             shader = &p.shaderLibrary->videoInterfaceNearest;
             sampler = p.shaderLibrary->samplerLibrary.nearest.borderBorder.get();
@@ -69,7 +74,12 @@ namespace RT64 {
 
         RenderViewport viewport;
         RenderRect scissor;
-        getViewportAndScissor(p.swapChain, *p.vi, p.resolutionScale, p.downsamplingScale, p.removeBlackBorders, viewport, scissor);
+        if (offscreen) {
+            getViewportAndScissor(hlslpp::float2(float(p.outputWidth), float(p.outputHeight)), *p.vi, p.resolutionScale, p.downsamplingScale, p.removeBlackBorders, viewport, scissor);
+        }
+        else {
+            getViewportAndScissor(p.swapChain, *p.vi, p.resolutionScale, p.downsamplingScale, p.removeBlackBorders, viewport, scissor);
+        }
         p.commandList->setViewports(viewport);
         p.commandList->setScissors(scissor);
 
@@ -95,7 +105,24 @@ namespace RT64 {
         p.commandList->drawInstanced(3, 1, 0, 0);
     }
 
+    void VIRenderer::getTVSize(const VI &vi, hlslpp::float2 resolutionScale, uint32_t downsamplingScale, bool removeBlackBorders, hlslpp::float2 &sdSize, hlslpp::float2 &hdSize) {
+        // Same as getViewportAndScissor below.
+        const hlslpp::float2 fbSizeF = hlslpp::float2(vi.fbSize());
+        sdSize = removeBlackBorders ? hlslpp::float2(fbSizeF.y * (4.0f / 3.0f), fbSizeF.y) : hlslpp::float2(320.0f, 240.0f);
+        hdSize = computeHDSize(sdSize, resolutionScale, downsamplingScale);
+    }
+
+    RenderViewport VIRenderer::getTVRect(hlslpp::float2 windowSize, hlslpp::float2 hdSize) {
+        const hlslpp::float2 topLeft = fromHDtoWindow({ 0.0f, 0.0f }, hdSize, windowSize);
+        const hlslpp::float2 bottomRight = fromHDtoWindow(hdSize, hdSize, windowSize);
+        return RenderViewport(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
+    }
+
     void VIRenderer::getViewportAndScissor(const RenderSwapChain *swapChain, const VI &vi, hlslpp::float2 resolutionScale, uint32_t downsamplingScale, bool removeBlackBorders, RenderViewport &viewport, RenderRect &scissor) {
+        getViewportAndScissor(hlslpp::float2(float(swapChain->getWidth()), float(swapChain->getHeight())), vi, resolutionScale, downsamplingScale, removeBlackBorders, viewport, scissor);
+    }
+
+    void VIRenderer::getViewportAndScissor(hlslpp::float2 windowSize, const VI &vi, hlslpp::float2 resolutionScale, uint32_t downsamplingScale, bool removeBlackBorders, RenderViewport &viewport, RenderRect &scissor) {
         // We define three different coordinate spaces to work with to translate the VI parameters into the Window.
         //
         // VideoSD: This corresponds to the SD TV Scanline space, which is what the VI natively works on.
@@ -116,7 +143,6 @@ namespace RT64 {
         const hlslpp::float2 fbSizeF = hlslpp::float2(vi.fbSize());
         const hlslpp::float2 sdSize = removeBlackBorders ? hlslpp::float2(fbSizeF.y * (4.0f / 3.0f), fbSizeF.y) : hlslpp::float2(320.0f, 240.0f);
         const hlslpp::float2 hdSize = computeHDSize(sdSize, resolutionScale, downsamplingScale);
-        const hlslpp::float2 windowSize = { float(swapChain->getWidth()), float(swapChain->getHeight()) };
 
         // Query the VI for the current rendering area.
         hlslpp::float4 viViewRect = vi.viewRectangle() * sdSize.xyxy;

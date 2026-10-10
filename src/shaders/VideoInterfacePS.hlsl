@@ -32,8 +32,28 @@ float4 PixelAntialiasing(float2 uv) {
     return SampleInput(uvTexspace / gConstants.textureResolution);
 }
 
+// [wcw crt] Box filter over the input texels covered by this output pixel. Builds the CRT filter's
+// native-resolution source (e.g. 320x240) out of RT64's supersampled frame. Each bilinear tap
+// averages a 2x2 texel quad, so n taps per axis cover 2n texels.
+float4 BoxDownsample(float2 uv) {
+    const float2 texelPos = uv * gConstants.videoResolution;
+    const float2 footprint = max(fwidth(texelPos), 1.0f);
+    const int2 taps = clamp(int2(ceil(footprint * 0.5f)), 1, 8);
+    float4 sum = 0.0f;
+    for (int y = 0; y < taps.y; y++) {
+        for (int x = 0; x < taps.x; x++) {
+            const float2 offset = ((float2(x, y) + 0.5f) / float2(taps) - 0.5f) * footprint;
+            sum += SampleInput((texelPos + offset) / gConstants.textureResolution);
+        }
+    }
+
+    return sum / float(taps.x * taps.y);
+}
+
 float4 PSMain(in float4 pos : SV_Position, in float2 uv : TEXCOORD0) : SV_TARGET {
-#ifdef PIXEL_ANTIALIASING
+#if defined(BOX_DOWNSAMPLE)
+    return BoxDownsample(uv);
+#elif defined(PIXEL_ANTIALIASING)
     return PixelAntialiasing(uv);
 #else
     return SampleInput((uv / gConstants.textureResolution) * gConstants.videoResolution);

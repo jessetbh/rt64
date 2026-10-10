@@ -1,0 +1,19 @@
+# AKI Recomp — RF switch into a 20" bedroom set: strongest chroma bleed plus RF noise.
+#reference "../slang-shaders/crt/crt-guest-advanced-ntsc.slangp"
+
+# Signal: RF (A&F 2.0) + noise.
+cust_artifacting = "2.000000"
+cust_fringing = "2.000000"
+RFNOISE1 = "0.060000"
+RFNOISE2 = "0.060000"
+
+CP = "1.000000"
+shadowMask = "0.000000"
+maskstr = "0.300000"
+slotmask = "0.600000"
+slotmask1 = "0.600000"
+warpX = "0.045000"
+warpY = "0.055000"
+csize = "0.040000"
+glow = "0.100000"
+halation = "0.080000"

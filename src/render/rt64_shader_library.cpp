@@ -46,6 +46,7 @@
 #include "shaders/TextureResolveSamples8XPS.hlsl.spirv.h"
 #include "shaders/VideoInterfacePSRegular.hlsl.spirv.h"
 #include "shaders/VideoInterfacePSPixel.hlsl.spirv.h"
+#include "shaders/VideoInterfacePSBox.hlsl.spirv.h"
 #include "shaders/FullScreenVS.hlsl.spirv.h"
 #include "shaders/Im3DVS.hlsl.spirv.h"
 #include "shaders/ComposePS.hlsl.spirv.h"
@@ -92,6 +93,7 @@
 #   include "shaders/TextureResolveSamples8XPS.hlsl.dxil.h"
 #   include "shaders/VideoInterfacePSRegular.hlsl.dxil.h"
 #   include "shaders/VideoInterfacePSPixel.hlsl.dxil.h"
+#   include "shaders/VideoInterfacePSBox.hlsl.dxil.h"
 #   include "shaders/FullScreenVS.hlsl.dxil.h"
 #   include "shaders/Im3DVS.hlsl.dxil.h"
 #   include "shaders/ComposePS.hlsl.dxil.h"
@@ -137,6 +139,7 @@
 #   include "shaders/TextureResolveSamples8XPS.hlsl.metal.h"
 #   include "shaders/VideoInterfacePSRegular.hlsl.metal.h"
 #   include "shaders/VideoInterfacePSPixel.hlsl.metal.h"
+#   include "shaders/VideoInterfacePSBox.hlsl.metal.h"
 #   include "shaders/FullScreenVS.hlsl.metal.h"
 #   include "shaders/Im3DVS.hlsl.metal.h"
 #   include "shaders/ComposePS.hlsl.metal.h"
@@ -587,6 +590,7 @@ namespace RT64 {
         {
             std::unique_ptr<RenderShader> regularShader = device->createShader(CREATE_SHADER_INPUTS(VideoInterfacePSRegularBlobDXIL, VideoInterfacePSRegularBlobSPIRV, VideoInterfacePSRegularBlobMSL, "PSMain", shaderFormat));
             std::unique_ptr<RenderShader> pixelShader = device->createShader(CREATE_SHADER_INPUTS(VideoInterfacePSPixelBlobDXIL, VideoInterfacePSPixelBlobSPIRV, VideoInterfacePSPixelBlobMSL, "PSMain", shaderFormat));
+            std::unique_ptr<RenderShader> boxShader = device->createShader(CREATE_SHADER_INPUTS(VideoInterfacePSBoxBlobDXIL, VideoInterfacePSBoxBlobSPIRV, VideoInterfacePSBoxBlobMSL, "PSMain", shaderFormat));
 
             VideoInterfaceDescriptorSet nearestDescriptorSet(samplerLibrary.nearest.borderBorder.get());
             VideoInterfaceDescriptorSet linearDescriptorSet(samplerLibrary.linear.borderBorder.get());
@@ -618,6 +622,12 @@ namespace RT64 {
             pipelineDesc.pixelShader = pixelShader.get();
             pipelineDesc.pipelineLayout = videoInterfacePixel.pipelineLayout.get();
             videoInterfacePixel.pipeline = device->createGraphicsPipeline(pipelineDesc);
+
+            // [wcw crt] Box-filtered offscreen variant for the CRT filter's source image.
+            videoInterfaceBox.pipelineLayout = layoutBuilder.create(device);
+            pipelineDesc.pixelShader = boxShader.get();
+            pipelineDesc.pipelineLayout = videoInterfaceBox.pipelineLayout.get();
+            videoInterfaceBox.pipeline = device->createGraphicsPipeline(pipelineDesc);
         }
     }
 

@@ -1,0 +1,11 @@
+# AKI Recomp — RGB into a Sony PVM (enthusiast look; a stock N64 has no RGB output).
+#reference "../slang-shaders/crt/crt-guest-advanced.slangp"
+
+CP = "5.000000"
+shadowMask = "6.000000"
+maskstr = "0.500000"
+warpX = "0.010000"
+warpY = "0.010000"
+csize = "0.010000"
+glow = "0.040000"
+halation = "0.000000"

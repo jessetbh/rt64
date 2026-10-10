@@ -9,7 +9,13 @@
 
 #include "rt64_workload_queue.h"
 
+#if defined(_WIN32)
+#   include <dxgi1_4.h>
+#endif
+
 namespace RT64 {
+    static uint32_t beamWaitForVBlank(RenderWindow window, uint32_t refreshRate);
+
     // PresentQueue
 
     PresentQueue::PresentQueue() {
@@ -87,6 +93,17 @@ namespace RT64 {
         this->ext = ext;
 
         viRenderer = std::make_unique<VIRenderer>();
+
+        // [wcw crt] Optional CRT filter (librashader), replaces the VI blit when enabled.
+        RenderShaderFormat crtShaderFormat = RenderShaderFormat::UNKNOWN;
+        if (ext.createdGraphicsAPI == UserConfiguration::GraphicsAPI::D3D12) {
+            crtShaderFormat = RenderShaderFormat::DXIL;
+        }
+        else if (ext.createdGraphicsAPI == UserConfiguration::GraphicsAPI::Vulkan) {
+            crtShaderFormat = RenderShaderFormat::SPIRV;
+        }
+
+        crtFilter = std::make_unique<CrtFilter>(nullptr, ext.device, crtShaderFormat);
 
         presentThreadRunning = true;
         presentThread = new std::thread(&PresentQueue::threadLoop, this);
@@ -410,7 +427,18 @@ namespace RT64 {
 
                 if (renderParams.texture != nullptr) {
                     commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(renderParams.texture, RenderTextureLayout::SHADER_READ));
-                    viRenderer->render(renderParams);
+
+                    crtFilter->setDisplayConditions(ext.appWindow->getRefreshRate(), ext.swapChain->isVsyncEnabled(),
+                        (framesToPresent > 1) || (refreshRate != UserConfiguration::RefreshRate::Original));
+
+                    CrtFilter::RenderParams crtParams;
+                    crtParams.presentWorker = ext.presentGraphicsWorker;
+                    crtParams.swapChainTexture = swapChainTexture;
+                    crtParams.swapChainFramebuffer = swapChainFramebuffer;
+                    crtParams.vi = renderParams;
+                    if (!crtFilter->render(*viRenderer, crtParams)) {
+                        viRenderer->render(renderParams);
+                    }
                 }
 
                 RenderHookDraw *drawHook = GetRenderHookDraw();
@@ -533,6 +561,11 @@ namespace RT64 {
                     ext.swapChain->wait();
                 }
 
+                // [wcw crt] Keep the beam simulator's sub-frames one per display refresh.
+                if (crtFilter->beamActive()) {
+                    crtFilter->skipBeamRefreshes(beamWaitForVBlank(ext.appWindow->windowHandle, ext.appWindow->getRefreshRate()));
+                }
+
                 RenderCommandSemaphore *waitSemaphore = drawSemaphores[swapChainIndex].get();
                 presentTimestamp = Timer::current();
                 swapChainValid = ext.swapChain->present(swapChainIndex, &waitSemaphore, 1);
@@ -565,6 +598,132 @@ namespace RT64 {
         barrierCursor = (barrierCursor + 1) % presents.size();
     }
 
+    // [wcw crt] The beam simulator must land exactly one sub-frame on every display refresh, but the
+    // swap chain doesn't block on vsync (RT64 presents with a sync interval of 0 and leaves pacing to
+    // the game). Waiting for the vblank of the window's monitor through DXGI paces it on both D3D12
+    // and Vulkan. Returns the display refreshes that went by since the previous wait minus one (the
+    // sub-frames that were skipped).
+    static uint32_t beamWaitForVBlank(RenderWindow window, uint32_t refreshRate) {
+#   if defined(_WIN32)
+        static IDXGIFactory1 *factory = nullptr;
+        static IDXGIOutput *output = nullptr;
+        static HMONITOR outputMonitor = nullptr;
+        static std::chrono::steady_clock::time_point lastVBlank;
+        static bool haveLastVBlank = false;
+
+        const HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+        if (monitor != outputMonitor) {
+            if (output != nullptr) {
+                output->Release();
+                output = nullptr;
+            }
+
+            if ((factory == nullptr) && FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+                factory = nullptr;
+            }
+
+            IDXGIAdapter1 *adapter = nullptr;
+            for (UINT a = 0; (factory != nullptr) && (output == nullptr) && (factory->EnumAdapters1(a, &adapter) != DXGI_ERROR_NOT_FOUND); a++) {
+                IDXGIOutput *candidate = nullptr;
+                for (UINT o = 0; (output == nullptr) && (adapter->EnumOutputs(o, &candidate) != DXGI_ERROR_NOT_FOUND); o++) {
+                    DXGI_OUTPUT_DESC desc = {};
+                    if (SUCCEEDED(candidate->GetDesc(&desc)) && (desc.Monitor == monitor)) {
+                        output = candidate;
+                    }
+                    else {
+                        candidate->Release();
+                    }
+                }
+
+                adapter->Release();
+            }
+
+            outputMonitor = monitor;
+            haveLastVBlank = false;
+        }
+
+        if ((output == nullptr) || FAILED(output->WaitForVBlank())) {
+            haveLastVBlank = false;
+            return 0;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        uint32_t skipped = 0;
+        if (haveLastVBlank && (refreshRate > 0)) {
+            const double periods = std::chrono::duration<double>(now - lastVBlank).count() * double(refreshRate);
+            skipped = uint32_t(std::max(std::lround(periods), 1L) - 1);
+        }
+
+        lastVBlank = now;
+        haveLastVBlank = true;
+        return skipped;
+#   else
+        return 0;
+#   endif
+    }
+
+    // [wcw crt] Presents the next beam simulator sub-frame of the last frame, with the UI on top.
+    void PresentQueue::threadBeamPresent(bool &swapChainValid) {
+        std::unique_lock<std::mutex> threadLock(threadMutex);
+        if (!swapChainValid || ext.swapChain->needsResize() || ext.swapChain->isEmpty() || swapChainFramebuffers.empty()) {
+            threadLock.unlock();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            return;
+        }
+
+        uint32_t swapChainIndex = 0;
+        swapChainValid = ext.swapChain->acquireTexture(acquiredSemaphore.get(), &swapChainIndex);
+        if (!swapChainValid) {
+            return;
+        }
+
+        RenderTexture *swapChainTexture = ext.swapChain->getTexture(swapChainIndex);
+        RenderFramebuffer *swapChainFramebuffer = swapChainFramebuffers[swapChainIndex].get();
+        RenderCommandList *commandList = ext.presentGraphicsWorker->commandList.get();
+        commandList->begin();
+        commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::COLOR_WRITE));
+        commandList->setFramebuffer(swapChainFramebuffer);
+        if (!crtFilter->renderBeamSubframe(ext.presentGraphicsWorker, swapChainTexture, swapChainFramebuffer, ext.swapChain->getWidth(), ext.swapChain->getHeight())) {
+            commandList->clearColor();
+        }
+
+        RenderHookDraw *drawHook = GetRenderHookDraw();
+        if (drawHook != nullptr) {
+            drawHook(commandList, swapChainFramebuffer);
+        }
+
+        commandList->barriers(RenderBarrierStage::NONE, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::PRESENT));
+        commandList->end();
+
+        const RenderCommandList *commandListConst = commandList;
+        RenderCommandSemaphore *waitSemaphore = acquiredSemaphore.get();
+        RenderCommandSemaphore *signalSemaphore = drawSemaphores[swapChainIndex].get();
+        ext.presentGraphicsWorker->commandQueue->executeCommandLists(&commandListConst, 1, &waitSemaphore, 1, &signalSemaphore, 1, ext.presentGraphicsWorker->commandFence.get());
+        ext.presentGraphicsWorker->wait();
+
+        if (presentWaitEnabled) {
+            ext.swapChain->wait();
+        }
+
+        crtFilter->skipBeamRefreshes(beamWaitForVBlank(ext.appWindow->windowHandle, ext.appWindow->getRefreshRate()));
+        presentTimestamp = Timer::current();
+        swapChainValid = ext.swapChain->present(swapChainIndex, &signalSemaphore, 1);
+
+        // [wcw crt] DIAGNOSTIC (env WCW_CRT_LOG=1): beam sub-frame presents per second.
+        static const bool crtLog = getenv("WCW_CRT_LOG") != nullptr;
+        if (crtLog) {
+            static auto windowStart = std::chrono::steady_clock::now();
+            static int beamPresents = 0;
+            beamPresents++;
+            const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - windowStart).count();
+            if (seconds >= 2.0) {
+                fprintf(stderr, "[wcw crt] idle beam presents: %.1f/s\n", beamPresents / seconds);
+                beamPresents = 0;
+                windowStart = std::chrono::steady_clock::now();
+            }
+        }
+    }
+
     void PresentQueue::threadLoop() {
         Thread::setCurrentThreadName("RT64 Present");
 
@@ -587,9 +746,19 @@ namespace RT64 {
         while (presentThreadRunning) {
             {
                 std::unique_lock<std::mutex> cursorLock(cursorMutex);
-                cursorCondition.wait(cursorLock, [&]() {
+                auto hasWork = [&]() {
                     return (writeCursor != threadCursor) || !presentThreadRunning;
-                });
+                };
+
+                // [wcw crt] The beam simulator presents every display refresh; the swap chain's
+                // vsync paces this loop while no new frame is queued.
+                if (!hasWork() && crtFilter->beamActive()) {
+                    cursorLock.unlock();
+                    threadBeamPresent(swapChainValid);
+                    continue;
+                }
+
+                cursorCondition.wait(cursorLock, hasWork);
 
                 if (presentThreadRunning) {
                     processCursor = threadCursor;

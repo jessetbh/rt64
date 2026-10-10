@@ -1,0 +1,18 @@
+# AKI Recomp — "Living Room '98": a US N64 on composite into a 25" consumer slot-mask set.
+#reference "../slang-shaders/crt/crt-guest-advanced-ntsc.slangp"
+
+# Signal: composite (A&F 1.0 = composite).
+cust_artifacting = "1.000000"
+cust_fringing = "1.000000"
+
+# Tube: P22 phosphors, slot mask, mild spherical curvature, rounded corners.
+CP = "1.000000"
+shadowMask = "0.000000"
+maskstr = "0.300000"
+slotmask = "0.500000"
+slotmask1 = "0.500000"
+warpX = "0.030000"
+warpY = "0.040000"
+csize = "0.030000"
+glow = "0.080000"
+halation = "0.050000"
