@@ -58,6 +58,8 @@ namespace RT64 {
         float boundsMin[2] = {};
         float boundsMax[2] = {};
         bool boundsFullScreen = false;
+        float worldMin[3] = {};
+        float worldMax[3] = {};
 
         // AKI games build one frame from several RSP workloads (WCW: ring and wrestlers apart),
         // and each workload gets its own pass. Every workload slot keeps its bottom-level

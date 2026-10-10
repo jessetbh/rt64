@@ -187,6 +187,11 @@ namespace RT64 {
         boundsMin[0] = boundsMin[1] = FLT_MAX;
         boundsMax[0] = boundsMax[1] = -FLT_MAX;
         boundsFullScreen = false;
+        for (uint32_t i = 0; i < 3; i++) {
+            worldMin[i] = FLT_MAX;
+            worldMax[i] = -FLT_MAX;
+        }
+
         this->rdpTilesBuffer = rdpTilesBuffer;
         this->gpuTilesBuffer = gpuTilesBuffer;
         this->texCoordBuffer = texCoordBuffer;
@@ -217,6 +222,11 @@ namespace RT64 {
     }
 
     void WcwRaytracer::extendBounds(const float *positions) {
+        for (uint32_t i = 0; i < 9; i++) {
+            worldMin[i % 3] = std::min(worldMin[i % 3], positions[i]);
+            worldMax[i % 3] = std::max(worldMax[i % 3], positions[i]);
+        }
+
         if (boundsFullScreen) {
             return;
         }
@@ -554,9 +564,9 @@ namespace RT64 {
             timingTraceHeight = traceHeight;
             static const bool traceLog = getenv("WCW_RT_TRACELOG") != nullptr;
             if (traceLog && ((frameCounter % 100) == 0)) {
-                fprintf(stderr, "[wcw rt trace] frame %llu slot %u target %p %ux%u rect (%u,%u)-(%u,%u) of %ux%u meshes %u tris %u vp=(%.0f,%.0f %.0fx%.0f)\n",
+                fprintf(stderr, "[wcw rt trace] frame %llu slot %u target %p %ux%u rect (%u,%u)-(%u,%u) of %ux%u meshes %u tris %u world (%.0f,%.0f,%.0f)-(%.0f,%.0f,%.0f)\n",
                     (unsigned long long)frameCounter, currentSlot, (void *)colorTarget, outputWidth, outputHeight, traceRect[0], traceRect[1], traceRect[2], traceRect[3],
-                    traceWidth, traceHeight, timingMeshes, timingTriangles, viewport.x, viewport.y, viewport.width, viewport.height);
+                    traceWidth, traceHeight, timingMeshes, timingTriangles, worldMin[0], worldMin[1], worldMin[2], worldMax[0], worldMax[1], worldMax[2]);
             }
         }
 
