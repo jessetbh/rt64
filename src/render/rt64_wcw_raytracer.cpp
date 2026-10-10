@@ -4,6 +4,9 @@
 
 #include "rt64_wcw_raytracer.h"
 
+#include <algorithm>
+#include <cfloat>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -48,6 +51,8 @@ namespace RT64 {
         if (const char *modeText = getenv("WCW_RT_MODE")) {
             mode = uint32_t(atoi(modeText));
         }
+
+        traceScale = std::clamp(envFloat(getenv("WCW_RT_SCALE"), 0.5f), 0.25f, 1.0f);
 
         const RenderDeviceCapabilities capabilities = device->getCapabilities();
 #   ifdef _WIN32
@@ -116,6 +121,7 @@ namespace RT64 {
         compositeSet = compositeBuilder.create(device);
 
         layoutBuilder.begin();
+        layoutBuilder.addPushConstant(0, 0, sizeof(interop::WcwRtCompositeCB), RenderShaderStageFlag::PIXEL);
         layoutBuilder.addDescriptorSet(compositeBuilder);
         layoutBuilder.end();
         compositeLayout = layoutBuilder.create(device);
@@ -161,6 +167,10 @@ namespace RT64 {
         const RenderBuffer *worldPosBuffer, uint64_t worldPosSize, const RenderBuffer *faceIndicesBuffer, uint64_t faceIndicesSize,
         const RenderBuffer *rdpTilesBuffer, const RenderBuffer *gpuTilesBuffer, const RenderBuffer *texCoordBuffer)
     {
+        boundsViewProj = hlslpp::mul(view, proj);
+        boundsMin[0] = boundsMin[1] = FLT_MAX;
+        boundsMax[0] = boundsMax[1] = -FLT_MAX;
+        boundsFullScreen = false;
         this->rdpTilesBuffer = rdpTilesBuffer;
         this->gpuTilesBuffer = gpuTilesBuffer;
         this->texCoordBuffer = texCoordBuffer;
@@ -188,6 +198,27 @@ namespace RT64 {
         // carry the culled/character flags.
         meshIndexStarts.emplace_back(faceIndicesStart | (culled ? WCW_RT_MESH_CULLED : 0u) | (character ? WCW_RT_MESH_CHARACTER : 0u));
         meshTiles.emplace_back((tileIndex & WCW_RT_TILE_INDEX_MASK) | (alphaTest ? WCW_RT_TILE_ALPHA_TEST : 0u) | (uvCorrection ? WCW_RT_TILE_UV_CORRECTION : 0u));
+    }
+
+    void WcwRaytracer::extendBounds(float x, float y, float z) {
+        if (boundsFullScreen) {
+            return;
+        }
+
+        const hlslpp::float4 clip = hlslpp::mul(hlslpp::float4(x, y, z, 1.0f), boundsViewProj);
+        const float w = clip.w;
+        if (w <= 1e-3f) {
+            // Behind the camera: the projected footprint is unbounded.
+            boundsFullScreen = true;
+            return;
+        }
+
+        const float px = viewport.x + (float(clip.x) / w * 0.5f + 0.5f) * viewport.width;
+        const float py = viewport.y + (0.5f - float(clip.y) / w * 0.5f) * viewport.height;
+        boundsMin[0] = std::min(boundsMin[0], px);
+        boundsMin[1] = std::min(boundsMin[1], py);
+        boundsMax[0] = std::max(boundsMax[0], px);
+        boundsMax[1] = std::max(boundsMax[1], py);
     }
 
     void WcwRaytracer::recordBuild(RenderWorker *worker) {
@@ -293,19 +324,22 @@ namespace RT64 {
         }
 
         // Output texture at the color target's resolution.
+        // Trace-resolution textures (traceScale of the color target).
         if ((outputTexture == nullptr) || (outputWidth != colorTarget->width) || (outputHeight != colorTarget->height)) {
             outputWidth = colorTarget->width;
             outputHeight = colorTarget->height;
-            outputTexture = device->createTexture(RenderTextureDesc::Texture2D(outputWidth, outputHeight, 1, RenderFormat::R8G8B8A8_UNORM, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
-            currentTexture = device->createTexture(RenderTextureDesc::Texture2D(outputWidth, outputHeight, 1, RenderFormat::R32G32_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
+            traceWidth = std::max(uint32_t(std::ceil(outputWidth * traceScale)), 1u);
+            traceHeight = std::max(uint32_t(std::ceil(outputHeight * traceScale)), 1u);
+            outputTexture = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R8G8B8A8_UNORM, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
+            currentTexture = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R32G32_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
         }
 
         Slot &slot = slots[currentSlot];
-        if ((slot.history[0] == nullptr) || (slot.historyWidth != outputWidth) || (slot.historyHeight != outputHeight)) {
-            slot.historyWidth = outputWidth;
-            slot.historyHeight = outputHeight;
+        if ((slot.history[0] == nullptr) || (slot.historyWidth != traceWidth) || (slot.historyHeight != traceHeight)) {
+            slot.historyWidth = traceWidth;
+            slot.historyHeight = traceHeight;
             for (auto &history : slot.history) {
-                history = device->createTexture(RenderTextureDesc::Texture2D(outputWidth, outputHeight, 1, RenderFormat::R16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
+                history = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
             }
 
             slot.historyValid = false;
@@ -352,7 +386,7 @@ namespace RT64 {
         params.eyePosition = hlslpp::float4(invView[3].xyz, 1.0f);
         params.lightPosition = hlslpp::float4(envFloat(getenv("WCW_RT_LIGHT_X"), 0.0f), envFloat(getenv("WCW_RT_LIGHT_Y"), 460.0f), envFloat(getenv("WCW_RT_LIGHT_Z"), 0.0f), 1.0f);
         params.viewport = hlslpp::float4(viewport.x, viewport.y, viewport.width, viewport.height);
-        params.resolution = { outputWidth, outputHeight };
+        params.resolution = { traceWidth, traceHeight };
         params.mode = mode;
         params.shadowStrength = envFloat(getenv("WCW_RT_SHADOW"), 0.6f);
         params.lightSpread = envFloat(getenv("WCW_RT_LIGHT_SPREAD"), 200.0f);
@@ -369,6 +403,30 @@ namespace RT64 {
         params.aoSamples = uint32_t(envFloat(getenv("WCW_RT_AO_SAMPLES"), 2.0f));
         params.aoRadius = envFloat(getenv("WCW_RT_AO_RADIUS"), 25.0f);
         params.aoStrength = envFloat(getenv("WCW_RT_AO"), 0.5f);
+        params.traceScale = float(traceWidth) / float(outputWidth);
+
+        // Trace only this workload's screen footprint (plus a margin for the bilinear upsample
+        // and the resolve's 3x3 neighborhood).
+        if (boundsFullScreen) {
+            traceRect[0] = traceRect[1] = 0;
+            traceRect[2] = traceWidth;
+            traceRect[3] = traceHeight;
+        }
+        else {
+            const float scale = params.traceScale;
+            traceRect[0] = uint32_t(std::clamp(std::floor(boundsMin[0] * scale) - 3.0f, 0.0f, float(traceWidth)));
+            traceRect[1] = uint32_t(std::clamp(std::floor(boundsMin[1] * scale) - 3.0f, 0.0f, float(traceHeight)));
+            traceRect[2] = uint32_t(std::clamp(std::ceil(boundsMax[0] * scale) + 3.0f, 0.0f, float(traceWidth)));
+            traceRect[3] = uint32_t(std::clamp(std::ceil(boundsMax[1] * scale) + 3.0f, 0.0f, float(traceHeight)));
+        }
+
+        traceRectEmpty = (traceRect[2] <= traceRect[0]) || (traceRect[3] <= traceRect[1]);
+        if (traceRectEmpty) {
+            return;
+        }
+
+        params.traceOffset = { traceRect[0], traceRect[1] };
+        params.padding2 = 0.0f;
         void *paramsBytes = paramsBuffer->map();
         memcpy(paramsBytes, &params, sizeof(params));
         paramsBuffer->unmap();
@@ -400,7 +458,9 @@ namespace RT64 {
         worker->commandList->setComputePipelineLayout(traceLayout.get());
         worker->commandList->setComputeDescriptorSet(traceSet.get(), 0);
         worker->commandList->setComputeDescriptorSet(textureSet, 1);
-        worker->commandList->dispatch((outputWidth + 7) / 8, (outputHeight + 7) / 8, 1);
+        const uint32_t rectWidth = traceRect[2] - traceRect[0];
+        const uint32_t rectHeight = traceRect[3] - traceRect[1];
+        worker->commandList->dispatch((rectWidth + 7) / 8, (rectHeight + 7) / 8, 1);
 
         // Shadow mode: temporal resolve of the jittered samples into this slot's history.
         if ((mode == WCW_RT_MODE_SHADOW) || (mode == WCW_RT_MODE_AO)) {
@@ -421,7 +481,7 @@ namespace RT64 {
             worker->commandList->setPipeline(resolvePipeline.get());
             worker->commandList->setComputePipelineLayout(resolveLayout.get());
             worker->commandList->setComputeDescriptorSet(resolveSet.get(), 0);
-            worker->commandList->dispatch((outputWidth + 7) / 8, (outputHeight + 7) / 8, 1);
+            worker->commandList->dispatch((rectWidth + 7) / 8, (rectHeight + 7) / 8, 1);
 
             slot.historyIndex ^= 1;
             slot.historyValid = true;
@@ -432,14 +492,21 @@ namespace RT64 {
     }
 
     void WcwRaytracer::recordComposite(RenderWorker *worker) {
-        if (!structuresBuilt || (compositePipeline == nullptr)) {
+        if (!structuresBuilt || (compositePipeline == nullptr) || traceRectEmpty) {
             return;
         }
 
+        // Composite only the traced rect (inside its margin), in color target pixels.
+        const float invScale = float(outputWidth) / float(traceWidth);
         const RenderViewport fullViewport(0.0f, 0.0f, float(outputWidth), float(outputHeight));
-        const RenderRect fullRect(0, 0, int32_t(outputWidth), int32_t(outputHeight));
+        const RenderRect fullRect(int32_t((traceRect[0] + 1) * invScale), int32_t((traceRect[1] + 1) * invScale),
+            std::min(int32_t((traceRect[2] - 1) * invScale), int32_t(outputWidth)), std::min(int32_t((traceRect[3] - 1) * invScale), int32_t(outputHeight)));
         worker->commandList->setPipeline(compositePipeline.get());
         worker->commandList->setGraphicsPipelineLayout(compositeLayout.get());
+        interop::WcwRtCompositeCB compositeCB;
+        compositeCB.scale = { float(traceWidth) / float(outputWidth), float(traceHeight) / float(outputHeight) };
+        compositeCB.traceSize = { float(traceWidth), float(traceHeight) };
+        worker->commandList->setGraphicsPushConstants(0, &compositeCB);
         worker->commandList->setGraphicsDescriptorSet(compositeSet.get(), 0);
         worker->commandList->setViewports(fullViewport);
         worker->commandList->setScissors(fullRect);

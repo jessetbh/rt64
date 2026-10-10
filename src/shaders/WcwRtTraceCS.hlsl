@@ -137,12 +137,13 @@ float3 triangleNormal(uint geometryIndex, uint primitiveIndex) {
 }
 
 [numthreads(8, 8, 1)]
-void CSMain(uint2 pixel : SV_DispatchThreadID) {
+void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
+    const uint2 pixel = dispatchPixel + gParams.traceOffset;
     if (any(pixel >= gParams.resolution)) {
         return;
     }
 
-    const float2 pixelCenter = float2(pixel) + 0.5f;
+    const float2 pixelCenter = (float2(pixel) + 0.5f) / gParams.traceScale;
     const float2 local = (pixelCenter - gParams.viewport.xy) / gParams.viewport.zw;
     if (any(local < 0.0f) || any(local > 1.0f)) {
         writeNoHit(pixel);

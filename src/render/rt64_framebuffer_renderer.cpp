@@ -1858,6 +1858,14 @@ namespace RT64 {
                             wcwRaytracer->addMesh(call.meshDesc.faceIndicesStart, call.callDesc.triangleCount, vertexCount, call.shaderDesc.flags.culling, wcwCharacter,
                                 wcwAlphaTest, call.callDesc.tileIndex, wcwUvCorrection);
 
+                            // Screen footprint, so the pass only traces what this workload covers.
+                            for (uint32_t i = 0; i < call.callDesc.triangleCount * 3; i++) {
+                                const uint32_t v = drawData.faceIndices[call.meshDesc.faceIndicesStart + i];
+                                const hlslpp::float4 objPos(drawData.posFloats[v * 3 + 0], drawData.posFloats[v * 3 + 1], drawData.posFloats[v * 3 + 2], 1.0f);
+                                const hlslpp::float4 wp = hlslpp::mul(objPos, hlslpp::float4x4(drawData.worldTransforms[drawData.worldIndices[v]]));
+                                wcwRaytracer->extendBounds(float(wp.x), float(wp.y), float(wp.z));
+                            }
+
                             // WCW_RT_RAYTEST=<present>: CPU copy of the gathered triangles for a reference ray test.
                             static const int wcwRayTestAt = getenv("WCW_RT_RAYTEST") ? atoi(getenv("WCW_RT_RAYTEST")) : -1;
                             if ((wcwRayTestAt >= 0) && (wcwRtPresentCounter >= wcwRayTestAt) && !wcwRayTestDone) {

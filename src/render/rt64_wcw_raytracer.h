@@ -52,6 +52,12 @@ namespace RT64 {
         RenderViewport viewport;
         bool structuresBuilt = false;
 
+        // Screen bounds (color target pixels) of this workload's gathered geometry.
+        hlslpp::float4x4 boundsViewProj;
+        float boundsMin[2] = {};
+        float boundsMax[2] = {};
+        bool boundsFullScreen = false;
+
         // AKI games build one frame from several RSP workloads (WCW: ring and wrestlers apart),
         // and each workload gets its own pass. Every workload slot keeps its bottom-level
         // structure so the others' passes can include it as a shadow caster: slots before the
@@ -103,6 +109,11 @@ namespace RT64 {
         std::unique_ptr<RenderPipeline> resolvePipeline;
         uint32_t outputWidth = 0;
         uint32_t outputHeight = 0;
+        uint32_t traceWidth = 0;
+        uint32_t traceHeight = 0;
+        float traceScale = 0.5f;
+        bool traceRectEmpty = true;
+        uint32_t traceRect[4] = {};
         bool outputNeedsTransition = false;
         std::unique_ptr<RenderDescriptorSet> traceSet;
         std::unique_ptr<RenderPipelineLayout> traceLayout;
@@ -135,6 +146,8 @@ namespace RT64 {
         // alphaTest: rays skip the draw's transparent texels (tileIndex, uvCorrection: its texture).
         void addMesh(uint32_t faceIndicesStart, uint32_t triangleCount, uint32_t vertexCount, bool culled, bool character,
             bool alphaTest, uint32_t tileIndex, bool uvCorrection);
+        // Grows the screen bounds with a world-space vertex of a gathered draw.
+        void extendBounds(float x, float y, float z);
         void recordBuild(RenderWorker *worker);
         // textureSet: the framebuffer renderer's bindless texture cache set (alpha tests).
         void recordTrace(RenderWorker *worker, RenderTarget *colorTarget, RenderDescriptorSet *textureSet);

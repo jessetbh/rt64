@@ -919,6 +919,32 @@ namespace RT64 {
                     wcwGpuMax = 0.0;
                     wcwGpuCount = 0;
                 }
+
+                // Per displayed frame: workloads sharing a presentId build one frame.
+                static uint64_t wcwFramePresentId = UINT64_MAX;
+                static double wcwFrameMs = 0.0, wcwFramesSum = 0.0, wcwFramesMax = 0.0;
+                static uint32_t wcwFrameWorkloads = 0, wcwFramesCount = 0, wcwFramesOver = 0, wcwFrameWorkloadsMax = 0;
+                if (workload.presentId != wcwFramePresentId) {
+                    if (wcwFramePresentId != UINT64_MAX) {
+                        wcwFramesSum += wcwFrameMs;
+                        wcwFramesMax = std::max(wcwFramesMax, wcwFrameMs);
+                        wcwFrameWorkloadsMax = std::max(wcwFrameWorkloadsMax, wcwFrameWorkloads);
+                        wcwFramesOver += (wcwFrameMs > 33.3) ? 1 : 0;
+                        if (++wcwFramesCount == 150) {
+                            fprintf(stderr, "[wcw gpu] frame GPU time avg=%.3f ms max=%.3f ms, over 33.3 ms: %u, workloads/frame max %u (150 frames)\n",
+                                wcwFramesSum / wcwFramesCount, wcwFramesMax, wcwFramesOver, wcwFrameWorkloadsMax);
+                            wcwFramesSum = wcwFramesMax = 0.0;
+                            wcwFramesCount = wcwFramesOver = wcwFrameWorkloadsMax = 0;
+                        }
+                    }
+
+                    wcwFramePresentId = workload.presentId;
+                    wcwFrameMs = 0.0;
+                    wcwFrameWorkloads = 0;
+                }
+
+                wcwFrameMs += gpuMs;
+                wcwFrameWorkloads++;
             }
 
             // Indicate to the texture cache it's safe to delete the textures if no locks are active.

@@ -16,7 +16,8 @@ RWTexture2D<float> gHistoryOut : register(u3);
 RWTexture2D<float4> gOutput : register(u4);
 
 [numthreads(8, 8, 1)]
-void CSMain(uint2 pixel : SV_DispatchThreadID) {
+void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
+    const uint2 pixel = dispatchPixel + gParams.traceOffset;
     if (any(pixel >= gParams.resolution)) {
         return;
     }
@@ -54,7 +55,7 @@ void CSMain(uint2 pixel : SV_DispatchThreadID) {
     const float filtered = filteredSum / max(weightSum, 1e-4f);
 
     // Same primary ray as the trace pass, so the hit distance gives the world position.
-    const float2 local = (float2(pixel) + 0.5f - gParams.viewport.xy) / gParams.viewport.zw;
+    const float2 local = ((float2(pixel) + 0.5f) / gParams.traceScale - gParams.viewport.xy) / gParams.viewport.zw;
     const float2 ndc = float2(local.x * 2.0f - 1.0f, 1.0f - local.y * 2.0f);
     const float4 nearPoint = mul(gParams.invViewProj, float4(ndc, -1.0f, 1.0f));
     const float4 farPoint = mul(gParams.invViewProj, float4(ndc, 1.0f, 1.0f));
@@ -68,7 +69,7 @@ void CSMain(uint2 pixel : SV_DispatchThreadID) {
         if (prevClip.w > 0.0f) {
             const float2 prevNdc = prevClip.xy / prevClip.w;
             const float2 prevLocal = float2(prevNdc.x * 0.5f + 0.5f, 0.5f - prevNdc.y * 0.5f);
-            const float2 prevPixel = gParams.viewport.xy + prevLocal * gParams.viewport.zw;
+            const float2 prevPixel = (gParams.viewport.xy + prevLocal * gParams.viewport.zw) * gParams.traceScale;
             if (all(prevPixel >= 0.0f) && all(prevPixel < float2(gParams.resolution))) {
                 const float history = clamp(gHistoryIn[int2(prevPixel)], minFactor, maxFactor);
                 result = lerp(history, filtered, gParams.temporalAlpha);

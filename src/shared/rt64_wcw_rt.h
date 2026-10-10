@@ -64,6 +64,18 @@ namespace interop {
         uint aoSamples;
         float aoRadius;
         float aoStrength;
+        // Trace/resolve resolution relative to the color target (resolution is the trace size;
+        // viewport stays in color target pixels).
+        float traceScale;
+        // Only the screen rect covered by this workload's geometry is traced (trace pixels).
+        uint2 traceOffset;
+        float padding2;
+    };
+
+    struct WcwRtCompositeCB {
+        // Trace texels per color target pixel, and the trace texture size.
+        float2 scale;
+        float2 traceSize;
     };
 #ifdef HLSL_CPU
 };
