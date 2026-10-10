@@ -422,6 +422,7 @@ namespace RT64 {
                     // rotating slot (serial % 3), once that run has finished.
                     if (wcwPairBlendSerial > 0) {
                         const uint32_t k = uint32_t(wcwPairBlendSerial % 3);
+                        colorTarget = nullptr;
                         if ((RT64::wcwSlotRealSerial[k].load(std::memory_order_relaxed) == wcwPairBlendSerial) &&
                             (RT64::wcwSlotRealComplete[k].load(std::memory_order_relaxed) == wcwPairBlendSerial)) {
                             auto &slotTargets = (k == 0) ? ext.sharedResources->interpolatedColorTargets
@@ -430,6 +431,13 @@ namespace RT64 {
                                 colorTarget = slotTargets[targetIndex].get();
                                 wcwHfrFallbackAge = -2;
                             }
+                        }
+
+                        // [wcw fix] The run's generated frames aren't (all) there: present nothing more for this game
+                        // frame rather than an older run's frame. (Gadge64, No Mercy 0.2.0.)
+                        if (colorTarget == nullptr) {
+                            framesToPresent = i;
+                            frameCountersNextPresented = frameCounters.count;
                         }
                     }
                 }
