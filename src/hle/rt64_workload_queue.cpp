@@ -395,7 +395,7 @@ namespace RT64 {
             }
 
             // [wcw rt] The hybrid ray tracer builds its acceleration structures from world positions every frame.
-            const bool processWorldVertices = prevFrame.matched || WcwRaytracer::enabledByEnv();
+            const bool processWorldVertices = prevFrame.matched || WcwRaytracer::active();
             if (processWorldVertices) {
                 workload.resetWorldOutputBuffers();
 

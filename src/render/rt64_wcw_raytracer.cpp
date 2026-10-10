@@ -35,24 +35,30 @@ namespace RT64 {
         return (text != nullptr) ? float(atof(text)) : fallback;
     }
 
-    bool WcwRaytracer::enabledByEnv() {
-        static const bool enabled = getenv("WCW_RT") != nullptr;
-        return enabled;
+    static std::atomic<bool> wcwRtUserEnabled = false;
+    static std::atomic<uint32_t> wcwRtUserQuality = 1;
+
+    void WcwRaytracer::setUserSettings(bool enabled, uint32_t quality) {
+        wcwRtUserEnabled = enabled;
+        wcwRtUserQuality = std::min(quality, 2u);
+    }
+
+    bool WcwRaytracer::active() {
+        static const bool forcedByEnv = getenv("WCW_RT") != nullptr;
+        return forcedByEnv || wcwRtUserEnabled;
+    }
+
+    uint32_t WcwRaytracer::userQuality() {
+        return wcwRtUserQuality;
     }
 
     WcwRaytracer::WcwRaytracer(RenderDevice *device, RenderShaderFormat shaderFormat) {
         this->device = device;
         this->shaderFormat = shaderFormat;
 
-        if (!enabledByEnv()) {
-            return;
-        }
-
         if (const char *modeText = getenv("WCW_RT_MODE")) {
             mode = uint32_t(atoi(modeText));
         }
-
-        traceScale = std::clamp(envFloat(getenv("WCW_RT_SCALE"), 0.5f), 0.25f, 1.0f);
 
         const RenderDeviceCapabilities capabilities = device->getCapabilities();
 #   ifdef _WIN32
@@ -147,6 +153,10 @@ namespace RT64 {
     }
 
     void WcwRaytracer::reset() {
+        if (!active()) {
+            wasActive = false;
+        }
+
         sceneActive = false;
         structuresBuilt = false;
         meshes.clear();
@@ -155,12 +165,12 @@ namespace RT64 {
     }
 
     bool WcwRaytracer::wantsScene() const {
-        return supported && !sceneActive;
+        return supported && active() && !sceneActive;
     }
 
     bool WcwRaytracer::replacesBlobShadows() const {
         static const bool keepBlobs = getenv("WCW_RT_KEEP_BLOBS") != nullptr;
-        return supported && (mode == WCW_RT_MODE_SHADOW) && !keepBlobs;
+        return supported && active() && (mode == WCW_RT_MODE_SHADOW) && !keepBlobs;
     }
 
     void WcwRaytracer::beginScene(const hlslpp::float4x4 &view, const hlslpp::float4x4 &proj, const RenderViewport &viewport,
@@ -324,8 +334,24 @@ namespace RT64 {
         }
 
         // Output texture at the color target's resolution.
+        // Quality preset (or env overrides) for this frame.
+        const uint32_t quality = userQuality();
+        const float presetScale = (quality >= 2) ? 1.0f : 0.5f;
+        const float frameScale = std::clamp(envFloat(getenv("WCW_RT_SCALE"), presetScale), 0.25f, 1.0f);
+        const uint32_t presetSamples = (quality == 0) ? 1u : 2u;
+
+        // Re-enabled after being off: the histories are stale.
+        if (!wasActive) {
+            for (Slot &s : slots) {
+                s.historyValid = false;
+            }
+        }
+
+        wasActive = true;
+
         // Trace-resolution textures (traceScale of the color target).
-        if ((outputTexture == nullptr) || (outputWidth != colorTarget->width) || (outputHeight != colorTarget->height)) {
+        if ((outputTexture == nullptr) || (outputWidth != colorTarget->width) || (outputHeight != colorTarget->height) || (frameScale != traceScale)) {
+            traceScale = frameScale;
             outputWidth = colorTarget->width;
             outputHeight = colorTarget->height;
             traceWidth = std::max(uint32_t(std::ceil(outputWidth * traceScale)), 1u);
@@ -399,8 +425,8 @@ namespace RT64 {
         params.frameIndex = frameIndex++;
         params.prevViewProj = slot.prevViewProj;
         params.historyValid = slot.historyValid ? 1 : 0;
-        params.samplesPerLight = std::max(uint32_t(envFloat(getenv("WCW_RT_SAMPLES"), 2.0f)), 1u);
-        params.aoSamples = uint32_t(envFloat(getenv("WCW_RT_AO_SAMPLES"), 2.0f));
+        params.samplesPerLight = std::max(uint32_t(envFloat(getenv("WCW_RT_SAMPLES"), float(presetSamples))), 1u);
+        params.aoSamples = uint32_t(envFloat(getenv("WCW_RT_AO_SAMPLES"), float(presetSamples)));
         params.aoRadius = envFloat(getenv("WCW_RT_AO_RADIUS"), 25.0f);
         params.aoStrength = envFloat(getenv("WCW_RT_AO"), 0.5f);
         params.traceScale = float(traceWidth) / float(outputWidth);

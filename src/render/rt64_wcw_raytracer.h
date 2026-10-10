@@ -31,7 +31,8 @@ namespace RT64 {
         RenderDevice *device = nullptr;
         RenderShaderFormat shaderFormat = RenderShaderFormat::UNKNOWN;
         bool supported = false;
-        uint32_t mode = WCW_RT_MODE_HIT_NORMAL;
+        uint32_t mode = WCW_RT_MODE_SHADOW;
+        bool wasActive = false;
 
         // Scene gathered for the current workload.
         bool sceneActive = false;
@@ -127,8 +128,14 @@ namespace RT64 {
         RenderSampleCounts compositeSamples = RenderSampleCount::COUNT_0;
         uint32_t compositeMode = UINT32_MAX;
 
-        // True when WCW_RT is set (the camera hand-off in rt64_rsp.cpp is active).
-        static bool enabledByEnv();
+        // Runtime settings from the frontend's graphics menu. Quality: 0 Performance (half-res,
+        // 1 sample per light, 1 AO ray), 1 Balanced (half-res, 2/2), 2 Quality (full-res, 2/2).
+        // WCW_RT forces it on; WCW_RT_SCALE / WCW_RT_SAMPLES / WCW_RT_AO_SAMPLES override quality.
+        static void setUserSettings(bool enabled, uint32_t quality);
+        // True when ray tracing should run this frame (WCW_RT or the menu option). The camera
+        // hand-off in rt64_rsp.cpp follows it, so Off keeps the original rendering.
+        static bool active();
+        static uint32_t userQuality();
 
         WcwRaytracer(RenderDevice *device, RenderShaderFormat shaderFormat);
         void reset();

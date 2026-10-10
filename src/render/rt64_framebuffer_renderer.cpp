@@ -219,8 +219,8 @@ namespace RT64 {
         shaderUploader = std::make_unique<BufferUploader>(worker->device);
         descCommonSet = std::make_unique<FramebufferRendererDescriptorCommonSet>(shaderLibrary->samplerLibrary, worker->device->getCapabilities().raytracing, worker->device);
 
-        // [wcw rt] Hybrid ray tracing (WCW_RT=1, D3D12 + DXR 1.1 only).
-        if (rtSupport && WcwRaytracer::enabledByEnv()) {
+        // [wcw rt] Hybrid ray tracing (menu option or WCW_RT=1; runs on D3D12 + DXR 1.1 only).
+        if (rtSupport) {
             const RenderShaderFormat wcwShaderFormat = (graphicsAPI == UserConfiguration::GraphicsAPI::D3D12) ? RenderShaderFormat::DXIL : RenderShaderFormat::SPIRV;
             wcwRaytracer = std::make_unique<WcwRaytracer>(worker->device, wcwShaderFormat);
         }

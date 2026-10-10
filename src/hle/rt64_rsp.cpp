@@ -12,6 +12,7 @@
 #include "common/rt64_common.h"
 #include "common/rt64_math.h"
 #include "gbi/rt64_f3d.h"
+#include "render/rt64_wcw_raytracer.h"
 #include "shared/rt64_rsp_fog.h"
 
 #include "rt64_interpreter.h"
@@ -395,10 +396,9 @@ namespace RT64 {
             return false;
         }
 
-        // Without WCW_RT the camera is consumed and ignored, so the default path keeps the
+        // With ray tracing off the camera is consumed and ignored, so the default path keeps the
         // identity-VP [wcw fix] behavior and never touches the extended correction matrices.
-        static const bool wcwRt = getenv("WCW_RT") != nullptr;
-        if (!wcwRt) {
+        if (!WcwRaytracer::active()) {
             return true;
         }
 
