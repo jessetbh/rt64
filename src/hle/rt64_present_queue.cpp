@@ -4,6 +4,8 @@
 
 #include "rt64_present_queue.h"
 
+#include <thread>
+
 #include "common/rt64_thread.h"
 #include "render/rt64_hdr_output.h"
 #include "rhi/rt64_render_hooks.h"
@@ -494,6 +496,29 @@ namespace RT64 {
                         int(frameCounters.skipped), (unsigned long long)wcwPairBlendSerial,
                         (i == 0) ? "real" : ((wcwHfrFallbackAge == -2) ? "slot" : "fallback"), int(wcwHfrRealRepeat),
                         (void *)colorTarget, (colorTarget != nullptr) ? int(colorTarget->isEmpty()) : -1);
+                }
+            }
+
+            // [wcw hfr] WCW_HFR_PACE=1: spread a game frame's presents evenly over its duration (present i at
+            // start + i * gameFrame / framesToPresent). Presenting on the next refresh bunches them on fast
+            // displays (2 frames ~7 ms apart at 144 Hz, then a long gap), which looks like judder.
+            static const bool wcwHfrPace = getenv("WCW_HFR_PACE") != nullptr;
+            static std::chrono::steady_clock::time_point wcwHfrFrameStart;
+            if (wcwHfrPace && presentFrame && (framesToPresent > 1) && (viOriginalRate > 0)) {
+                if (i == 0) {
+                    wcwHfrFrameStart = std::chrono::steady_clock::now();
+                }
+                else {
+                    const auto gameFrame = std::chrono::microseconds(1000000 / viOriginalRate);
+                    const auto target = wcwHfrFrameStart + (gameFrame * i) / framesToPresent;
+                    const auto coarse = target - std::chrono::milliseconds(1);
+                    if (std::chrono::steady_clock::now() < coarse) {
+                        std::this_thread::sleep_until(coarse);
+                    }
+
+                    while (std::chrono::steady_clock::now() < target) {
+                        std::this_thread::yield();
+                    }
                 }
             }
 

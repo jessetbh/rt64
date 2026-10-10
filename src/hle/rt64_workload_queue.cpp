@@ -1251,6 +1251,14 @@ namespace RT64 {
                             continue;
                         }
 
+                        // [wcw hfr] WCW_HFR_TARGETDRAWS=1: never pick a pair that only clears (fill rects) as the
+                        // interpolation target. Older AKI engines end a frame by pre-clearing the NEXT buffer, which
+                        // the scan above reaches first: every generated frame then re-renders only that clear (black).
+                        static const bool wcwHfrTargetDraws = getenv("WCW_HFR_TARGETDRAWS") != nullptr;
+                        if (wcwHfrTargetDraws && (fbPair.fillRectOnly || (fbPair.gameCallCount == 0))) {
+                            continue;
+                        }
+
                         Framebuffer *interpolationFb = fbManager.find(colorImg.address);
                         if ((interpolationFb != nullptr) && interpolationFb->interpolationEnabled) {
                             interpolationTargetKey.fbType = Framebuffer::Type::Color;
