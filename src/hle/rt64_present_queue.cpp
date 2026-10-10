@@ -110,6 +110,9 @@ namespace RT64 {
         presentThread = new std::thread(&PresentQueue::threadLoop, this);
     }
 
+    // [wcw hfr] Spike diagnostics: present waits that timed out since the last WCW_HFR_LOG line.
+    static uint32_t wcwHfrTimeouts = 0;
+
     void PresentQueue::threadPresent(const Present &present, bool &swapChainValid) {
         FramebufferManager &fbManager = ext.sharedResources->framebufferManager;
         RenderTargetManager &targetManager = ext.sharedResources->renderTargetManager;
@@ -382,6 +385,7 @@ namespace RT64 {
 
         for (int32_t i = 0; i < framesToPresent; i++) {
             uint32_t frameCountersNextPresented = 0;
+            int64_t wcwHfrFallbackAge = -1;
             if ((framesToPresent > 1) && (usingMSAA || (i > 0))) {
                 // Stall until the interpolated color target is available.
                 const uint32_t targetIndex = usingMSAA ? i : (i - 1);
@@ -392,6 +396,7 @@ namespace RT64 {
                 const bool wcwInterpTimedOut = !ext.sharedResources->interpolatedCondition.wait_for(interpolatedLock, RT64::wcwCoherentWaitBound(), [&]() {
                     return (frameCounters.available > targetIndex) || ((frameCounters.available == targetIndex) && frameCounters.skipped);
                 });
+                wcwHfrTimeouts += wcwInterpTimedOut ? 1 : 0;
 
                 // Do not present any more frames after this one after reaching the last available frame if the workload was skipped.
                 if (wcwInterpTimedOut || ((frameCounters.available == targetIndex) && frameCounters.skipped)) {
@@ -407,6 +412,8 @@ namespace RT64 {
                     // [wcw fix] Counter set 1 uses the second set of interpolated targets.
                     auto &wcwTargets = ((wcwPresentSetIndex & 1) != 0) ? ext.sharedResources->wcwInterpolatedColorTargetsB : ext.sharedResources->interpolatedColorTargets;
                     colorTarget = (targetIndex < wcwTargets.size()) ? wcwTargets[targetIndex].get() : nullptr;
+                    // [wcw hfr] Spike diagnostics: fallback set, and how many runs old its content is.
+                    wcwHfrFallbackAge = (wcwPairBlendSerial > 0) ? int64_t(wcwPairBlendSerial) - int64_t(RT64::wcwSlotRealSerial[wcwPresentSetIndex & 1].load(std::memory_order_relaxed)) : -1;
                     // [wcw fix] Show the real frame of the same run as the blend just shown, from its
                     // rotating slot (serial % 3), once that run has finished.
                     if (wcwPairBlendSerial > 0) {
@@ -417,6 +424,7 @@ namespace RT64 {
                                 : ((k == 1) ? ext.sharedResources->wcwInterpolatedColorTargetsB : ext.sharedResources->wcwInterpolatedColorTargetsC);
                             if (targetIndex < slotTargets.size()) {
                                 colorTarget = slotTargets[targetIndex].get();
+                                wcwHfrFallbackAge = -2;
                             }
                         }
                     }
@@ -437,15 +445,30 @@ namespace RT64 {
             if (wcwHfrLog && presentFrame) {
                 static auto wcwHfrStart = std::chrono::steady_clock::now();
                 static uint32_t wcwHfrPresents = 0, wcwHfrInterpolated = 0, wcwHfrMaxBurst = 0;
+                static uint32_t wcwHfrFresh = 0, wcwHfrFallback = 0, wcwHfrStale = 0;
+                static int64_t wcwHfrMaxAge = 0;
                 wcwHfrPresents++;
                 wcwHfrInterpolated += (i > 0) ? 1 : 0;
+                if (i > 0) {
+                    if (wcwHfrFallbackAge == -2) {
+                        wcwHfrFresh++;
+                    }
+                    else {
+                        wcwHfrFallback++;
+                        wcwHfrStale += (wcwHfrFallbackAge > 0) ? 1 : 0;
+                        wcwHfrMaxAge = std::max(wcwHfrMaxAge, wcwHfrFallbackAge);
+                    }
+                }
                 wcwHfrMaxBurst = std::max(wcwHfrMaxBurst, uint32_t(framesToPresent));
                 const double wcwHfrSecs = std::chrono::duration<double>(std::chrono::steady_clock::now() - wcwHfrStart).count();
                 if (wcwHfrSecs >= 1.0) {
-                    fprintf(stderr, "[wcw hfr] %.1f presents/s, %.1f interpolated/s, max %u per game frame\n",
-                        wcwHfrPresents / wcwHfrSecs, wcwHfrInterpolated / wcwHfrSecs, wcwHfrMaxBurst);
+                    fprintf(stderr, "[wcw hfr] %.1f presents/s, %.1f interpolated/s, max %u per game frame | in-between: fresh %u fallback %u (older run %u, max age %lld) | wait timeouts %u\n",
+                        wcwHfrPresents / wcwHfrSecs, wcwHfrInterpolated / wcwHfrSecs, wcwHfrMaxBurst, wcwHfrFresh, wcwHfrFallback, wcwHfrStale,
+                        (long long)wcwHfrMaxAge, wcwHfrTimeouts);
                     wcwHfrStart = std::chrono::steady_clock::now();
                     wcwHfrPresents = wcwHfrInterpolated = wcwHfrMaxBurst = 0;
+                    wcwHfrFresh = wcwHfrFallback = wcwHfrStale = wcwHfrTimeouts = 0;
+                    wcwHfrMaxAge = 0;
                 }
             }
 

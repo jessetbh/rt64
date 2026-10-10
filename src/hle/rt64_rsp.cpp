@@ -75,6 +75,7 @@ namespace RT64 {
         projectionMatrixChanged = false;
         projectionMatrixInversed = false;
         wcwCameraLoaded = false;
+        wcwScreenSpace = false;
         viewportChanged = false;
         modelViewProjMatrix = hlslpp::float4x4(0.0f);
         modelViewProjChanged = false;
@@ -417,6 +418,31 @@ namespace RT64 {
         }
     }
 
+    void RSP::wcwSetScreenSpace(bool screenSpace) {
+        if (screenSpace == wcwScreenSpace) {
+            return;
+        }
+
+        const int top = projectionMatrixStackSize - 1;
+        if (screenSpace) {
+            wcwCameraView = viewMatrixStack[top];
+            wcwCameraProj = projMatrixStack[top];
+            wcwCameraViewProj = viewProjMatrixStack[top];
+            viewMatrixStack[top] = wcwPreCameraView;
+            projMatrixStack[top] = wcwPreCameraProj;
+            viewProjMatrixStack[top] = wcwPreCameraViewProj;
+        }
+        else {
+            viewMatrixStack[top] = wcwCameraView;
+            projMatrixStack[top] = wcwCameraProj;
+            viewProjMatrixStack[top] = wcwCameraViewProj;
+        }
+
+        wcwScreenSpace = screenSpace;
+        projectionMatrixChanged = true;
+        projectionMatrixInversed = false;
+    }
+
     void RSP::forceMatrix(uint32_t address) {
 #   ifdef LOG_SPECIAL_MATRIX_OPERATIONS
         RT64_LOG_PRINTF("RSP::forceMatrix(0x%08X)", address);
@@ -427,6 +453,14 @@ namespace RT64 {
         modelViewProjMatrix = fixedMatrix->toMatrix4x4();
         modelViewProjInserted = true;
         modelViewProjChanged = false;
+
+        // [wcw hfr] With a camera loaded, a matrix without perspective is a screen-space draw.
+        if (wcwCameraLoaded) {
+            const float eps = 1e-5f;
+            const bool affine = (std::abs(float(modelViewProjMatrix[0][3])) < eps) && (std::abs(float(modelViewProjMatrix[1][3])) < eps) &&
+                (std::abs(float(modelViewProjMatrix[2][3])) < eps) && (std::abs(float(modelViewProjMatrix[3][3]) - 1.0f) < eps);
+            wcwSetScreenSpace(affine);
+        }
 
         // [wcw fix] The hooks key entries by KSEG0 address; rdramAddress is the physical offset.
         pureModelMatrixValid = wcwLookupLocalMatrix(rdramAddress + 0x80000000u, pureModelMatrix, currentCameraMatrix, pureModelEntityAddr);
@@ -486,7 +520,13 @@ namespace RT64 {
             return true;
         }
 
+        // [wcw hfr] A camera load always applies to the camera matrices, not the screen-space set.
+        wcwSetScreenSpace(false);
+
         if (!wcwCameraLoaded) {
+            wcwPreCameraView = viewMatrixStack[top];
+            wcwPreCameraProj = projMatrixStack[top];
+            wcwPreCameraViewProj = viewProjMatrixStack[top];
             viewMatrixStack[top] = hlslpp::float4x4::identity();
             projMatrixStack[top] = hlslpp::float4x4::identity();
             wcwCameraLoaded = true;
