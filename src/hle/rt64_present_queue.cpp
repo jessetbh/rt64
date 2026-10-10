@@ -502,7 +502,8 @@ namespace RT64 {
             // [wcw hfr] WCW_HFR_PACE=1: spread a game frame's presents evenly over its duration (present i at
             // start + i * gameFrame / framesToPresent). Presenting on the next refresh bunches them on fast
             // displays (2 frames ~7 ms apart at 144 Hz, then a long gap), which looks like judder.
-            static const bool wcwHfrPace = getenv("WCW_HFR_PACE") != nullptr;
+            static const bool wcwHfrPaceEnv = getenv("WCW_HFR_PACE") != nullptr;
+            const bool wcwHfrPace = wcwInterpolationProfile().evenPacing || wcwHfrPaceEnv;
             static std::chrono::steady_clock::time_point wcwHfrFrameStart;
             if (wcwHfrPace && presentFrame && (framesToPresent > 1) && (viOriginalRate > 0)) {
                 if (i == 0) {

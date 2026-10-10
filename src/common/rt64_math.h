@@ -13,6 +13,17 @@ namespace RT64 {
     // [wcw fix] Set once frame matching has started (60Hz target above the game's rate). The 60Hz changes
     // for this game apply only while it is set, so the renderer behaves as stock RT64 until then.
     extern std::atomic<bool> wcwInterpActive;
+    // [wcw hfr] Per-game interpolation profile, declared by the game through the frontend
+    // (recompui::programconfig::set_frame_interpolation). The WCW_HFR_* environment variables force a
+    // flag on for debugging.
+    struct WcwInterpolationProfile {
+        bool hooklessObjects = false;
+        bool primeGeneratedFrames = false;
+        bool skipClearOnlyTargets = true;
+        bool evenPacing = true;
+    };
+    void wcwSetInterpolationProfile(bool hooklessObjects, bool primeGeneratedFrames, bool skipClearOnlyTargets, bool evenPacing);
+    const WcwInterpolationProfile &wcwInterpolationProfile();
     // [wcw hfr] Spike counters for WCW_HFR_LOG: forced matrices drawn in 3D with a camera loaded, how many
     // of them had a camera-independent matrix (hook or hookless), and pairs matched on it across frames.
     extern std::atomic<uint32_t> wcwHfrForced, wcwHfrPure, wcwHfrPurePairs, wcwHfrWorkloadsCompared, wcwHfrIdPairs, wcwHfrIds;

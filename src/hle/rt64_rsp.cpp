@@ -500,7 +500,8 @@ namespace RT64 {
         // [wcw hfr] WCW_HFR_HOOKLESS=1: with the camera loaded and no hook entry, derive the
         // camera-independent matrix from the combined one (pure = MVP * inv(camera VP)); the object's
         // identity across frames is the address the matrix is uploaded from.
-        static const bool wcwHfrHookless = getenv("WCW_HFR_HOOKLESS") != nullptr;
+        static const bool wcwHfrHooklessEnv = getenv("WCW_HFR_HOOKLESS") != nullptr;
+        const bool wcwHfrHookless = wcwInterpolationProfile().hooklessObjects || wcwHfrHooklessEnv;
         if (wcwCameraLoaded && !wcwScreenSpace) {
             const hlslpp::float4x4 &wcwVP = viewProjMatrixStack[projectionMatrixStackSize - 1];
             if (!pureModelMatrixValid && wcwHfrHookless && !isMatrixZero(wcwVP)) {

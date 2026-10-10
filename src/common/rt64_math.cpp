@@ -4,6 +4,7 @@
 
 #include "rt64_math.h"
 
+#include <cstdlib>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -11,6 +12,20 @@
 
 namespace RT64 {
     std::atomic<bool> wcwInterpActive = { false };
+
+    static WcwInterpolationProfile wcwProfile;
+
+    void wcwSetInterpolationProfile(bool hooklessObjects, bool primeGeneratedFrames, bool skipClearOnlyTargets, bool evenPacing) {
+        wcwProfile.hooklessObjects = hooklessObjects;
+        wcwProfile.primeGeneratedFrames = primeGeneratedFrames;
+        wcwProfile.skipClearOnlyTargets = skipClearOnlyTargets;
+        wcwProfile.evenPacing = evenPacing;
+    }
+
+    const WcwInterpolationProfile &wcwInterpolationProfile() {
+        return wcwProfile;
+    }
+
     std::atomic<uint32_t> wcwHfrForced = { 0 }, wcwHfrPure = { 0 }, wcwHfrPurePairs = { 0 }, wcwHfrWorkloadsCompared = { 0 }, wcwHfrIdPairs = { 0 }, wcwHfrIds = { 0 };
     std::atomic<uint32_t> wcwLastRunLength = { 0 };
     std::atomic<uint64_t> wcwSlotRealSerial[3] = {};

@@ -740,7 +740,8 @@ namespace RT64 {
             // (ported from the July World Tour fix, bd35fac). Games that clear each buffer in the PREVIOUS
             // frame submit no clear in this one, so a fresh override target keeps undefined (white)
             // content behind the re-rendered geometry: World Tour's title fade alternated grey/white.
-            static const bool wcwHfrPrime = getenv("WCW_HFR_PRIME") != nullptr;
+            static const bool wcwHfrPrimeEnv = getenv("WCW_HFR_PRIME") != nullptr;
+            const bool wcwHfrPrime = wcwInterpolationProfile().primeGeneratedFrames || wcwHfrPrimeEnv;
             if (wcwHfrPrime && (overrideTarget != nullptr) && !usingMSAA) {
                 RenderTarget &liveTarget = targetManager.get(overrideTargetKey, true);
                 if (!liveTarget.isEmpty() && (&liveTarget != overrideTarget)) {
@@ -1275,7 +1276,8 @@ namespace RT64 {
                         // [wcw hfr] WCW_HFR_TARGETDRAWS=1: never pick a pair that only clears (fill rects) as the
                         // interpolation target. Older AKI engines end a frame by pre-clearing the NEXT buffer, which
                         // the scan above reaches first: every generated frame then re-renders only that clear (black).
-                        static const bool wcwHfrTargetDraws = getenv("WCW_HFR_TARGETDRAWS") != nullptr;
+                        static const bool wcwHfrTargetDrawsEnv = getenv("WCW_HFR_TARGETDRAWS") != nullptr;
+                        const bool wcwHfrTargetDraws = wcwInterpolationProfile().skipClearOnlyTargets || wcwHfrTargetDrawsEnv;
                         if (wcwHfrTargetDraws && (fbPair.fillRectOnly || (fbPair.gameCallCount == 0))) {
                             continue;
                         }
