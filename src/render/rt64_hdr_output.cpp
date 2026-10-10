@@ -9,33 +9,42 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <vector>
 
 #if defined(_WIN32)
 #   include <dxgi1_6.h>
 #endif
 
 namespace RT64 {
+    // Used when Windows doesn't report an SDR white level.
+    static const float DefaultSdrWhiteNits = 200.0f;
+
     static std::mutex hdrSettingsMutex;
     static HdrOutput::Settings hdrSettings;
+    static float hdrSdrWhiteNits = DefaultSdrWhiteNits;
     static std::atomic<bool> hdrActive = false;
-    static std::atomic<float> hdrScale = 2.5f;
+    static std::atomic<float> hdrPaperWhite = DefaultSdrWhiteNits;
+    static std::atomic<float> hdrPeakNits = 0.0f;
 
-    // Test overrides: WCW_HDR=1/0 (enabled), WCW_HDR=force (scRGB even with Windows HDR off; Windows
-    // composites it onto the SDR desktop), WCW_HDR_PAPER=<nits>.
     static bool envForced() {
         const char *env = getenv("WCW_HDR");
         return (env != nullptr) && (strcmp(env, "force") == 0);
     }
 
-    void HdrOutput::setUserSettings(const Settings &settings) {
-        std::scoped_lock lock(hdrSettingsMutex);
-        hdrSettings = settings;
-        float paperWhite = settings.paperWhiteNits;
+    // Paper white = Windows' SDR content brightness x the user's HDR Brightness. Call with the lock held.
+    static void updatePaperWhite() {
+        float paperWhite = hdrSdrWhiteNits * std::clamp(hdrSettings.brightness, 0.25f, 4.0f);
         if (const char *env = getenv("WCW_HDR_PAPER")) {
             paperWhite = float(atof(env));
         }
 
-        hdrScale = std::clamp(paperWhite, 80.0f, 1000.0f) / 80.0f;
+        hdrPaperWhite = std::clamp(paperWhite, 80.0f, 1000.0f);
+    }
+
+    void HdrOutput::setUserSettings(const Settings &settings) {
+        std::scoped_lock lock(hdrSettingsMutex);
+        hdrSettings = settings;
+        updatePaperWhite();
     }
 
     HdrOutput::Settings HdrOutput::userSettings() {
@@ -49,12 +58,53 @@ namespace RT64 {
             settings.enabled = (strcmp(env, "0") != 0);
         }
 
-        if (const char *env = getenv("WCW_HDR_PAPER")) {
-            settings.paperWhiteNits = float(atof(env));
-        }
-
         return settings;
     }
+
+#   if defined(_WIN32)
+    // Windows' "SDR content brightness" for the monitor (DISPLAYCONFIG_SDR_WHITE_LEVEL), in nits.
+    static float querySdrWhiteNits(HMONITOR monitor) {
+        MONITORINFOEXW monitorInfo = {};
+        monitorInfo.cbSize = sizeof(monitorInfo);
+        if (!GetMonitorInfoW(monitor, &monitorInfo)) {
+            return 0.0f;
+        }
+
+        UINT32 pathCount = 0, modeCount = 0;
+        if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount) != ERROR_SUCCESS) {
+            return 0.0f;
+        }
+
+        std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
+        std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
+        if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(), &modeCount, modes.data(), nullptr) != ERROR_SUCCESS) {
+            return 0.0f;
+        }
+
+        for (UINT32 i = 0; i < pathCount; i++) {
+            DISPLAYCONFIG_SOURCE_DEVICE_NAME sourceName = {};
+            sourceName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+            sourceName.header.size = sizeof(sourceName);
+            sourceName.header.adapterId = paths[i].sourceInfo.adapterId;
+            sourceName.header.id = paths[i].sourceInfo.id;
+            if ((DisplayConfigGetDeviceInfo(&sourceName.header) != ERROR_SUCCESS) || (wcscmp(sourceName.viewGdiDeviceName, monitorInfo.szDevice) != 0)) {
+                continue;
+            }
+
+            DISPLAYCONFIG_SDR_WHITE_LEVEL whiteLevel = {};
+            whiteLevel.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
+            whiteLevel.header.size = sizeof(whiteLevel);
+            whiteLevel.header.adapterId = paths[i].targetInfo.adapterId;
+            whiteLevel.header.id = paths[i].targetInfo.id;
+            if (DisplayConfigGetDeviceInfo(&whiteLevel.header) == ERROR_SUCCESS) {
+                // SDRWhiteLevel is in units of 1/1000 of 80 nits.
+                return float(whiteLevel.SDRWhiteLevel) * 80.0f / 1000.0f;
+            }
+        }
+
+        return 0.0f;
+    }
+#   endif
 
     HdrOutput::DisplayInfo HdrOutput::queryDisplay(RenderWindow window) {
         DisplayInfo info;
@@ -90,6 +140,7 @@ namespace RT64 {
         }
 
         factory->Release();
+        info.sdrWhiteNits = querySdrWhiteNits(monitor);
 #   endif
         if (envForced()) {
             info.hdrEnabled = true;
@@ -98,16 +149,28 @@ namespace RT64 {
         return info;
     }
 
-    void HdrOutput::setActive(bool active) {
+    void HdrOutput::setActive(bool active, const DisplayInfo &display) {
+        std::scoped_lock lock(hdrSettingsMutex);
         hdrActive = active;
+        hdrPeakNits = display.maxLuminance;
+        hdrSdrWhiteNits = (display.sdrWhiteNits > 0.0f) ? display.sdrWhiteNits : DefaultSdrWhiteNits;
+        updatePaperWhite();
     }
 
     bool HdrOutput::active() {
         return hdrActive;
     }
 
+    float HdrOutput::peakNits() {
+        return hdrPeakNits;
+    }
+
+    float HdrOutput::paperWhiteNits() {
+        return hdrPaperWhite;
+    }
+
     float HdrOutput::sdrScale() {
-        return hdrScale;
+        return hdrPaperWhite / 80.0f;
     }
 
     RenderFormat HdrOutput::swapChainFormat() {

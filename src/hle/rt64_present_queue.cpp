@@ -532,11 +532,16 @@ namespace RT64 {
                             };
 
                             const float invScale = 1.0f / HdrOutput::sdrScale();
+                            double nitsSum = 0.0;
+                            float nitsMax = 0.0f;
                             wcwHdrConverted.resize(uint64_t(wcwRbRow) * wcwRbH * 4);
                             for (uint32_t y = 0; y < wcwRbH; y++) {
                                 const uint16_t *src = (const uint16_t *)(p + uint64_t(y) * wcwRbRow * 8);
                                 uint8_t *dst = wcwHdrConverted.data() + uint64_t(y) * wcwRbRow * 4;
                                 for (uint32_t x = 0; x < wcwRbW; x++) {
+                                    const float nits = 80.0f * (0.2126f * halfToFloat(src[x * 4 + 0]) + 0.7152f * halfToFloat(src[x * 4 + 1]) + 0.0722f * halfToFloat(src[x * 4 + 2]));
+                                    nitsSum += nits;
+                                    nitsMax = std::max(nitsMax, nits);
                                     dst[x * 4 + 0] = toSrgb8(halfToFloat(src[x * 4 + 2]) * invScale);
                                     dst[x * 4 + 1] = toSrgb8(halfToFloat(src[x * 4 + 1]) * invScale);
                                     dst[x * 4 + 2] = toSrgb8(halfToFloat(src[x * 4 + 0]) * invScale);
@@ -544,6 +549,7 @@ namespace RT64 {
                                 }
                             }
 
+                            fprintf(stderr, "[wcw hdr] present %d: mean %.0f nits, max %.0f nits\n", wcwPresentN, nitsSum / (double(wcwRbW) * wcwRbH), nitsMax);
                             p = wcwHdrConverted.data();
                         }
 

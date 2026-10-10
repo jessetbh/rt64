@@ -339,9 +339,10 @@ namespace RT64 {
         }
 
         // [wcw hdr] scRGB swap chain when HDR output is enabled and Windows HDR is on for this display.
-        HdrOutput::setActive(false);
+        HdrOutput::setActive(false, HdrOutput::DisplayInfo());
+        HdrOutput::DisplayInfo display;
         if (HdrOutput::userSettings().enabled) {
-            const HdrOutput::DisplayInfo display = HdrOutput::queryDisplay(appWindow->windowHandle);
+            display = HdrOutput::queryDisplay(appWindow->windowHandle);
             if (display.hdrEnabled) {
                 swapChainDesc.format = RenderFormat::R16G16B16A16_FLOAT;
                 swapChainDesc.colorSpace = RenderSwapChainColorSpace::SCRGB_LINEAR;
@@ -360,9 +361,10 @@ namespace RT64 {
             swapChain = presentGraphicsWorker->commandQueue->createSwapChain(swapChainDesc);
         }
 
-        HdrOutput::setActive(swapChainDesc.colorSpace == RenderSwapChainColorSpace::SCRGB_LINEAR);
+        HdrOutput::setActive(swapChainDesc.colorSpace == RenderSwapChainColorSpace::SCRGB_LINEAR, display);
         if (HdrOutput::active()) {
-            fprintf(stderr, "[wcw hdr] HDR output active (scRGB), paper white %.0f nits.\n", HdrOutput::userSettings().paperWhiteNits);
+            fprintf(stderr, "[wcw hdr] HDR output active (scRGB), paper white %.0f nits (Windows SDR white %.0f), display peak %.0f nits (full frame %.0f).\n",
+                HdrOutput::paperWhiteNits(), display.sdrWhiteNits, display.maxLuminance, display.maxFullFrameLuminance);
         }
 
         // Before configuring multisampling, make sure the device actually supports it for the formats we'll use. If it doesn't, turn off antialiasing in the configuration.

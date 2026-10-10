@@ -151,14 +151,17 @@ namespace RT64 {
         uint32_t width = 0;
         uint32_t height = 0;
 
+        RenderFormat format = RenderFormat::UNKNOWN;
+
         // Returns true when the target had to be (re)created.
-        bool ensure(RenderDevice *device, uint32_t newWidth, uint32_t newHeight, const char *name) {
-            if ((texture != nullptr) && (width == newWidth) && (height == newHeight)) {
+        bool ensure(RenderDevice *device, uint32_t newWidth, uint32_t newHeight, const char *name, RenderFormat newFormat = RenderFormat::B8G8R8A8_UNORM) {
+            if ((texture != nullptr) && (width == newWidth) && (height == newHeight) && (format == newFormat)) {
                 return false;
             }
 
             framebuffer.reset();
-            texture = device->createTexture(RenderTextureDesc::ColorTarget(newWidth, newHeight, RenderFormat::B8G8R8A8_UNORM));
+            format = newFormat;
+            texture = device->createTexture(RenderTextureDesc::ColorTarget(newWidth, newHeight, newFormat));
             texture->setName(name);
             const RenderTexture *colorTarget = texture.get();
             framebuffer = device->createFramebuffer(RenderFramebufferDesc(&colorTarget, 1));
@@ -180,6 +183,10 @@ namespace RT64 {
         uint64_t appliedVersion = 0;
         Settings settings;
         std::string guestPreset;
+        // [wcw hdr] Adaptive mask: the preset's own mask strength, and what's applied for the display.
+        float baseMaskStrength = -1.0f;
+        float appliedMaskStrength = -1.0f;
+        float hdrGain = 1.0f;
         LibraChain guestChain;
         LibraChain beamChain;
         std::unique_ptr<RenderWorker> setupWorker;
@@ -261,6 +268,26 @@ namespace RT64 {
             }
 
             chain = LibraChain();
+        }
+
+        float getParameter(LibraChain &chain, const char *name) {
+            float value = -1.0f;
+            libra_error_t error = nullptr;
+#       if defined(_WIN32)
+            if (chain.d3d12 != nullptr) {
+                error = libra.d3d12_filter_chain_get_param(&chain.d3d12, name, &value);
+            }
+#       endif
+            if (chain.vk != nullptr) {
+                error = libra.vk_filter_chain_get_param(&chain.vk, name, &value);
+            }
+
+            if (error != nullptr) {
+                logError((std::string("Reading parameter ") + name).c_str(), error);
+                return -1.0f;
+            }
+
+            return value;
         }
 
         void setParameter(LibraChain &chain, const std::string &name, float value) {
@@ -444,8 +471,12 @@ namespace RT64 {
                     frameCount = 0;
                     haveFrontFrame = false;
                     pendingFrame = false;
+                    baseMaskStrength = -1.0f;
+                    appliedMaskStrength = -1.0f;
+                    hdrGain = 1.0f;
                     if (createChain(guestChain, settings.preset)) {
                         applyGuestParameters();
+                        baseMaskStrength = getParameter(guestChain, "maskstr");
                     }
                 }
                 else {
@@ -536,11 +567,43 @@ namespace RT64 {
                 return swapChainTexture;
             }
 
-            hdrStage.ensure(device, windowWidth, windowHeight, "CRT Filter HDR Stage");
+            hdrStage.ensure(device, windowWidth, windowHeight, "CRT Filter HDR Stage", RenderFormat::R16G16B16A16_FLOAT);
             commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(hdrStage.texture.get(), RenderTextureLayout::COLOR_WRITE));
             commandList->setFramebuffer(hdrStage.framebuffer.get());
             commandList->clearColor();
             return hdrStage.texture.get();
+        }
+
+        // [wcw hdr] Adaptive phosphor mask. A full-strength mask passes roughly a third of the light, so
+        // in SDR the presets use a weak mask plus guest's brightness boost. With HDR, the display's
+        // headroom above paper white (peak / paper white) pays for a stronger mask: the mask is raised
+        // as far as the headroom allows and the compose pass multiplies the light back in, so the
+        // picture is never dimmer than in SDR. Full strength from about 3x headroom (a 1000-nit display
+        // at ~330 nits paper white). WCW_HDR_MASK=<0..1> forces the strength.
+        void updateHdrMask() {
+            if (!HdrOutput::active() || (baseMaskStrength < 0.0f)) {
+                hdrGain = 1.0f;
+                return;
+            }
+
+            const float MaskLoss = 2.0f / 3.0f;
+            const float paperWhite = HdrOutput::paperWhiteNits();
+            const float peak = (HdrOutput::peakNits() > 0.0f) ? HdrOutput::peakNits() : 1000.0f;
+            const float headroom = std::max(peak / paperWhite, 1.0f);
+            const float baseTransmission = 1.0f - baseMaskStrength * MaskLoss;
+            float strength = std::clamp((1.0f - baseTransmission / headroom) / MaskLoss, baseMaskStrength, 1.0f);
+            static const float envMask = getenv("WCW_HDR_MASK") ? float(atof(getenv("WCW_HDR_MASK"))) : -1.0f;
+            if (envMask >= 0.0f) {
+                strength = std::clamp(envMask, 0.0f, 1.0f);
+            }
+
+            hdrGain = baseTransmission / (1.0f - strength * MaskLoss);
+            if (std::abs(strength - appliedMaskStrength) > 0.005f) {
+                setParameter(guestChain, "maskstr", strength);
+                appliedMaskStrength = strength;
+                fprintf(stderr, "[wcw hdr] CRT mask strength %.2f (preset %.2f), gain %.2f: peak %.0f / paper white %.0f nits.\n",
+                    strength, baseMaskStrength, hdrGain, peak, paperWhite);
+            }
         }
 
         // Converts the HDR stage target into the swap chain (no-op without HDR), then leaves the swap
@@ -562,7 +625,7 @@ namespace RT64 {
 
                 hdrComposeSet->setTexture(hdrComposeSet->gInput, hdrStage.texture.get(), RenderTextureLayout::SHADER_READ);
                 interop::VideoInterfaceCB constants = {};
-                constants.hdrScale = HdrOutput::sdrScale();
+                constants.hdrScale = HdrOutput::sdrScale() * hdrGain;
                 const ShaderRecord &compose = shaderLibrary->videoInterfaceHdrCompose;
                 commandList->setPipeline(compose.pipeline.get());
                 commandList->setGraphicsPipelineLayout(compose.pipelineLayout.get());
@@ -654,6 +717,7 @@ namespace RT64 {
 
         impl->sourceTarget.ensure(impl->device, sourceWidth, sourceHeight, "CRT Filter Source");
         impl->shaderLibrary = p.vi.shaderLibrary;
+        impl->updateHdrMask();
 
         RenderCommandList *commandList = p.presentWorker->commandList.get();
         RenderTexture *sourceTexture = impl->sourceTarget.texture.get();
@@ -683,7 +747,8 @@ namespace RT64 {
             // Render the preset into the back buffer; it becomes visible when the scan restarts.
             Impl &s = *impl;
             for (CrtTarget &target : s.guestTargets) {
-                if (target.ensure(s.device, windowWidth, windowHeight, "CRT Filter Beam Input")) {
+                const RenderFormat beamFormat = HdrOutput::active() ? RenderFormat::R16G16B16A16_FLOAT : RenderFormat::B8G8R8A8_UNORM;
+                if (target.ensure(s.device, windowWidth, windowHeight, "CRT Filter Beam Input", beamFormat)) {
                     s.haveFrontFrame = false;
                     s.pendingFrame = false;
                 }
