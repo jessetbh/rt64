@@ -155,7 +155,61 @@ namespace RT64 {
             workloadInFrame++;
         }
 
-        currentSlot = std::min(workloadInFrame, MaxSlots - 1);
+        workloadCounter++;
+    }
+
+    uint32_t WcwRaytracer::chooseSlot() const {
+        // Score = (1 - IoU of the padded world bounds) + relative mesh count difference. The ring
+        // and the floor bits are static, the wrestlers move a little between their workloads.
+        const float Pad = 10.0f;
+        auto volume = [](const float *mn, const float *mx) {
+            return std::max(mx[0] - mn[0], 0.0f) * std::max(mx[1] - mn[1], 0.0f) * std::max(mx[2] - mn[2], 0.0f);
+        };
+
+        float curMin[3], curMax[3];
+        for (uint32_t i = 0; i < 3; i++) {
+            curMin[i] = worldMin[i] - Pad;
+            curMax[i] = worldMax[i] + Pad;
+        }
+
+        const uint32_t meshCount = uint32_t(meshes.size());
+        uint32_t best = UINT32_MAX;
+        float bestScore = 1.0f;
+        uint32_t oldest = 0;
+        for (uint32_t s = 0; s < MaxSlots; s++) {
+            const Slot &slot = slots[s];
+            if (!slot.valid) {
+                if (slots[oldest].valid) {
+                    oldest = s;
+                }
+
+                continue;
+            }
+
+            if (slots[oldest].valid && (slot.builtWorkload < slots[oldest].builtWorkload)) {
+                oldest = s;
+            }
+
+            float slotMin[3], slotMax[3], interMin[3], interMax[3];
+            for (uint32_t i = 0; i < 3; i++) {
+                slotMin[i] = slot.boundsMin[i] - Pad;
+                slotMax[i] = slot.boundsMax[i] + Pad;
+                interMin[i] = std::max(curMin[i], slotMin[i]);
+                interMax[i] = std::min(curMax[i], slotMax[i]);
+            }
+
+            const float inter = volume(interMin, interMax);
+            const float uni = volume(curMin, curMax) + volume(slotMin, slotMax) - inter;
+            const float iou = (uni > 0.0f) ? (inter / uni) : 0.0f;
+            const float meshDiff = float(std::abs(int(meshCount) - int(slot.meshCount))) / float(std::max(std::max(meshCount, slot.meshCount), 1u));
+            const float score = (1.0f - iou) + meshDiff;
+            if (score < bestScore) {
+                bestScore = score;
+                best = s;
+            }
+        }
+
+        return (best != UINT32_MAX) ? best : oldest;
     }
 
     void WcwRaytracer::reset() {
@@ -293,10 +347,14 @@ namespace RT64 {
 
     void WcwRaytracer::recordBuild(RenderWorker *worker) {
         structuresBuilt = false;
-        Slot &slot = slots[currentSlot];
         if (!sceneActive || meshes.empty()) {
-            slot.valid = false;
             return;
+        }
+
+        currentSlot = chooseSlot();
+        Slot &slot = slots[currentSlot];
+        if (!slot.valid) {
+            slot.historyValid = false;
         }
 
         // Bottom level: every gathered draw call is one geometry over the shared world position buffer.
@@ -308,7 +366,12 @@ namespace RT64 {
         }
 
         slot.valid = true;
-        slot.builtFrame = frameCounter;
+        slot.builtWorkload = workloadCounter;
+        slot.meshCount = uint32_t(meshes.size());
+        for (uint32_t i = 0; i < 3; i++) {
+            slot.boundsMin[i] = worldMin[i];
+            slot.boundsMax[i] = worldMax[i];
+        }
         if (timingPool != nullptr) {
             worker->commandList->resetQueryPool(timingPool.get(), 0, StampCount);
             worker->commandList->writeTimestamp(timingPool.get(), StampBuildBegin);
@@ -324,12 +387,13 @@ namespace RT64 {
         }
 
         // Top level: this workload's geometry (mask 0x1: primary and shadow rays) plus the other
-        // workload slots built this frame or the previous one (mask 0x2: shadow rays only).
+        // scenes built recently (mask 0x2: shadow rays only). Scenes the game stopped drawing
+        // age out after a few workloads.
         instances.clear();
         instances.emplace_back(RenderBufferReference(slot.blasBuffer.get()), 0, 0x1, 0, true, RenderAffineTransform());
         for (uint32_t s = 0; s < MaxSlots; s++) {
             const Slot &other = slots[s];
-            if ((s != currentSlot) && other.valid && ((frameCounter - other.builtFrame) <= 1)) {
+            if ((s != currentSlot) && other.valid && ((workloadCounter - other.builtWorkload) <= StaleWorkloads)) {
                 instances.emplace_back(RenderBufferReference(other.blasBuffer.get()), s + 1, 0x2, 0, true, RenderAffineTransform());
             }
         }
@@ -506,7 +570,7 @@ namespace RT64 {
         params.keyWeight = envFloat(getenv("WCW_RT_KEY_WEIGHT"), 0.5f);
         params.characterShadowStrength = envFloat(getenv("WCW_RT_SHADOW_CHAR"), 0.35f);
         params.lightSize = envFloat(getenv("WCW_RT_LIGHT_SIZE"), 20.0f);
-        params.temporalAlpha = envFloat(getenv("WCW_RT_TEMPORAL"), 0.15f);
+        params.temporalAlpha = envFloat(getenv("WCW_RT_TEMPORAL"), 0.1f);
         params.frameIndex = frameIndex++;
         params.prevViewProj = slot.prevViewProj;
         params.historyValid = slot.historyValid ? 1 : 0;
@@ -583,10 +647,12 @@ namespace RT64 {
             timingPixels = rectWidth * rectHeight;
             timingFullScreen = boundsFullScreen;
             timingTraceHeight = traceHeight;
-            static const bool traceLog = getenv("WCW_RT_TRACELOG") != nullptr;
-            if (traceLog && ((frameCounter % 100) == 0)) {
-                fprintf(stderr, "[wcw rt trace] frame %llu slot %u target %p %ux%u rect (%u,%u)-(%u,%u) of %ux%u meshes %u tris %u world (%.0f,%.0f,%.0f)-(%.0f,%.0f,%.0f)\n",
-                    (unsigned long long)frameCounter, currentSlot, (void *)colorTarget, outputWidth, outputHeight, traceRect[0], traceRect[1], traceRect[2], traceRect[3],
+            // WCW_RT_TRACELOG=1: every 100th frame; =<present>: every trace for 30 presents from there.
+            static const int traceLogAt = getenv("WCW_RT_TRACELOG") ? atoi(getenv("WCW_RT_TRACELOG")) : -1;
+            const bool traceLogNow = (traceLogAt == 1) ? ((frameCounter % 100) == 0) : ((traceLogAt > 1) && (wcwRtPresentCounter >= traceLogAt) && (wcwRtPresentCounter < traceLogAt + 30));
+            if (traceLogNow) {
+                fprintf(stderr, "[wcw rt trace] present %d frame %llu slot %u others %u hist %d target %p %ux%u rect (%u,%u)-(%u,%u) of %ux%u meshes %u tris %u world (%.0f,%.0f,%.0f)-(%.0f,%.0f,%.0f)\n",
+                    int(wcwRtPresentCounter), (unsigned long long)frameCounter, currentSlot, uint32_t(instances.size() - 1), slot.historyValid ? 1 : 0, (void *)colorTarget, outputWidth, outputHeight, traceRect[0], traceRect[1], traceRect[2], traceRect[3],
                     traceWidth, traceHeight, timingMeshes, timingTriangles, worldMin[0], worldMin[1], worldMin[2], worldMax[0], worldMax[1], worldMax[2]);
             }
         }

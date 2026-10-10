@@ -66,16 +66,22 @@ namespace RT64 {
         float worldMin[3] = {};
         float worldMax[3] = {};
 
-        // AKI games build one frame from several RSP workloads (WCW: ring and wrestlers apart),
-        // and each workload gets its own pass. Every workload slot keeps its bottom-level
-        // structure so the others' passes can include it as a shadow caster: slots before the
-        // current one are from this frame, later ones from the previous frame (one frame stale).
+        // AKI games build one frame from several RSP workloads (WCW: floor bits, ring and
+        // wrestlers apart), and each workload gets its own pass. Every slot keeps one scene's
+        // bottom-level structure so the others' passes can include it as a shadow caster, plus
+        // that scene's soft-shadow history. Slots follow scene identity (mesh count and world
+        // bounds), not the workload's position within the present: the game's workload cycle
+        // drifts against presents, so positions would swap scenes from frame to frame.
         static const uint32_t MaxSlots = 8;
+        static const uint32_t StaleWorkloads = 8;
         struct Slot {
             std::unique_ptr<RenderBuffer> blasBuffer;
             std::unique_ptr<RenderAccelerationStructure> blas;
             uint64_t blasBufferSize = 0;
-            uint64_t builtFrame = 0;
+            uint64_t builtWorkload = 0;
+            uint32_t meshCount = 0;
+            float boundsMin[3] = {};
+            float boundsMax[3] = {};
             bool valid = false;
 
             // Soft-shadow history (ping-pong) of this workload's pass, with the camera it used.
@@ -90,6 +96,9 @@ namespace RT64 {
         Slot slots[MaxSlots];
         uint32_t currentSlot = 0;
         uint32_t workloadInFrame = 0;
+        uint64_t workloadCounter = 0;
+        // Picks the slot whose last scene best matches the gathered one (or the oldest slot).
+        uint32_t chooseSlot() const;
         uint64_t lastPresentId = UINT64_MAX;
         uint64_t frameCounter = 0;
         std::vector<RenderTopLevelASInstance> instances;

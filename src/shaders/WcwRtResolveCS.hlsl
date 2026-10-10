@@ -32,27 +32,33 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
     // Neighborhood range of this frame's samples (hit pixels only) and a depth-aware 3x3 tent
     // filter of them: neighbors on the same surface (similar hit distance) are averaged, so a
     // single jittered sample per light doesn't speckle penumbrae, while object edges stay sharp.
-    float minFactor = current.x;
-    float maxFactor = current.x;
     float filteredSum = 0.0f;
+    float filteredSqSum = 0.0f;
     float weightSum = 0.0f;
     for (int y = -1; y <= 1; y++) {
         for (int x = -1; x <= 1; x++) {
             const int2 neighbor = clamp(int2(pixel) + int2(x, y), int2(0, 0), int2(gParams.resolution) - 1);
             const float2 sample = gCurrent[neighbor];
             if (sample.y > 0.0f) {
-                minFactor = min(minFactor, sample.x);
-                maxFactor = max(maxFactor, sample.x);
-
                 const float spatial = ((x == 0) ? 2.0f : 1.0f) * ((y == 0) ? 2.0f : 1.0f);
                 const float depth = exp(-abs(sample.y - current.y) / max(current.y * 0.01f, 0.5f));
                 filteredSum += sample.x * spatial * depth;
+                filteredSqSum += sample.x * sample.x * spatial * depth;
                 weightSum += spatial * depth;
             }
         }
     }
 
     const float filtered = filteredSum / max(weightSum, 1e-4f);
+
+    // History is clipped to the same-surface neighborhood's mean +- spread (variance clipping).
+    // A min/max clamp of one or two noisy samples per light is so tight it rejects the history
+    // every frame and the penumbrae shimmer; the spread bound still drops history when the
+    // shadow really moves (a wrestler steps away).
+    const float variance = max(filteredSqSum / max(weightSum, 1e-4f) - filtered * filtered, 0.0f);
+    const float spread = 1.25f * sqrt(variance) + 0.04f;
+    const float minFactor = filtered - spread;
+    const float maxFactor = filtered + spread;
 
     // Same primary ray as the trace pass, so the hit distance gives the world position.
     const float2 local = ((float2(pixel) + 0.5f) / gParams.traceScale - gParams.viewport.xy) / gParams.viewport.zw;
