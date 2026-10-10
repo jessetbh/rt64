@@ -242,6 +242,18 @@ namespace RT64 {
                 defaultPreset.name = "default";
             }
 
+            roomEnabled = false;
+            if (root.contains("room")) {
+                const nlohmann::json &room = root["room"];
+                roomPreset = parsePreset(room, defaultPreset);
+                roomPreset.name = "room (fallback)";
+                roomPreset.anchorScene = false;
+                roomMaxExtent = room.value("maxExtent", 3000.0f);
+                roomCount = std::clamp(room.value("count", 3u), 1u, uint32_t(WCW_RT_MAX_LIGHTS));
+                roomHeight = room.value("height", 0.85f);
+                roomEnabled = true;
+            }
+
             if (root.contains("venues")) {
                 for (const auto &v : root["venues"]) {
                     venuePresets.push_back(parsePreset(v, defaultPreset));
@@ -349,6 +361,8 @@ namespace RT64 {
             candidateFrames = 0;
         }
 
+        updateRoomPreset();
+
         static const bool venueLog = getenv("WCW_RT_VENUE_LOG") != nullptr;
         if (venueLog && ((presentCount % 300) == 0) && (textureHistory.size() == VenueWindow)) {
             std::vector<std::pair<uint32_t, uint64_t>> stable;
@@ -359,7 +373,7 @@ namespace RT64 {
             }
 
             std::sort(stable.begin(), stable.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
-            fprintf(stderr, "[wcw rt] venue log present %d (active %s): scene (%.0f,%.0f,%.0f)-(%.0f,%.0f,%.0f), %zu stable world textures (hash(max tris)), largest first:", int(wcwRtPresentCounter), (activeVenue >= 0) ? venuePresets[activeVenue].name.c_str() : "default",
+            fprintf(stderr, "[wcw rt] venue log present %d (active %s%s): scene (%.0f,%.0f,%.0f)-(%.0f,%.0f,%.0f), %zu stable world textures (hash(max tris)), largest first:", int(wcwRtPresentCounter), (activeVenue >= 0) ? venuePresets[activeVenue].name.c_str() : "default", roomActive ? ", room" : "",
                 sceneMin[0], sceneMin[1], sceneMin[2], sceneMax[0], sceneMax[1], sceneMax[2], stable.size());
             for (size_t i = 0; i < stable.size(); i++) {
                 fprintf(stderr, " %016llX(%u)", (unsigned long long)stable[i].second, stable[i].first);
@@ -380,8 +394,46 @@ namespace RT64 {
         }
     }
 
+    void WcwRaytracer::updateRoomPreset() {
+        const float extentX = sceneMax[0] - sceneMin[0];
+        const float extentZ = sceneMax[2] - sceneMin[2];
+        const bool wasActive = roomActive;
+        roomActive = roomEnabled && (activeVenue < 0) && sceneBoundsValid && (std::max(extentX, extentZ) <= roomMaxExtent);
+        if (roomActive != wasActive) {
+            fprintf(stderr, "[wcw rt] venue: %s\n", roomActive ? "room (fallback)" : "default");
+        }
+
+        if (!roomActive) {
+            return;
+        }
+
+        // Lights along the long axis, centered on the short one, just under the ceiling.
+        const bool alongX = extentX >= extentZ;
+        const float longMin = alongX ? sceneMin[0] : sceneMin[2];
+        const float longLen = alongX ? extentX : extentZ;
+        const float shortCenter = alongX ? (sceneMin[2] + sceneMax[2]) * 0.5f : (sceneMin[0] + sceneMax[0]) * 0.5f;
+        const float height = sceneMin[1] + (sceneMax[1] - sceneMin[1]) * roomHeight;
+        roomPreset.lights.clear();
+        for (uint32_t i = 0; i < roomCount; i++) {
+            const float along = longMin + longLen * (float(i) + 0.5f) / float(roomCount);
+            roomPreset.lights.push_back(alongX ? std::array<float, 4>{ along, height, shortCenter, 1.0f } : std::array<float, 4>{ shortCenter, height, along, 1.0f });
+        }
+
+        roomPreset.center[0] = (sceneMin[0] + sceneMax[0]) * 0.5f;
+        roomPreset.center[1] = height;
+        roomPreset.center[2] = (sceneMin[2] + sceneMax[2]) * 0.5f;
+        roomPreset.radius = 0.0f;
+        if (roomPreset.falloff <= 0.0f) {
+            roomPreset.falloff = 0.0f;
+        }
+    }
+
     const WcwRaytracer::LightPreset &WcwRaytracer::activePreset() const {
-        return (activeVenue >= 0) ? venuePresets[activeVenue] : defaultPreset;
+        if (activeVenue >= 0) {
+            return venuePresets[activeVenue];
+        }
+
+        return roomActive ? roomPreset : defaultPreset;
     }
 
     uint32_t WcwRaytracer::chooseSlot() const {
@@ -760,6 +812,9 @@ namespace RT64 {
                 history = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
             }
 
+            slot.output = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16G16B16A16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
+            slot.tracedPresent = UINT64_MAX;
+
             slot.historyValid = false;
         }
 
@@ -887,6 +942,21 @@ namespace RT64 {
             return;
         }
 
+        // Same scene already traced this present with the same camera: composite that result again.
+        static const bool noReuse = getenv("WCW_RT_NO_REUSE") != nullptr;
+        if (!noReuse && (slot.tracedPresent == lastPresentId) && (memcmp(&slot.tracedViewProj, &viewProj, sizeof(viewProj)) == 0) &&
+            (memcmp(slot.tracedRect, traceRect, sizeof(traceRect)) == 0) && (slot.tracedMeshes == uint32_t(meshes.size())))
+        {
+            compositeSet->setTexture(0, slot.output.get(), RenderTextureLayout::SHADER_READ);
+            reusedTraces++;
+            return;
+        }
+
+        slot.tracedPresent = lastPresentId;
+        slot.tracedViewProj = viewProj;
+        memcpy(slot.tracedRect, traceRect, sizeof(traceRect));
+        slot.tracedMeshes = uint32_t(meshes.size());
+
         params.traceOffset = { traceRect[0], traceRect[1] };
         params.receiverRadius = receiverRadius;
         void *paramsBytes = paramsBuffer->map();
@@ -900,7 +970,7 @@ namespace RT64 {
         traceSet->setBuffer(2, worldPosBuffer, worldPosSize, &float4View);
         traceSet->setBuffer(3, faceIndicesBuffer, faceIndicesSize, &uintView);
         traceSet->setBuffer(4, meshStartsBuffer.get(), meshStartsBufferSize, &uintView);
-        traceSet->setTexture(5, outputTexture.get(), RenderTextureLayout::GENERAL);
+        traceSet->setTexture(5, slot.output.get(), RenderTextureLayout::GENERAL);
         traceSet->setTexture(6, currentTexture.get(), RenderTextureLayout::GENERAL);
         const RenderBufferStructuredView rdpTileView(sizeof(interop::RDPTile));
         const RenderBufferStructuredView gpuTileView(sizeof(interop::GPUTile));
@@ -909,11 +979,11 @@ namespace RT64 {
         traceSet->setBuffer(8, (gpuTilesBuffer != nullptr) ? gpuTilesBuffer : meshTilesBuffer.get(), 0, &gpuTileView);
         traceSet->setBuffer(9, (texCoordBuffer != nullptr) ? texCoordBuffer : meshTilesBuffer.get(), 0, &float2View);
         traceSet->setBuffer(10, meshTilesBuffer.get(), meshTilesBufferSize, &uintView);
-        compositeSet->setTexture(0, outputTexture.get(), RenderTextureLayout::SHADER_READ);
+        compositeSet->setTexture(0, slot.output.get(), RenderTextureLayout::SHADER_READ);
 
         // Trace.
         worker->commandList->barriers(RenderBarrierStage::COMPUTE, {
-            RenderTextureBarrier(outputTexture.get(), RenderTextureLayout::GENERAL),
+            RenderTextureBarrier(slot.output.get(), RenderTextureLayout::GENERAL),
             RenderTextureBarrier(currentTexture.get(), RenderTextureLayout::GENERAL)
         });
         if (timingPool != nullptr) {
@@ -952,12 +1022,12 @@ namespace RT64 {
             resolveSet->setTexture(1, currentTexture.get(), RenderTextureLayout::SHADER_READ);
             resolveSet->setTexture(2, historyIn, RenderTextureLayout::SHADER_READ);
             resolveSet->setTexture(3, historyOut, RenderTextureLayout::GENERAL);
-            resolveSet->setTexture(4, outputTexture.get(), RenderTextureLayout::GENERAL);
+            resolveSet->setTexture(4, slot.output.get(), RenderTextureLayout::GENERAL);
             worker->commandList->barriers(RenderBarrierStage::COMPUTE, {
                 RenderTextureBarrier(currentTexture.get(), RenderTextureLayout::SHADER_READ),
                 RenderTextureBarrier(historyIn, RenderTextureLayout::SHADER_READ),
                 RenderTextureBarrier(historyOut, RenderTextureLayout::GENERAL),
-                RenderTextureBarrier(outputTexture.get(), RenderTextureLayout::GENERAL)
+                RenderTextureBarrier(slot.output.get(), RenderTextureLayout::GENERAL)
             });
 
             worker->commandList->setPipeline(resolvePipeline.get());
@@ -975,7 +1045,7 @@ namespace RT64 {
             timingWritten |= (1u << StampResolveEnd);
         }
 
-        worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(outputTexture.get(), RenderTextureLayout::SHADER_READ));
+        worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(slot.output.get(), RenderTextureLayout::SHADER_READ));
     }
 
     void WcwRaytracer::recordComposite(RenderWorker *worker) {
@@ -1042,9 +1112,10 @@ namespace RT64 {
         fullScreenSum += timingFullScreen ? 1 : 0;
         timingWritten = 0;
         if (++count == 300) {
-            fprintf(stderr, "[wcw rt gpu] per traced workload avg: build=%.3f trace=%.3f resolve=%.3f composite=%.3f ms, build->composite span=%.3f (max %.3f) ms; %llu meshes (%llu alpha-tested), %llu tris, %llu trace px of %u lines, %llu full-screen (300 workloads)\n",
+            fprintf(stderr, "[wcw rt gpu] per traced workload avg: build=%.3f trace=%.3f resolve=%.3f composite=%.3f ms, build->composite span=%.3f (max %.3f) ms; %llu meshes (%llu alpha-tested), %llu tris, %llu trace px of %u lines, %llu full-screen, %u traces reused (300 workloads)\n",
                 sums[0] / count, sums[1] / count, sums[2] / count, sums[3] / count, sums[4] / count, maxTotal,
-                (unsigned long long)(meshSum / count), (unsigned long long)(alphaSum / count), (unsigned long long)(triangleSum / count), (unsigned long long)(pixelSum / count), timingTraceHeight, (unsigned long long)fullScreenSum);
+                (unsigned long long)(meshSum / count), (unsigned long long)(alphaSum / count), (unsigned long long)(triangleSum / count), (unsigned long long)(pixelSum / count), timingTraceHeight, (unsigned long long)fullScreenSum, reusedTraces);
+            reusedTraces = 0;
             memset(sums, 0, sizeof(sums));
             maxTotal = 0.0;
             triangleSum = meshSum = alphaSum = pixelSum = fullScreenSum = 0;

@@ -98,6 +98,14 @@ namespace RT64 {
             uint32_t historyHeight = 0;
             bool historyValid = false;
             hlslpp::float4x4 prevViewProj;
+
+            // This slot's trace output, and what it was traced for: AKI games render some frames
+            // twice (two framebuffers, same camera), and the second pass reuses the first trace.
+            std::unique_ptr<RenderTexture> output;
+            uint64_t tracedPresent = UINT64_MAX;
+            hlslpp::float4x4 tracedViewProj;
+            uint32_t tracedRect[4] = {};
+            uint32_t tracedMeshes = 0;
         };
 
         Slot slots[MaxSlots];
@@ -128,6 +136,7 @@ namespace RT64 {
         std::unique_ptr<RenderTexture> outputTexture;
         std::unique_ptr<RenderTexture> currentTexture;
         uint32_t frameIndex = 0;
+        uint32_t reusedTraces = 0;
         std::unique_ptr<RenderDescriptorSet> resolveSet;
         std::unique_ptr<RenderPipelineLayout> resolveLayout;
         std::unique_ptr<RenderPipeline> resolvePipeline;
@@ -197,6 +206,17 @@ namespace RT64 {
 
         static const uint32_t VenueWindow = 60;
         LightPreset defaultPreset;
+        // "room": fallback for unmatched small scenes (backstage rooms, whatever the scene's extent
+        // on X/Z is at most maxExtent): "count" ceiling lights along the room's long axis at
+        // "height" (fraction of floor to ceiling), with falloff from their spacing. Other fields as
+        // in any preset (shadow, size, ...).
+        bool roomEnabled = false;
+        bool roomActive = false;
+        float roomMaxExtent = 3000.0f;
+        uint32_t roomCount = 3;
+        float roomHeight = 0.85f;
+        LightPreset roomPreset;
+        void updateRoomPreset();
         std::vector<LightPreset> venuePresets;
         int activeVenue = -1;
         int candidateVenue = -1;
