@@ -140,6 +140,7 @@ namespace RT64 {
         int wcw_reason = 0; // [wcw] DIAGNOSTIC present outcome: 0=vi-not-visible 1=ok 2=target-empty 3=scratch
         uint32_t wcw_addr = 0; // [wcw] DIAGNOSTIC: address of the fb actually presented
         uint64_t wcwPairBlendSerial = 0; // [wcw fix] run serial of the blend shown at i=0
+        bool wcwHfrRealRepeat = false; // [wcw hfr] trace: i=0 repeated the newest complete real frame
         bool lockedWorkloadMutex = false;
         const uint32_t wcwPresentSetIndex = ext.sharedResources->interpolatedFramesIndex;
         InterpolatedFrameCounters &frameCounters = ext.sharedResources->interpolatedFrames[wcwPresentSetIndex];
@@ -290,6 +291,7 @@ namespace RT64 {
                         if ((bestRealK >= 0) && !realTargets.empty() && (realTargets[0] != nullptr)) {
                             colorTarget = realTargets[0].get();
                             wcwUsingRealFrame = true;
+                            wcwHfrRealRepeat = true;
                         }
                     }
                 }
@@ -469,6 +471,28 @@ namespace RT64 {
                     wcwHfrPresents = wcwHfrInterpolated = wcwHfrMaxBurst = 0;
                     wcwHfrFresh = wcwHfrFallback = wcwHfrStale = wcwHfrTimeouts = 0;
                     wcwHfrMaxAge = 0;
+                }
+            }
+
+            // [wcw hfr] WCW_HFR_TRACE=<first present>,<count>: one line per presented frame. The present
+            // number matches wcw_present_lum.csv (counted after the present, hence + 1).
+            static int wcwHfrTraceFirst = -1, wcwHfrTraceCount = 0;
+            static bool wcwHfrTraceInit = false;
+            if (!wcwHfrTraceInit) {
+                wcwHfrTraceInit = true;
+                if (const char *e = getenv("WCW_HFR_TRACE")) {
+                    sscanf(e, "%d,%d", &wcwHfrTraceFirst, &wcwHfrTraceCount);
+                }
+            }
+
+            if (presentFrame && (wcwHfrTraceFirst >= 0)) {
+                const int n = int(wcwRtPresentCounter) + 1;
+                if ((n >= wcwHfrTraceFirst) && (n < wcwHfrTraceFirst + wcwHfrTraceCount)) {
+                    fprintf(stderr, "[wcw hfr trace] n=%d i=%d/%d set=%u avail=%u count=%u presented=%u skipped=%d serial=%llu src=%s realRepeat=%d target=%p empty=%d\n",
+                        n, int(i), int(framesToPresent), wcwPresentSetIndex, frameCounters.available, frameCounters.count, frameCounters.presented,
+                        int(frameCounters.skipped), (unsigned long long)wcwPairBlendSerial,
+                        (i == 0) ? "real" : ((wcwHfrFallbackAge == -2) ? "slot" : "fallback"), int(wcwHfrRealRepeat),
+                        (void *)colorTarget, (colorTarget != nullptr) ? int(colorTarget->isEmpty()) : -1);
                 }
             }
 

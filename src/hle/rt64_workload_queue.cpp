@@ -1390,6 +1390,18 @@ namespace RT64 {
                 if (useDifferentCounters) {
                     ext.sharedResources->interpolatedFramesIndex = ext.sharedResources->interpolatedFramesIndex ^ 1;
                     lastPresentId = workload.presentId;
+
+                    // [wcw hfr] WCW_HFR_SYNC=1: the set switched to was last used two present events ago;
+                    // at 4 display frames per game frame its presentation can still be running. Wait
+                    // (bounded) until the present queue has shown everything it made available.
+                    static const bool wcwHfrSync = getenv("WCW_HFR_SYNC") != nullptr;
+                    if (wcwHfrSync && generateInterpolatedFrames) {
+                        InterpolatedFrameCounters &nextCounters = ext.sharedResources->interpolatedFrames[ext.sharedResources->interpolatedFramesIndex];
+                        std::unique_lock<std::mutex> interpolatedLock(ext.sharedResources->interpolatedMutex);
+                        ext.sharedResources->interpolatedCondition.wait_for(interpolatedLock, RT64::wcwCoherentWaitBound(), [&]() {
+                            return nextCounters.skipped || (nextCounters.presented >= nextCounters.available);
+                        });
+                    }
                 }
                 // If the same set of counters is used, we wait until the presentation of its targets is finished so the targets are available to use. Waiting is ignored
                 // if the frame counter has never presented anything yet, as it'll only be a valid value if the previous present event actually did something.
@@ -1435,7 +1447,10 @@ namespace RT64 {
                 int64_t renderTimeTotalMicro = 0;
                 for (uint32_t frame = 0; (frame < displayFrames) && !skipWorkloadNow; frame++) {
                     // Evaluate if this frame should be skipped. Measure the current time and compare it to what frame is estimated should be have been rendered by now.
-                    if ((frame > 0) && (originalTimeMicro > 0)) {
+                    // [wcw hfr] WCW_HFR_NOSKIP=1: never skip. In a multi-layer run each layer renders its share of
+                    // every generated frame; a later layer skipping leaves those frames with only the earlier layers.
+                    static const bool wcwHfrNoSkip = getenv("WCW_HFR_NOSKIP") != nullptr;
+                    if ((frame > 0) && (originalTimeMicro > 0) && !wcwHfrNoSkip) {
                         const int64_t currentTimeMicro = workloadTimer.elapsedMicroseconds() - setupTimeMicro;
                         const int64_t expectedTimeMicro = frame * maxTimePerFrameMicro;
                         const int64_t measuredFrameMicro = renderTimeTotalMicro / framesRendered;
