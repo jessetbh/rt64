@@ -15,6 +15,7 @@
 #   include "shaders/FullScreenVS.hlsl.dxil.h"
 #   include "shaders/WcwRtTraceCS.hlsl.dxil.h"
 #   include "shaders/WcwRtCompositePS.hlsl.dxil.h"
+#   include "shaders/WcwRtResolveCS.hlsl.dxil.h"
 #endif
 
 namespace RT64 {
@@ -66,6 +67,7 @@ namespace RT64 {
         traceBuilder.addStructuredBuffer(3);
         traceBuilder.addStructuredBuffer(4);
         traceBuilder.addReadWriteTexture(5);
+        traceBuilder.addReadWriteTexture(6);
         traceBuilder.end();
         traceSet = traceBuilder.create(device);
 
@@ -77,6 +79,25 @@ namespace RT64 {
 
         std::unique_ptr<RenderShader> traceShader = device->createShader(WcwRtTraceCSBlobDXIL, std::size(WcwRtTraceCSBlobDXIL), "CSMain", RenderShaderFormat::DXIL);
         tracePipeline = device->createComputePipeline(RenderComputePipelineDesc(traceLayout.get(), traceShader.get(), 8, 8, 1));
+
+        // Resolve pass: b0 params, t1 current samples, t2 history in, u3 history out, u4 output.
+        RenderDescriptorSetBuilder resolveBuilder;
+        resolveBuilder.begin();
+        resolveBuilder.addConstantBuffer(0);
+        resolveBuilder.addTexture(1);
+        resolveBuilder.addTexture(2);
+        resolveBuilder.addReadWriteTexture(3);
+        resolveBuilder.addReadWriteTexture(4);
+        resolveBuilder.end();
+        resolveSet = resolveBuilder.create(device);
+
+        layoutBuilder.begin();
+        layoutBuilder.addDescriptorSet(resolveBuilder);
+        layoutBuilder.end();
+        resolveLayout = layoutBuilder.create(device);
+
+        std::unique_ptr<RenderShader> resolveShader = device->createShader(WcwRtResolveCSBlobDXIL, std::size(WcwRtResolveCSBlobDXIL), "CSMain", RenderShaderFormat::DXIL);
+        resolvePipeline = device->createComputePipeline(RenderComputePipelineDesc(resolveLayout.get(), resolveShader.get(), 8, 8, 1));
 
         // Composite pass: t0 trace output.
         RenderDescriptorSetBuilder compositeBuilder;
@@ -247,6 +268,18 @@ namespace RT64 {
             outputWidth = colorTarget->width;
             outputHeight = colorTarget->height;
             outputTexture = device->createTexture(RenderTextureDesc::Texture2D(outputWidth, outputHeight, 1, RenderFormat::R8G8B8A8_UNORM, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
+            currentTexture = device->createTexture(RenderTextureDesc::Texture2D(outputWidth, outputHeight, 1, RenderFormat::R32G32_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
+        }
+
+        Slot &slot = slots[currentSlot];
+        if ((slot.history[0] == nullptr) || (slot.historyWidth != outputWidth) || (slot.historyHeight != outputHeight)) {
+            slot.historyWidth = outputWidth;
+            slot.historyHeight = outputHeight;
+            for (auto &history : slot.history) {
+                history = device->createTexture(RenderTextureDesc::Texture2D(outputWidth, outputHeight, 1, RenderFormat::R16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
+            }
+
+            slot.historyValid = false;
         }
 
         // Composite pipeline matching the target's format and sample count; blend depends on the mode.
@@ -298,6 +331,11 @@ namespace RT64 {
         params.cullSign = envFloat(getenv("WCW_RT_CULL_SIGN"), 1.0f);
         params.keyWeight = envFloat(getenv("WCW_RT_KEY_WEIGHT"), 0.5f);
         params.characterShadowStrength = envFloat(getenv("WCW_RT_SHADOW_CHAR"), 0.35f);
+        params.lightSize = envFloat(getenv("WCW_RT_LIGHT_SIZE"), 20.0f);
+        params.temporalAlpha = envFloat(getenv("WCW_RT_TEMPORAL"), 0.15f);
+        params.frameIndex = frameIndex++;
+        params.prevViewProj = slot.prevViewProj;
+        params.historyValid = slot.historyValid ? 1 : 0;
         params.padding = { 0.0f, 0.0f, 0.0f };
         void *paramsBytes = paramsBuffer->map();
         memcpy(paramsBytes, &params, sizeof(params));
@@ -311,14 +349,45 @@ namespace RT64 {
         traceSet->setBuffer(3, faceIndicesBuffer, faceIndicesSize, &uintView);
         traceSet->setBuffer(4, meshStartsBuffer.get(), meshStartsBufferSize, &uintView);
         traceSet->setTexture(5, outputTexture.get(), RenderTextureLayout::GENERAL);
+        traceSet->setTexture(6, currentTexture.get(), RenderTextureLayout::GENERAL);
         compositeSet->setTexture(0, outputTexture.get(), RenderTextureLayout::SHADER_READ);
 
         // Trace.
-        worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderTextureBarrier(outputTexture.get(), RenderTextureLayout::GENERAL));
+        worker->commandList->barriers(RenderBarrierStage::COMPUTE, {
+            RenderTextureBarrier(outputTexture.get(), RenderTextureLayout::GENERAL),
+            RenderTextureBarrier(currentTexture.get(), RenderTextureLayout::GENERAL)
+        });
         worker->commandList->setPipeline(tracePipeline.get());
         worker->commandList->setComputePipelineLayout(traceLayout.get());
         worker->commandList->setComputeDescriptorSet(traceSet.get(), 0);
         worker->commandList->dispatch((outputWidth + 7) / 8, (outputHeight + 7) / 8, 1);
+
+        // Shadow mode: temporal resolve of the jittered samples into this slot's history.
+        if (mode == WCW_RT_MODE_SHADOW) {
+            RenderTexture *historyIn = slot.history[slot.historyIndex].get();
+            RenderTexture *historyOut = slot.history[slot.historyIndex ^ 1].get();
+            resolveSet->setBuffer(0, paramsBuffer.get(), alignUp(sizeof(interop::WcwRtParams), 256));
+            resolveSet->setTexture(1, currentTexture.get(), RenderTextureLayout::SHADER_READ);
+            resolveSet->setTexture(2, historyIn, RenderTextureLayout::SHADER_READ);
+            resolveSet->setTexture(3, historyOut, RenderTextureLayout::GENERAL);
+            resolveSet->setTexture(4, outputTexture.get(), RenderTextureLayout::GENERAL);
+            worker->commandList->barriers(RenderBarrierStage::COMPUTE, {
+                RenderTextureBarrier(currentTexture.get(), RenderTextureLayout::SHADER_READ),
+                RenderTextureBarrier(historyIn, RenderTextureLayout::SHADER_READ),
+                RenderTextureBarrier(historyOut, RenderTextureLayout::GENERAL),
+                RenderTextureBarrier(outputTexture.get(), RenderTextureLayout::GENERAL)
+            });
+
+            worker->commandList->setPipeline(resolvePipeline.get());
+            worker->commandList->setComputePipelineLayout(resolveLayout.get());
+            worker->commandList->setComputeDescriptorSet(resolveSet.get(), 0);
+            worker->commandList->dispatch((outputWidth + 7) / 8, (outputHeight + 7) / 8, 1);
+
+            slot.historyIndex ^= 1;
+            slot.historyValid = true;
+            slot.prevViewProj = viewProj;
+        }
+
         worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(outputTexture.get(), RenderTextureLayout::SHADER_READ));
     }
 

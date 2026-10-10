@@ -531,6 +531,7 @@ build_compute_shader(rt64 "src/shaders/RSPWorldCS.hlsl")
 # [wcw rt] Hybrid ray tracing: inline ray queries need SM 6.5, D3D12 only.
 if (WIN32)
     build_shader_dxil(rt64 "src/shaders/WcwRtTraceCS.hlsl" "${DXC_COMMON_OPTS};-E;CSMain;-T;cs_6_5")
+    build_shader_dxil(rt64 "src/shaders/WcwRtResolveCS.hlsl" "${DXC_COMMON_OPTS};-E;CSMain;-T;cs_6_5")
 endif()
 build_pixel_shader(rt64 "src/shaders/WcwRtCompositePS.hlsl")
 build_compute_shader(rt64 "src/shaders/RSPSmoothNormalCS.hlsl")

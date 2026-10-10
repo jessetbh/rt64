@@ -57,6 +57,14 @@ namespace RT64 {
             uint64_t blasBufferSize = 0;
             uint64_t builtFrame = 0;
             bool valid = false;
+
+            // Soft-shadow history (ping-pong) of this workload's pass, with the camera it used.
+            std::unique_ptr<RenderTexture> history[2];
+            uint32_t historyIndex = 0;
+            uint32_t historyWidth = 0;
+            uint32_t historyHeight = 0;
+            bool historyValid = false;
+            hlslpp::float4x4 prevViewProj;
         };
 
         Slot slots[MaxSlots];
@@ -82,6 +90,11 @@ namespace RT64 {
         std::unique_ptr<RenderBuffer> meshStartsBuffer;
         uint64_t meshStartsBufferSize = 0;
         std::unique_ptr<RenderTexture> outputTexture;
+        std::unique_ptr<RenderTexture> currentTexture;
+        uint32_t frameIndex = 0;
+        std::unique_ptr<RenderDescriptorSet> resolveSet;
+        std::unique_ptr<RenderPipelineLayout> resolveLayout;
+        std::unique_ptr<RenderPipeline> resolvePipeline;
         uint32_t outputWidth = 0;
         uint32_t outputHeight = 0;
         bool outputNeedsTransition = false;

@@ -43,6 +43,13 @@ namespace interop {
         float keyWeight;
         // Shadow strength on character surfaces (they already carry N64 vertex shading).
         float characterShadowStrength;
+        // Soft shadows: each light is a square panel lightSize wide on X/Z, sampled once per
+        // pixel per frame; the resolve pass blends with reprojected history by temporalAlpha.
+        float lightSize;
+        float temporalAlpha;
+        uint frameIndex;
+        float4x4 prevViewProj;
+        uint historyValid;
         float3 padding;
     };
 #ifdef HLSL_CPU

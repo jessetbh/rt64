@@ -15,6 +15,23 @@ StructuredBuffer<float4> gWorldPos : register(t2);
 StructuredBuffer<uint> gFaceIndices : register(t3);
 StructuredBuffer<uint> gMeshIndexStarts : register(t4);
 RWTexture2D<float4> gOutput : register(u5);
+// Shadow mode: (shadow factor, primary hit distance; 0 = no hit) for the resolve pass.
+RWTexture2D<float2> gCurrent : register(u6);
+
+// Interleaved gradient noise, decorrelated per frame and per use.
+float noise(uint2 pixel, uint seed) {
+    const float2 p = float2(pixel) + float(seed) * 5.588238f;
+    return frac(52.9829189f * frac(0.06711056f * p.x + 0.00583715f * p.y));
+}
+
+void writeNoHit(uint2 pixel) {
+    if (gParams.mode == WCW_RT_MODE_SHADOW) {
+        gCurrent[pixel] = float2(1.0f, 0.0f);
+    }
+    else {
+        gOutput[pixel] = float4(1.0f, 1.0f, 1.0f, 0.0f);
+    }
+}
 
 // Unnormalized: the winding (v0, v1, v2) is kept, which back-face culling relies on.
 float3 triangleCross(uint geometryIndex, uint primitiveIndex) {
@@ -44,7 +61,7 @@ void CSMain(uint2 pixel : SV_DispatchThreadID) {
     const float2 pixelCenter = float2(pixel) + 0.5f;
     const float2 local = (pixelCenter - gParams.viewport.xy) / gParams.viewport.zw;
     if (any(local < 0.0f) || any(local > 1.0f)) {
-        gOutput[pixel] = float4(1.0f, 1.0f, 1.0f, 0.0f);
+        writeNoHit(pixel);
         return;
     }
 
@@ -78,7 +95,7 @@ void CSMain(uint2 pixel : SV_DispatchThreadID) {
     }
 
     if (primary.CommittedStatus() != COMMITTED_TRIANGLE_HIT) {
-        gOutput[pixel] = float4(1.0f, 1.0f, 1.0f, 0.0f);
+        writeNoHit(pixel);
         return;
     }
 
@@ -141,7 +158,10 @@ void CSMain(uint2 pixel : SV_DispatchThreadID) {
     float lit = 0.0f;
     int occluderId = -1;
     for (uint l = 0; l <= fillCount; l++) {
-        const float2 offset = lightOffsets[l] * gParams.lightSpread;
+        // Area light: one jittered sample on the light's panel per frame (soft penumbrae once
+        // the resolve pass accumulates them).
+        const float2 jitter = float2(noise(pixel, gParams.frameIndex * 10 + l * 2), noise(pixel + uint2(37, 113), gParams.frameIndex * 10 + l * 2 + 1)) - 0.5f;
+        const float2 offset = lightOffsets[l] * gParams.lightSpread + jitter * gParams.lightSize;
         const float weight = (l == 0) ? keyWeight : fillWeight;
         const float3 lightPos = gParams.lightPosition.xyz + float3(offset.x, 0.0f, offset.y);
         const float3 toLight = lightPos - hitPos;
@@ -185,5 +205,5 @@ void CSMain(uint2 pixel : SV_DispatchThreadID) {
     const bool characterReceiver = (gMeshIndexStarts[primary.CommittedGeometryIndex()] & WCW_RT_MESH_CHARACTER) != 0;
     const float strength = characterReceiver ? gParams.characterShadowStrength : gParams.shadowStrength;
     const float factor = 1.0f - strength * (1.0f - lit);
-    gOutput[pixel] = float4(factor, factor, factor, 1.0f);
+    gCurrent[pixel] = float2(factor, hitT);
 }
