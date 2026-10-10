@@ -136,6 +136,42 @@ float3 triangleNormal(uint geometryIndex, uint primitiveIndex) {
     return (len > 1e-8f) ? (n / len) : float3(0.0f, 1.0f, 0.0f);
 }
 
+// Brightening from the preset's glows at a hit point (0 = none).
+float glowLight(float3 hitPos, float3 normal) {
+    float glow = 0.0f;
+    const uint count = min(gParams.glowCount, WCW_RT_MAX_GLOWS);
+    for (uint g = 0; g < count; g++) {
+        const float3 toGlow = gParams.glows[g].xyz - hitPos;
+        const float dist = length(toGlow);
+        const float range = gParams.glows[g].w;
+        const float facing = dot(normal, toGlow) / max(dist, 1e-3f);
+        if ((dist >= range) || (facing <= 0.0f)) {
+            continue;
+        }
+
+        const float t = dist / range;
+        const float atten = (1.0f - t * t) * (1.0f - t * t);
+        RayDesc glowRay;
+        glowRay.Origin = hitPos + normal * 0.5f;
+        glowRay.Direction = toGlow / dist;
+        glowRay.TMin = 0.5f;
+        glowRay.TMax = max(dist - gParams.lightClearance, 0.6f);
+        RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
+        q.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, glowRay);
+        while (q.Proceed()) {
+            if (candidateIsSolid(q.CandidateInstanceID(), q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex(), q.CandidateTriangleBarycentrics())) {
+                q.CommitNonOpaqueTriangleHit();
+            }
+        }
+
+        if (q.CommittedStatus() != COMMITTED_TRIANGLE_HIT) {
+            glow += gParams.glowIntensity[g] * atten * facing;
+        }
+    }
+
+    return glow;
+}
+
 [numthreads(8, 8, 1)]
 void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
     const uint2 pixel = dispatchPixel + gParams.traceOffset;
@@ -272,7 +308,7 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
     if (resolvedMode() && (gParams.receiverRadius > 0.0f)) {
         const float receiverDist = length(hitPos.xz - gParams.lightPosition.xz);
         if (receiverDist >= gParams.receiverRadius) {
-            gCurrent[pixel] = float2(1.0f, hitT);
+            gCurrent[pixel] = float2(1.0f + glowLight(hitPos, normal), hitT);
             return;
         }
 
@@ -280,6 +316,19 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
     }
 
     const uint lightCount = min(gParams.lightListCount, WCW_RT_MAX_LIGHTS);
+    float lightWeights[WCW_RT_MAX_LIGHTS];
+    float weightSum = 0.0f;
+    for (uint w = 0; w < lightCount; w++) {
+        float lw = gParams.lights[w].w;
+        if (gParams.lightFalloff > 0.0f) {
+            const float d = length(gParams.lights[w].xyz - hitPos) / gParams.lightFalloff;
+            lw /= 1.0f + d * d;
+        }
+
+        lightWeights[w] = lw;
+        weightSum += lw;
+    }
+
     float lit = 0.0f;
     int occluderId = -1;
     const uint samples = max(gParams.samplesPerLight, 1);
@@ -290,7 +339,7 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
         const uint seed = gParams.frameIndex * 64 + i * 2;
         const float2 jitter = float2(noise(pixel, seed), noise(pixel + uint2(37, 113), seed + 1)) - 0.5f;
         const float2 offset = jitter * gParams.lightSize;
-        const float weight = gParams.lights[l].w / float(samples);
+        const float weight = lightWeights[l] / max(weightSum, 1e-6f) / float(samples);
         const float3 lightPos = gParams.lights[l].xyz + float3(offset.x, 0.0f, offset.y);
         const float3 toLight = lightPos - hitPos;
         const float lightDist = length(toLight);
@@ -381,6 +430,10 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
     }
 
     factor = lerp(factor, 1.0f, receiverFade);
+
+    if (resolvedMode() && (gParams.mode == WCW_RT_MODE_SHADOW)) {
+        factor *= 1.0f + glowLight(hitPos, normal);
+    }
 
     gCurrent[pixel] = float2(factor, hitT);
 }

@@ -462,6 +462,9 @@ namespace RT64 {
                     static const int wcwBmpStart = getenv("WCW_BMP_START") ? atoi(getenv("WCW_BMP_START")) : 600;
                     static const int wcwBmpCount = getenv("WCW_BMP_COUNT") ? atoi(getenv("WCW_BMP_COUNT")) : 13;
                     static const int wcwLumEnd = getenv("WCW_LUM_END") ? atoi(getenv("WCW_LUM_END")) : 1500;
+                    // WCW_BMP_EVERY=N: dump every Nth present from WCW_BMP_START instead (WCW_BMP_COUNT
+                    // dumps), reading back only those presents.
+                    static const int wcwBmpEvery = getenv("WCW_BMP_EVERY") ? atoi(getenv("WCW_BMP_EVERY")) : 0;
                     static std::unique_ptr<RenderBuffer> wcwReadback;
                     static uint32_t wcwRbW = 0, wcwRbH = 0, wcwRbRow = 0;
                     static int wcwPresentN = 0;
@@ -469,7 +472,8 @@ namespace RT64 {
                     if (wcwLum) {
                         wcwPresentN++;
                         wcwRtPresentCounter = wcwPresentN;
-                        if (wcwPresentN >= 240 && wcwPresentN <= wcwLumEnd) {
+                        const bool wcwEveryHit = (wcwBmpEvery <= 0) || ((wcwPresentN >= wcwBmpStart) && (((wcwPresentN - wcwBmpStart) % wcwBmpEvery) == 0));
+                        if (wcwPresentN >= 240 && wcwPresentN <= wcwLumEnd && wcwEveryHit) {
                             uint32_t w = ext.swapChain->getWidth(), h = ext.swapChain->getHeight();
                             uint32_t row = (w + 63) & ~63u;
                             if (!wcwReadback || wcwRbW != w || wcwRbH != h) {
@@ -510,7 +514,9 @@ namespace RT64 {
                             fprintf(lumf, "%d,%.1f,0x%X,0x%X,%.2f\n", wcwPresentN, msNow, present.screenVI.fbAddress(), wcw_addr, double(sum) / cnt);
                             fflush(lumf);
                         }
-                        if (wcwPresentN >= wcwBmpStart && wcwPresentN < wcwBmpStart + wcwBmpCount) {
+                        const bool wcwBmpWanted = (wcwBmpEvery > 0) ? ((wcwPresentN >= wcwBmpStart) && ((wcwPresentN - wcwBmpStart) / wcwBmpEvery < wcwBmpCount))
+                            : ((wcwPresentN >= wcwBmpStart) && (wcwPresentN < wcwBmpStart + wcwBmpCount));
+                        if (wcwBmpWanted) {
                             char name[64]; snprintf(name, sizeof(name), "wcw_present_%04d.bmp", wcwPresentN);
                             FILE *bf = fopen(name, "wb");
                             if (bf != nullptr) {

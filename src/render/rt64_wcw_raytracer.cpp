@@ -186,6 +186,13 @@ namespace RT64 {
         p.size = j.value("size", p.size);
         p.radius = j.value("radius", p.radius);
         p.clearance = j.value("clearance", p.clearance);
+        p.falloff = j.value("falloff", p.falloff);
+        if (j.contains("glows")) {
+            p.glows.clear();
+            for (const auto &g : j["glows"]) {
+                p.glows.push_back({ g[0].get<float>(), g[1].get<float>(), g[2].get<float>(), g[3].get<float>(), g[4].get<float>() });
+            }
+        }
         p.shadow = j.value("shadow", p.shadow);
         p.characterShadow = j.value("characterShadow", p.characterShadow);
         p.anchorScene = (j.value("anchor", std::string(p.anchorScene ? "scene" : "world")) == "scene");
@@ -238,6 +245,24 @@ namespace RT64 {
             if (root.contains("venues")) {
                 for (const auto &v : root["venues"]) {
                     venuePresets.push_back(parsePreset(v, defaultPreset));
+                }
+            }
+
+            // Textures listed by several venues (shared arena parts) can't tell them apart.
+            for (LightPreset &p : venuePresets) {
+                p.uniqueMatch.clear();
+                for (uint64_t h : p.match) {
+                    bool shared = false;
+                    for (const LightPreset &o : venuePresets) {
+                        if ((&o != &p) && (std::find(o.match.begin(), o.match.end(), h) != o.match.end())) {
+                            shared = true;
+                            break;
+                        }
+                    }
+
+                    if (!shared) {
+                        p.uniqueMatch.push_back(h);
+                    }
                 }
             }
 
@@ -297,12 +322,13 @@ namespace RT64 {
                 continue;
             }
 
+            const std::vector<uint64_t> &scored = p.uniqueMatch.empty() ? p.match : p.uniqueMatch;
             uint32_t seen = 0;
-            for (uint64_t h : p.match) {
+            for (uint64_t h : scored) {
                 seen += textureCounts.count(h) ? 1 : 0;
             }
 
-            const float score = float(seen) / float(p.match.size());
+            const float score = float(seen) / float(scored.size());
             if (score >= bestScore) {
                 bestScore = score;
                 best = int(v);
@@ -333,7 +359,7 @@ namespace RT64 {
             }
 
             std::sort(stable.begin(), stable.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
-            fprintf(stderr, "[wcw rt] venue log (active %s): scene (%.0f,%.0f,%.0f)-(%.0f,%.0f,%.0f), %zu stable world textures (hash(max tris)), largest first:", (activeVenue >= 0) ? venuePresets[activeVenue].name.c_str() : "default",
+            fprintf(stderr, "[wcw rt] venue log present %d (active %s): scene (%.0f,%.0f,%.0f)-(%.0f,%.0f,%.0f), %zu stable world textures (hash(max tris)), largest first:", int(wcwRtPresentCounter), (activeVenue >= 0) ? venuePresets[activeVenue].name.c_str() : "default",
                 sceneMin[0], sceneMin[1], sceneMin[2], sceneMax[0], sceneMax[1], sceneMax[2], stable.size());
             for (size_t i = 0; i < stable.size(); i++) {
                 fprintf(stderr, " %016llX(%u)", (unsigned long long)stable[i].second, stable[i].first);
@@ -403,7 +429,9 @@ namespace RT64 {
             const float iou = (uni > 0.0f) ? (inter / uni) : 0.0f;
             const float meshDiff = float(std::abs(int(meshCount) - int(slot.meshCount))) / float(std::max(std::max(meshCount, slot.meshCount), 1u));
             const float score = (1.0f - iou) + meshDiff;
-            if (score < bestScore) {
+            // Different scenes can have similar mesh counts (a backstage room and the wrestlers in
+            // it): reuse a slot only when the bounds really overlap.
+            if ((iou >= 0.25f) && (score < bestScore)) {
                 bestScore = score;
                 best = s;
             }
@@ -720,7 +748,7 @@ namespace RT64 {
             outputHeight = colorTarget->height;
             traceWidth = std::max(uint32_t(std::ceil(outputWidth * traceScale)), 1u);
             traceHeight = std::max(uint32_t(std::ceil(outputHeight * traceScale)), 1u);
-            outputTexture = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R8G8B8A8_UNORM, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
+            outputTexture = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16G16B16A16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
             currentTexture = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R32G32_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
         }
 
@@ -752,7 +780,8 @@ namespace RT64 {
             if ((mode == WCW_RT_MODE_SHADOW) || (mode == WCW_RT_MODE_AO)) {
                 RenderBlendDesc multiply;
                 multiply.blendEnabled = true;
-                multiply.srcBlend = RenderBlend::ZERO;
+                // 2x multiply: dst * src + src * dst. The resolve stores factors at half scale.
+                multiply.srcBlend = RenderBlend::DEST_COLOR;
                 multiply.dstBlend = RenderBlend::SRC_COLOR;
                 multiply.blendOp = RenderBlendOperation::ADD;
                 multiply.srcBlendAlpha = RenderBlend::ZERO;
@@ -795,7 +824,17 @@ namespace RT64 {
         // Light list: the preset's explicit lights, or the generated rig (key + fills at +-spread).
         params.lightListCount = 0;
         params.lightClearance = std::max(preset.clearance, 0.0f);
-        params.padding3 = 0.0f;
+        params.lightFalloff = std::max(envFloat(getenv("WCW_RT_FALLOFF"), preset.falloff), 0.0f);
+        params.glowCount = 0;
+        params.glowPadding0 = params.glowPadding1 = params.glowPadding2 = 0.0f;
+        params.glowIntensity = { 0.0f, 0.0f, 0.0f, 0.0f };
+        for (const auto &g : preset.glows) {
+            if (params.glowCount < WCW_RT_MAX_GLOWS) {
+                params.glows[params.glowCount] = { origin[0] + g[0], origin[1] + g[1], origin[2] + g[2], std::max(g[4], 1.0f) };
+                params.glowIntensity[params.glowCount] = g[3];
+                params.glowCount++;
+            }
+        }
         if (!preset.lights.empty() && (getenv("WCW_RT_LIGHTS") == nullptr)) {
             float weightSum = 0.0f;
             for (const auto &l : preset.lights) {

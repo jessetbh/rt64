@@ -21,6 +21,7 @@
 #define WCW_RT_MODE_LIGHT_MAP 8
 
 #define WCW_RT_MAX_LIGHTS 8
+#define WCW_RT_MAX_GLOWS 4
 
 // Bit 31 of a mesh index start: N64 face culling is on for that draw.
 #define WCW_RT_MESH_CULLED 0x80000000u
@@ -80,8 +81,18 @@ namespace interop {
         // Shadow rays stop this far short of the light, so geometry right around a light (a
         // titantron the light sits behind) doesn't block it.
         float lightClearance;
-        float padding3;
+        // Distance falloff of the lights' weights (0 = off): each light counts with
+        // 1 / (1 + (distance / lightFalloff)^2), so the nearest lights dominate a pixel's shadow.
+        float lightFalloff;
         float4 lights[WCW_RT_MAX_LIGHTS];
+        // Glows: lights that brighten the surfaces facing them (xyz, range; intensity separately),
+        // ray traced so blockers still shade them. The shadow output is then a factor up to 2.
+        uint glowCount;
+        float glowPadding0;
+        float glowPadding1;
+        float glowPadding2;
+        float4 glows[WCW_RT_MAX_GLOWS];
+        float4 glowIntensity;
     };
 
     struct WcwRtCompositeCB {

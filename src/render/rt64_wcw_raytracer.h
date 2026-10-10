@@ -171,6 +171,8 @@ namespace RT64 {
         struct LightPreset {
             std::string name;
             std::vector<uint64_t> match;
+            // The match textures no other venue lists (scored instead of match when not empty).
+            std::vector<uint64_t> uniqueMatch;
             // Lights' center (receiver center on X/Z, key light height on Y).
             float center[3] = { 0.0f, 460.0f, 0.0f };
             // Generated rig: a key light at the center plus "fills" lights at center +- spread
@@ -182,6 +184,9 @@ namespace RT64 {
             float size = 20.0f;
             float radius = 750.0f;
             float clearance = 0.0f;
+            float falloff = 0.0f;
+            // "glows": [[x, y, z, intensity, range], ...] (offsets from the anchor like lights).
+            std::vector<std::array<float, 5>> glows;
             // "anchor": "scene": center and explicit lights are offsets from the drawn world
             // geometry's center on X/Z and its floor (lowest point) on Y, so one preset fits rooms
             // placed anywhere in the world (backstage zones).

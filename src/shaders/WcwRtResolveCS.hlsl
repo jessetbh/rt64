@@ -25,7 +25,7 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
     const float2 current = gCurrent[pixel];
     if (current.y <= 0.0f) {
         gHistoryOut[pixel] = 1.0f;
-        gOutput[pixel] = float4(1.0f, 1.0f, 1.0f, 0.0f);
+        gOutput[pixel] = float4(0.5f, 0.5f, 0.5f, 0.0f);
         return;
     }
 
@@ -84,5 +84,8 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
     }
 
     gHistoryOut[pixel] = result;
-    gOutput[pixel] = float4(result, result, result, 1.0f);
+    // Stored at half scale: the composite's 2x multiply blend (dst * src * 2) applies factors up
+    // to 2, so glows can brighten.
+    const float encoded = min(result, 2.0f) * 0.5f;
+    gOutput[pixel] = float4(encoded, encoded, encoded, 1.0f);
 }
