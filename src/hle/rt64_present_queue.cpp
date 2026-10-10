@@ -5,6 +5,7 @@
 #include "rt64_present_queue.h"
 
 #include "common/rt64_thread.h"
+#include "render/rt64_hdr_output.h"
 #include "rhi/rt64_render_hooks.h"
 
 #include "rt64_workload_queue.h"
@@ -477,12 +478,12 @@ namespace RT64 {
                             uint32_t w = ext.swapChain->getWidth(), h = ext.swapChain->getHeight();
                             uint32_t row = (w + 63) & ~63u;
                             if (!wcwReadback || wcwRbW != w || wcwRbH != h) {
-                                wcwReadback = ext.device->createBuffer(RenderBufferDesc::ReadbackBuffer(uint64_t(row) * h * 4));
+                                wcwReadback = ext.device->createBuffer(RenderBufferDesc::ReadbackBuffer(uint64_t(row) * h * 8)); // [wcw hdr] room for half floats
                                 wcwRbW = w; wcwRbH = h; wcwRbRow = row;
                             }
                             commandList->barriers(RenderBarrierStage::COPY, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::COPY_SOURCE));
                             commandList->copyTextureRegion(
-                                RenderTextureCopyLocation::PlacedFootprint(wcwReadback.get(), RenderFormat::B8G8R8A8_UNORM, wcwRbW, wcwRbH, 1, wcwRbRow, 0),
+                                RenderTextureCopyLocation::PlacedFootprint(wcwReadback.get(), HdrOutput::swapChainFormat(), wcwRbW, wcwRbH, 1, wcwRbRow, 0),
                                 RenderTextureCopyLocation::Subresource(swapChainTexture));
                             wcwDoRead = true;
                         }
@@ -498,6 +499,54 @@ namespace RT64 {
 
                     if (wcwDoRead) {
                         const uint8_t *p = (const uint8_t *)(wcwReadback->map(0, nullptr));
+
+                        // [wcw hdr] An scRGB swap chain reads back as half floats: convert to 8-bit sRGB
+                        // (undoing the paper white scale) so the luminance log and BMPs stay comparable.
+                        static std::vector<uint8_t> wcwHdrConverted;
+                        if (HdrOutput::active()) {
+                            auto halfToFloat = [](uint16_t h) {
+                                const uint32_t sign = uint32_t(h & 0x8000) << 16;
+                                const uint32_t exponent = (h >> 10) & 0x1F;
+                                const uint32_t mantissa = h & 0x3FF;
+                                uint32_t bits = sign;
+                                if (exponent == 0x1F) {
+                                    bits |= 0x7F800000 | (mantissa << 13);
+                                }
+                                else if (exponent != 0) {
+                                    bits |= ((exponent + 112) << 23) | (mantissa << 13);
+                                }
+                                else if (mantissa != 0) {
+                                    float value = float(mantissa) / 16777216.0f;
+                                    return (sign != 0) ? -value : value;
+                                }
+
+                                float value;
+                                memcpy(&value, &bits, sizeof(value));
+                                return value;
+                            };
+
+                            auto toSrgb8 = [](float linearValue) {
+                                const float c = std::clamp(linearValue, 0.0f, 1.0f);
+                                const float s = (c <= 0.0031308f) ? (c * 12.92f) : (1.055f * powf(c, 1.0f / 2.4f) - 0.055f);
+                                return uint8_t(std::lround(s * 255.0f));
+                            };
+
+                            const float invScale = 1.0f / HdrOutput::sdrScale();
+                            wcwHdrConverted.resize(uint64_t(wcwRbRow) * wcwRbH * 4);
+                            for (uint32_t y = 0; y < wcwRbH; y++) {
+                                const uint16_t *src = (const uint16_t *)(p + uint64_t(y) * wcwRbRow * 8);
+                                uint8_t *dst = wcwHdrConverted.data() + uint64_t(y) * wcwRbRow * 4;
+                                for (uint32_t x = 0; x < wcwRbW; x++) {
+                                    dst[x * 4 + 0] = toSrgb8(halfToFloat(src[x * 4 + 2]) * invScale);
+                                    dst[x * 4 + 1] = toSrgb8(halfToFloat(src[x * 4 + 1]) * invScale);
+                                    dst[x * 4 + 2] = toSrgb8(halfToFloat(src[x * 4 + 0]) * invScale);
+                                    dst[x * 4 + 3] = 255;
+                                }
+                            }
+
+                            p = wcwHdrConverted.data();
+                        }
+
                         uint64_t sum = 0; uint32_t cnt = 0;
                         for (uint32_t y = 0; y < wcwRbH; y += 8) {
                             const uint8_t *rowp = p + uint64_t(y) * wcwRbRow * 4;
@@ -631,6 +680,7 @@ namespace RT64 {
         static bool timerPacing = (forcedPacing == Pacing::Timer);
         static int probeWaits = 0;
         static int probeOvershoots = 0;
+        static bool vblankLocked = false;
         static std::chrono::steady_clock::time_point nextDeadline;
         static bool haveDeadline = false;
 
@@ -666,6 +716,7 @@ namespace RT64 {
             haveLastVBlank = false;
             haveDeadline = false;
             timerPacing = (forcedPacing == Pacing::Timer);
+            vblankLocked = false;
             probeWaits = 0;
             probeOvershoots = 0;
         }
@@ -693,6 +744,25 @@ namespace RT64 {
             }
 
             nextDeadline += std::chrono::duration_cast<std::chrono::steady_clock::duration>(period);
+
+            // The timer can't keep up when the swap chain itself blocks on vsync (e.g. Vulkan FIFO with
+            // a fixed refresh rate): go back to vblank waits for good.
+            if ((forcedPacing == Pacing::Auto) && (output != nullptr)) {
+                probeWaits++;
+                probeOvershoots += (skipped > 0) ? 1 : 0;
+                if (probeWaits >= 60) {
+                    if (probeOvershoots >= 30) {
+                        timerPacing = false;
+                        vblankLocked = true;
+                        haveLastVBlank = false;
+                        fprintf(stderr, "[wcw crt] Beam pacing: the timer fell behind on %d of %d sub-frames; back to vblank waits.\n", probeOvershoots, probeWaits);
+                    }
+
+                    probeWaits = 0;
+                    probeOvershoots = 0;
+                }
+            }
+
             return skipped;
         }
 
@@ -713,7 +783,7 @@ namespace RT64 {
 
         // Under fixed refresh only presents that ran long overshoot; if nearly all of them do, the
         // vblanks aren't on a fixed clock (variable refresh rate) and the timer paces better.
-        if (forcedPacing == Pacing::Auto) {
+        if ((forcedPacing == Pacing::Auto) && !vblankLocked) {
             probeWaits++;
             probeOvershoots += (skipped > 0) ? 1 : 0;
             if (probeWaits >= 60) {

@@ -4,6 +4,7 @@
 
 #include "rt64_application.h"
 #include "rhi/rt64_render_hooks.h"
+#include "render/rt64_hdr_output.h"
 
 #include <cinttypes>
 #include <filesystem>
@@ -337,7 +338,32 @@ namespace RT64 {
             swapChainDesc.enablePresentWait = true;
         }
 
+        // [wcw hdr] scRGB swap chain when HDR output is enabled and Windows HDR is on for this display.
+        HdrOutput::setActive(false);
+        if (HdrOutput::userSettings().enabled) {
+            const HdrOutput::DisplayInfo display = HdrOutput::queryDisplay(appWindow->windowHandle);
+            if (display.hdrEnabled) {
+                swapChainDesc.format = RenderFormat::R16G16B16A16_FLOAT;
+                swapChainDesc.colorSpace = RenderSwapChainColorSpace::SCRGB_LINEAR;
+            }
+            else {
+                fprintf(stderr, "[wcw hdr] HDR output is enabled but Windows HDR is off for this display (reported peak %.0f nits); using SDR.\n", display.maxLuminance);
+            }
+        }
+
         swapChain = presentGraphicsWorker->commandQueue->createSwapChain(swapChainDesc);
+        if ((swapChainDesc.colorSpace != RenderSwapChainColorSpace::SRGB_NONLINEAR) && (swapChain->getColorSpace() != swapChainDesc.colorSpace)) {
+            // The output can't present scRGB after all: fall back to the regular SDR swap chain.
+            swapChainDesc.format = RenderFormat::B8G8R8A8_UNORM;
+            swapChainDesc.colorSpace = RenderSwapChainColorSpace::SRGB_NONLINEAR;
+            swapChain.reset();
+            swapChain = presentGraphicsWorker->commandQueue->createSwapChain(swapChainDesc);
+        }
+
+        HdrOutput::setActive(swapChainDesc.colorSpace == RenderSwapChainColorSpace::SCRGB_LINEAR);
+        if (HdrOutput::active()) {
+            fprintf(stderr, "[wcw hdr] HDR output active (scRGB), paper white %.0f nits.\n", HdrOutput::userSettings().paperWhiteNits);
+        }
 
         // Before configuring multisampling, make sure the device actually supports it for the formats we'll use. If it doesn't, turn off antialiasing in the configuration.
         const RenderSampleCounts colorSampleCounts = device->getSampleCountsSupported(RenderTarget::colorBufferFormat(usesHDR));

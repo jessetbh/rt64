@@ -7,6 +7,8 @@
 #include "shared/rt64_hlsl.h"
 #include "shared/rt64_video_interface.h"
 
+#include "rt64_hdr_output.h"
+
 namespace RT64 {
     // VIRenderer
 
@@ -45,22 +47,24 @@ namespace RT64 {
         const ShaderRecord *shader = nullptr;
         const RenderSampler *sampler = nullptr;
         const bool offscreen = (p.outputWidth > 0) && (p.outputHeight > 0);
+        // [wcw hdr] Drawing into an scRGB swap chain (offscreen targets stay SDR).
+        const bool hdr = !offscreen && HdrOutput::active();
         if (offscreen) {
             shader = &p.shaderLibrary->videoInterfaceBox;
             sampler = p.shaderLibrary->samplerLibrary.linear.borderBorder.get();
         }
         else switch (p.filtering) {
         case UserConfiguration::Filtering::Nearest:
-            shader = &p.shaderLibrary->videoInterfaceNearest;
+            shader = hdr ? &p.shaderLibrary->videoInterfaceNearestHdr : &p.shaderLibrary->videoInterfaceNearest;
             sampler = p.shaderLibrary->samplerLibrary.nearest.borderBorder.get();
             break;
         case UserConfiguration::Filtering::AntiAliasedPixelScaling:
-            shader = &p.shaderLibrary->videoInterfacePixel;
+            shader = hdr ? &p.shaderLibrary->videoInterfacePixelHdr : &p.shaderLibrary->videoInterfacePixel;
             sampler = p.shaderLibrary->samplerLibrary.linear.borderBorder.get();
             break;
         case UserConfiguration::Filtering::Linear:
         default:
-            shader = &p.shaderLibrary->videoInterfaceLinear;
+            shader = hdr ? &p.shaderLibrary->videoInterfaceLinearHdr : &p.shaderLibrary->videoInterfaceLinear;
             sampler = p.shaderLibrary->samplerLibrary.linear.borderBorder.get();
             break;
         }
@@ -87,6 +91,7 @@ namespace RT64 {
         pushConstants.videoResolution = computeHDSize(hlslpp::float2(p.vi->fbSize()), p.resolutionScale, p.downsamplingScale);
         pushConstants.textureResolution = { float(p.textureWidth), float(p.textureHeight) };
         pushConstants.gamma = p.vi->gamma();
+        pushConstants.hdrScale = hdr ? HdrOutput::sdrScale() : 0.0f;
         // [wcw] DIAGNOSTIC: the shader samples with a BORDER sampler (out of range = black).
         // Log the size math to catch a VI-vs-texture mismatch producing an all-border quad.
         { static int vr = 0; static const bool wcwTrace = getenv("WCW_TRACE") != nullptr; if (wcwTrace && (vr++ % 120) == 0) {

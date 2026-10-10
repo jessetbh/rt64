@@ -47,6 +47,7 @@
 #include "shaders/VideoInterfacePSRegular.hlsl.spirv.h"
 #include "shaders/VideoInterfacePSPixel.hlsl.spirv.h"
 #include "shaders/VideoInterfacePSBox.hlsl.spirv.h"
+#include "shaders/VideoInterfacePSHdrCompose.hlsl.spirv.h"
 #include "shaders/FullScreenVS.hlsl.spirv.h"
 #include "shaders/Im3DVS.hlsl.spirv.h"
 #include "shaders/ComposePS.hlsl.spirv.h"
@@ -94,6 +95,7 @@
 #   include "shaders/VideoInterfacePSRegular.hlsl.dxil.h"
 #   include "shaders/VideoInterfacePSPixel.hlsl.dxil.h"
 #   include "shaders/VideoInterfacePSBox.hlsl.dxil.h"
+#   include "shaders/VideoInterfacePSHdrCompose.hlsl.dxil.h"
 #   include "shaders/FullScreenVS.hlsl.dxil.h"
 #   include "shaders/Im3DVS.hlsl.dxil.h"
 #   include "shaders/ComposePS.hlsl.dxil.h"
@@ -140,6 +142,7 @@
 #   include "shaders/VideoInterfacePSRegular.hlsl.metal.h"
 #   include "shaders/VideoInterfacePSPixel.hlsl.metal.h"
 #   include "shaders/VideoInterfacePSBox.hlsl.metal.h"
+#   include "shaders/VideoInterfacePSHdrCompose.hlsl.metal.h"
 #   include "shaders/FullScreenVS.hlsl.metal.h"
 #   include "shaders/Im3DVS.hlsl.metal.h"
 #   include "shaders/ComposePS.hlsl.metal.h"
@@ -591,6 +594,7 @@ namespace RT64 {
             std::unique_ptr<RenderShader> regularShader = device->createShader(CREATE_SHADER_INPUTS(VideoInterfacePSRegularBlobDXIL, VideoInterfacePSRegularBlobSPIRV, VideoInterfacePSRegularBlobMSL, "PSMain", shaderFormat));
             std::unique_ptr<RenderShader> pixelShader = device->createShader(CREATE_SHADER_INPUTS(VideoInterfacePSPixelBlobDXIL, VideoInterfacePSPixelBlobSPIRV, VideoInterfacePSPixelBlobMSL, "PSMain", shaderFormat));
             std::unique_ptr<RenderShader> boxShader = device->createShader(CREATE_SHADER_INPUTS(VideoInterfacePSBoxBlobDXIL, VideoInterfacePSBoxBlobSPIRV, VideoInterfacePSBoxBlobMSL, "PSMain", shaderFormat));
+            std::unique_ptr<RenderShader> hdrComposeShader = device->createShader(CREATE_SHADER_INPUTS(VideoInterfacePSHdrComposeBlobDXIL, VideoInterfacePSHdrComposeBlobSPIRV, VideoInterfacePSHdrComposeBlobMSL, "PSMain", shaderFormat));
 
             VideoInterfaceDescriptorSet nearestDescriptorSet(samplerLibrary.nearest.borderBorder.get());
             VideoInterfaceDescriptorSet linearDescriptorSet(samplerLibrary.linear.borderBorder.get());
@@ -628,6 +632,32 @@ namespace RT64 {
             pipelineDesc.pixelShader = boxShader.get();
             pipelineDesc.pipelineLayout = videoInterfaceBox.pipelineLayout.get();
             videoInterfaceBox.pipeline = device->createGraphicsPipeline(pipelineDesc);
+
+            // [wcw hdr] Variants that draw into an scRGB (R16G16B16A16_FLOAT) swap chain.
+            pipelineDesc.renderTargetFormat[0] = RenderFormat::R16G16B16A16_FLOAT;
+            videoInterfaceLinearHdr.pipelineLayout = layoutBuilder.create(device);
+            pipelineDesc.pixelShader = regularShader.get();
+            pipelineDesc.pipelineLayout = videoInterfaceLinearHdr.pipelineLayout.get();
+            videoInterfaceLinearHdr.pipeline = device->createGraphicsPipeline(pipelineDesc);
+
+            videoInterfacePixelHdr.pipelineLayout = layoutBuilder.create(device);
+            pipelineDesc.pixelShader = pixelShader.get();
+            pipelineDesc.pipelineLayout = videoInterfacePixelHdr.pipelineLayout.get();
+            videoInterfacePixelHdr.pipeline = device->createGraphicsPipeline(pipelineDesc);
+
+            videoInterfaceHdrCompose.pipelineLayout = layoutBuilder.create(device);
+            pipelineDesc.pixelShader = hdrComposeShader.get();
+            pipelineDesc.pipelineLayout = videoInterfaceHdrCompose.pipelineLayout.get();
+            videoInterfaceHdrCompose.pipeline = device->createGraphicsPipeline(pipelineDesc);
+
+            layoutBuilder.begin();
+            layoutBuilder.addPushConstant(0, 0, sizeof(interop::VideoInterfaceCB), RenderShaderStageFlag::PIXEL);
+            layoutBuilder.addDescriptorSet(nearestDescriptorSet);
+            layoutBuilder.end();
+            videoInterfaceNearestHdr.pipelineLayout = layoutBuilder.create(device);
+            pipelineDesc.pixelShader = regularShader.get();
+            pipelineDesc.pipelineLayout = videoInterfaceNearestHdr.pipelineLayout.get();
+            videoInterfaceNearestHdr.pipeline = device->createGraphicsPipeline(pipelineDesc);
         }
     }
 

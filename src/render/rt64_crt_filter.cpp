@@ -21,7 +21,11 @@
 #include <filesystem>
 #include <mutex>
 
+#include "rt64_descriptor_sets.h"
+#include "rt64_hdr_output.h"
 #include "rt64_render_worker.h"
+#include "rt64_shader_library.h"
+#include "shared/rt64_video_interface.h"
 
 namespace RT64 {
     // Settings shared with the UI thread.
@@ -192,6 +196,12 @@ namespace RT64 {
         bool pendingFrame = false;
         bool haveFrontFrame = false;
         uint64_t refreshCounter = 0;
+
+        // [wcw hdr] With an scRGB swap chain the presets (SDR) draw into this window-sized target,
+        // which is then converted to linear light at paper white into the swap chain.
+        const ShaderLibrary *shaderLibrary = nullptr;
+        CrtTarget hdrStage;
+        std::unique_ptr<VideoInterfaceDescriptorSet> hdrComposeSet;
         uint64_t lastCrtRefresh = UINT64_MAX;
         uint32_t displayRefreshRate = 0;
         bool displayVsync = false;
@@ -519,6 +529,53 @@ namespace RT64 {
         }
 
         // Draws the next sub-frame of the front frame over the whole swap chain texture.
+        // [wcw hdr] Where a chain's final pass draws: the swap chain, or the HDR stage target.
+        RenderTexture *beginOutput(RenderCommandList *commandList, RenderTexture *swapChainTexture, uint32_t windowWidth, uint32_t windowHeight) {
+            if (!HdrOutput::active() || (shaderLibrary == nullptr)) {
+                commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::COLOR_WRITE));
+                return swapChainTexture;
+            }
+
+            hdrStage.ensure(device, windowWidth, windowHeight, "CRT Filter HDR Stage");
+            commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(hdrStage.texture.get(), RenderTextureLayout::COLOR_WRITE));
+            commandList->setFramebuffer(hdrStage.framebuffer.get());
+            commandList->clearColor();
+            return hdrStage.texture.get();
+        }
+
+        // Converts the HDR stage target into the swap chain (no-op without HDR), then leaves the swap
+        // chain bound for whatever draws next (menus, inspector).
+        void endOutput(RenderCommandList *commandList, RenderTexture *swapChainTexture, const RenderFramebuffer *swapChainFramebuffer, uint32_t windowWidth, uint32_t windowHeight) {
+            if (HdrOutput::active() && (shaderLibrary != nullptr) && (hdrStage.texture != nullptr)) {
+                const RenderTextureBarrier composeBarriers[] = {
+                    RenderTextureBarrier(hdrStage.texture.get(), RenderTextureLayout::SHADER_READ),
+                    RenderTextureBarrier(swapChainTexture, RenderTextureLayout::COLOR_WRITE)
+                };
+
+                commandList->barriers(RenderBarrierStage::GRAPHICS, composeBarriers, uint32_t(std::size(composeBarriers)));
+                commandList->setFramebuffer(swapChainFramebuffer);
+                commandList->setViewports(RenderViewport(0.0f, 0.0f, float(windowWidth), float(windowHeight)));
+                commandList->setScissors(RenderRect(0, 0, int32_t(windowWidth), int32_t(windowHeight)));
+                if (hdrComposeSet == nullptr) {
+                    hdrComposeSet = std::make_unique<VideoInterfaceDescriptorSet>(shaderLibrary->samplerLibrary.linear.borderBorder.get(), device);
+                }
+
+                hdrComposeSet->setTexture(hdrComposeSet->gInput, hdrStage.texture.get(), RenderTextureLayout::SHADER_READ);
+                interop::VideoInterfaceCB constants = {};
+                constants.hdrScale = HdrOutput::sdrScale();
+                const ShaderRecord &compose = shaderLibrary->videoInterfaceHdrCompose;
+                commandList->setPipeline(compose.pipeline.get());
+                commandList->setGraphicsPipelineLayout(compose.pipelineLayout.get());
+                commandList->setGraphicsDescriptorSet(hdrComposeSet->get(), 0);
+                commandList->setGraphicsPushConstants(0, &constants);
+                commandList->setVertexBuffers(0, nullptr, 0, nullptr);
+                commandList->drawInstanced(3, 1, 0, 0);
+                return;
+            }
+
+            commandList->setFramebuffer(swapChainFramebuffer);
+        }
+
         bool presentBeamSubframe(RenderCommandList *commandList, RenderTexture *swapChainTexture, const RenderFramebuffer *swapChainFramebuffer, uint32_t windowWidth, uint32_t windowHeight) {
             const uint64_t crtRefresh = crtRefreshIndex(refreshCounter);
             const bool scanStart = (crtRefresh != lastCrtRefresh);
@@ -529,14 +586,13 @@ namespace RT64 {
             }
 
             CrtTarget &front = guestTargets[frontTarget];
-            commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::COLOR_WRITE));
-
+            RenderTexture *output = beginOutput(commandList, swapChainTexture, windowWidth, windowHeight);
             libra_viewport_t viewport = { 0.0f, 0.0f, windowWidth, windowHeight };
-            const bool ok = runChain(beamChain, commandList, front.texture.get(), front.width, front.height, swapChainTexture, windowWidth, windowHeight,
+            const bool ok = runChain(beamChain, commandList, front.texture.get(), front.width, front.height, output, windowWidth, windowHeight,
                 viewport, size_t(refreshCounter), uint32_t(std::lround(beamRatio)), 1);
 
             refreshCounter++;
-            commandList->setFramebuffer(swapChainFramebuffer);
+            endOutput(commandList, swapChainTexture, swapChainFramebuffer, windowWidth, windowHeight);
             return ok;
         }
     };
@@ -597,6 +653,7 @@ namespace RT64 {
         }
 
         impl->sourceTarget.ensure(impl->device, sourceWidth, sourceHeight, "CRT Filter Source");
+        impl->shaderLibrary = p.vi.shaderLibrary;
 
         RenderCommandList *commandList = p.presentWorker->commandList.get();
         RenderTexture *sourceTexture = impl->sourceTarget.texture.get();
@@ -656,12 +713,10 @@ namespace RT64 {
         else {
             impl->haveFrontFrame = false;
             impl->pendingFrame = false;
-            commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(p.swapChainTexture, RenderTextureLayout::COLOR_WRITE));
-            impl->runChain(impl->guestChain, commandList, sourceTexture, sourceWidth, sourceHeight, p.swapChainTexture, windowWidth, windowHeight,
+            RenderTexture *output = impl->beginOutput(commandList, p.swapChainTexture, windowWidth, windowHeight);
+            impl->runChain(impl->guestChain, commandList, sourceTexture, sourceWidth, sourceHeight, output, windowWidth, windowHeight,
                 viewport, impl->frameCount, 1, 1);
-
-            // Rebind the swap chain for whatever draws next (menus, inspector).
-            commandList->setFramebuffer(p.swapChainFramebuffer);
+            impl->endOutput(commandList, p.swapChainTexture, p.swapChainFramebuffer, windowWidth, windowHeight);
         }
 
         return true;

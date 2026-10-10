@@ -58,6 +58,10 @@ namespace RT64 {
         ShaderRecord videoInterfaceNearest;
         ShaderRecord videoInterfacePixel;
         ShaderRecord videoInterfaceBox;
+        ShaderRecord videoInterfaceNearestHdr;
+        ShaderRecord videoInterfaceLinearHdr;
+        ShaderRecord videoInterfacePixelHdr;
+        ShaderRecord videoInterfaceHdrCompose;
 
         ShaderLibrary(bool usesHDR, bool usesHardwareResolve);
         ~ShaderLibrary();

@@ -50,12 +50,26 @@ float4 BoxDownsample(float2 uv) {
     return sum / float(taps.x * taps.y);
 }
 
+// [wcw hdr] sRGB-encoded SDR color to linear light, scaled to paper white for an scRGB swap chain.
+float4 ToOutput(float4 color) {
+    if (gConstants.hdrScale > 0.0f) {
+        const float3 c = saturate(color.rgb);
+        const float3 linearColor = lerp(pow((c + 0.055f) / 1.055f, 2.4f), c / 12.92f, step(c, 0.04045f));
+        color.rgb = linearColor * gConstants.hdrScale;
+    }
+
+    return color;
+}
+
 float4 PSMain(in float4 pos : SV_Position, in float2 uv : TEXCOORD0) : SV_TARGET {
 #if defined(BOX_DOWNSAMPLE)
     return BoxDownsample(uv);
+#elif defined(HDR_COMPOSE)
+    // [wcw hdr] Full-screen copy of an SDR image (e.g. the CRT filter's output) into the scRGB swap chain.
+    return ToOutput(float4(gInput.SampleLevel(gSampler, uv, 0).rgb, 1.0f));
 #elif defined(PIXEL_ANTIALIASING)
-    return PixelAntialiasing(uv);
+    return ToOutput(PixelAntialiasing(uv));
 #else
-    return SampleInput((uv / gConstants.textureResolution) * gConstants.videoResolution);
+    return ToOutput(SampleInput((uv / gConstants.textureResolution) * gConstants.videoResolution));
 #endif
 }
