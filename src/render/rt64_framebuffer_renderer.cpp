@@ -1845,7 +1845,11 @@ namespace RT64 {
                         if (wcwRtProj && (instanceDrawCall.type == InstanceDrawCall::Type::IndexedTriangles) && !triangles.vertexTestZ &&
                             (call.callDesc.triangleCount > 0) && !wcwBlendsWithMemory(call.callDesc.otherMode))
                         {
-                            wcwRaytracer->addMesh(call.meshDesc.faceIndicesStart, call.callDesc.triangleCount, vertexCount, call.shaderDesc.flags.culling);
+                            // AKI scales wrestler models (WCW 1.04, VPW2 1.01); world geometry has unit scale.
+                            const interop::float4x4 &wcwWorld = drawData.worldTransforms[drawData.worldIndices[drawData.faceIndices[call.meshDesc.faceIndicesStart]]];
+                            const float wcwScale = std::sqrt(wcwWorld[0][0] * wcwWorld[0][0] + wcwWorld[0][1] * wcwWorld[0][1] + wcwWorld[0][2] * wcwWorld[0][2]);
+                            const bool wcwCharacter = std::abs(wcwScale - 1.0f) > 0.005f;
+                            wcwRaytracer->addMesh(call.meshDesc.faceIndicesStart, call.callDesc.triangleCount, vertexCount, call.shaderDesc.flags.culling, wcwCharacter);
 
                             // WCW_RT_RAYTEST=<present>: CPU copy of the gathered triangles for a reference ray test.
                             static const int wcwRayTestAt = getenv("WCW_RT_RAYTEST") ? atoi(getenv("WCW_RT_RAYTEST")) : -1;

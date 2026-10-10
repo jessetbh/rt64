@@ -18,7 +18,7 @@ RWTexture2D<float4> gOutput : register(u5);
 
 // Unnormalized: the winding (v0, v1, v2) is kept, which back-face culling relies on.
 float3 triangleCross(uint geometryIndex, uint primitiveIndex) {
-    const uint base = (gMeshIndexStarts[geometryIndex] & ~WCW_RT_MESH_CULLED) + primitiveIndex * 3;
+    const uint base = (gMeshIndexStarts[geometryIndex] & ~WCW_RT_MESH_FLAGS) + primitiveIndex * 3;
     const float3 v0 = gWorldPos[gFaceIndices[base + 0]].xyz;
     const float3 v1 = gWorldPos[gFaceIndices[base + 1]].xyz;
     const float3 v2 = gWorldPos[gFaceIndices[base + 2]].xyz;
@@ -26,7 +26,7 @@ float3 triangleCross(uint geometryIndex, uint primitiveIndex) {
 }
 
 float3 triangleNormal(uint geometryIndex, uint primitiveIndex) {
-    const uint base = (gMeshIndexStarts[geometryIndex] & ~WCW_RT_MESH_CULLED) + primitiveIndex * 3;
+    const uint base = (gMeshIndexStarts[geometryIndex] & ~WCW_RT_MESH_FLAGS) + primitiveIndex * 3;
     const float3 v0 = gWorldPos[gFaceIndices[base + 0]].xyz;
     const float3 v1 = gWorldPos[gFaceIndices[base + 1]].xyz;
     const float3 v2 = gWorldPos[gFaceIndices[base + 2]].xyz;
@@ -146,6 +146,14 @@ void CSMain(uint2 pixel : SV_DispatchThreadID) {
         const float3 lightPos = gParams.lightPosition.xyz + float3(offset.x, 0.0f, offset.y);
         const float3 toLight = lightPos - hitPos;
         const float lightDist = length(toLight);
+
+        // Surfaces facing away from a light are already dark from N64 vertex lighting:
+        // only light-facing surfaces receive its shadow (no double darkening).
+        if (dot(normal, toLight) <= 0.0f) {
+            lit += weight;
+            continue;
+        }
+
         RayDesc shadowRay;
         shadowRay.Origin = hitPos + normal * 0.5f;
         shadowRay.Direction = toLight / lightDist;
@@ -174,6 +182,8 @@ void CSMain(uint2 pixel : SV_DispatchThreadID) {
         return;
     }
 
-    const float factor = 1.0f - gParams.shadowStrength * (1.0f - lit);
+    const bool characterReceiver = (gMeshIndexStarts[primary.CommittedGeometryIndex()] & WCW_RT_MESH_CHARACTER) != 0;
+    const float strength = characterReceiver ? gParams.characterShadowStrength : gParams.shadowStrength;
+    const float factor = 1.0f - strength * (1.0f - lit);
     gOutput[pixel] = float4(factor, factor, factor, 1.0f);
 }

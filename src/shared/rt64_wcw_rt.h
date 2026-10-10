@@ -18,6 +18,9 @@
 
 // Bit 31 of a mesh index start: N64 face culling is on for that draw.
 #define WCW_RT_MESH_CULLED 0x80000000u
+// Bit 30: a character draw (AKI scales wrestler models, world geometry has unit scale).
+#define WCW_RT_MESH_CHARACTER 0x40000000u
+#define WCW_RT_MESH_FLAGS (WCW_RT_MESH_CULLED | WCW_RT_MESH_CHARACTER)
 
 #ifdef HLSL_CPU
 namespace interop {
@@ -38,6 +41,9 @@ namespace interop {
         // +1 or -1: which winding counts as front-facing for culled draws (WCW_RT_CULL_SIGN).
         float cullSign;
         float keyWeight;
+        // Shadow strength on character surfaces (they already carry N64 vertex shading).
+        float characterShadowStrength;
+        float3 padding;
     };
 #ifdef HLSL_CPU
 };
