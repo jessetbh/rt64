@@ -136,6 +136,10 @@ namespace RT64 {
         compositePS = device->createShader(WcwRtCompositePSBlobDXIL, std::size(WcwRtCompositePSBlobDXIL), "PSMain", RenderShaderFormat::DXIL);
 #   endif
 
+        if (getenv("WCW_GPU_LOG") != nullptr) {
+            timingPool = device->createQueryPool(StampCount);
+        }
+
         paramsBuffer = device->createBuffer(RenderBufferDesc::UploadBuffer(alignUp(sizeof(interop::WcwRtParams), 256), RenderBufferFlag::CONSTANT));
     }
 
@@ -249,6 +253,19 @@ namespace RT64 {
 
         slot.valid = true;
         slot.builtFrame = frameCounter;
+        if (timingPool != nullptr) {
+            worker->commandList->resetQueryPool(timingPool.get(), 0, StampCount);
+            worker->commandList->writeTimestamp(timingPool.get(), StampBuildBegin);
+            timingWritten = (1u << StampBuildBegin);
+            timingMeshes = uint32_t(meshes.size());
+            timingTriangles = 0;
+            timingAlphaMeshes = 0;
+            timingPixels = 0;
+            for (size_t m = 0; m < meshes.size(); m++) {
+                timingTriangles += meshes[m].indexCount / 3;
+                timingAlphaMeshes += (meshTiles[m] & WCW_RT_TILE_ALPHA_TEST) ? 1 : 0;
+            }
+        }
 
         // Top level: this workload's geometry (mask 0x1: primary and shadow rays) plus the other
         // workload slots built this frame or the previous one (mask 0x2: shadow rays only).
@@ -310,6 +327,10 @@ namespace RT64 {
         worker->commandList->buildTopLevelAS(tlas.get(), RenderBufferReference(scratchBuffer.get(), blasScratch), RenderBufferReference(instancesBuffer.get()), tlasInfo);
         worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderBufferBarrier(tlasBuffer.get(), RenderBufferAccess::READ));
         structuresBuilt = true;
+        if (timingPool != nullptr) {
+            worker->commandList->writeTimestamp(timingPool.get(), StampBuildEnd);
+            timingWritten |= (1u << StampBuildEnd);
+        }
 
         static const bool wcwRtLog = getenv("WCW_RT_LOG") != nullptr;
         if (wcwRtLog) {
@@ -480,6 +501,11 @@ namespace RT64 {
             RenderTextureBarrier(outputTexture.get(), RenderTextureLayout::GENERAL),
             RenderTextureBarrier(currentTexture.get(), RenderTextureLayout::GENERAL)
         });
+        if (timingPool != nullptr) {
+            worker->commandList->writeTimestamp(timingPool.get(), StampTraceBegin);
+            timingWritten |= (1u << StampTraceBegin);
+        }
+
         worker->commandList->setPipeline(tracePipeline.get());
         worker->commandList->setComputePipelineLayout(traceLayout.get());
         worker->commandList->setComputeDescriptorSet(traceSet.get(), 0);
@@ -487,6 +513,11 @@ namespace RT64 {
         const uint32_t rectWidth = traceRect[2] - traceRect[0];
         const uint32_t rectHeight = traceRect[3] - traceRect[1];
         worker->commandList->dispatch((rectWidth + 7) / 8, (rectHeight + 7) / 8, 1);
+        if (timingPool != nullptr) {
+            worker->commandList->writeTimestamp(timingPool.get(), StampTraceEnd);
+            timingWritten |= (1u << StampTraceEnd);
+            timingPixels = rectWidth * rectHeight;
+        }
 
         // Shadow mode: temporal resolve of the jittered samples into this slot's history.
         if ((mode == WCW_RT_MODE_SHADOW) || (mode == WCW_RT_MODE_AO)) {
@@ -514,6 +545,11 @@ namespace RT64 {
             slot.prevViewProj = viewProj;
         }
 
+        if (timingPool != nullptr) {
+            worker->commandList->writeTimestamp(timingPool.get(), StampResolveEnd);
+            timingWritten |= (1u << StampResolveEnd);
+        }
+
         worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(outputTexture.get(), RenderTextureLayout::SHADER_READ));
     }
 
@@ -536,6 +572,58 @@ namespace RT64 {
         worker->commandList->setGraphicsDescriptorSet(compositeSet.get(), 0);
         worker->commandList->setViewports(fullViewport);
         worker->commandList->setScissors(fullRect);
+        if (timingPool != nullptr) {
+            worker->commandList->writeTimestamp(timingPool.get(), StampCompositeBegin);
+        }
+
         worker->commandList->drawInstanced(3, 1, 0, 0);
+        if (timingPool != nullptr) {
+            worker->commandList->writeTimestamp(timingPool.get(), StampCompositeEnd);
+            timingWritten |= (1u << StampCompositeBegin) | (1u << StampCompositeEnd);
+        }
+    }
+
+    void WcwRaytracer::collectTimings() {
+        if ((timingPool == nullptr) || (timingWritten == 0)) {
+            return;
+        }
+
+        static double sums[5] = {};
+        static double maxTotal = 0.0;
+        static uint64_t triangleSum = 0, meshSum = 0, alphaSum = 0, pixelSum = 0;
+        static uint32_t count = 0;
+        timingPool->queryResults();
+        const uint64_t *t = timingPool->getResults();
+        auto span = [&](uint32_t a, uint32_t b) {
+            const uint32_t need = (1u << a) | (1u << b);
+            return ((timingWritten & need) == need) ? double(t[b] - t[a]) / 1000000.0 : 0.0;
+        };
+
+        const double build = span(StampBuildBegin, StampBuildEnd);
+        const double trace = span(StampTraceBegin, StampTraceEnd);
+        const double resolve = span(StampTraceEnd, StampResolveEnd);
+        const double composite = span(StampCompositeBegin, StampCompositeEnd);
+        const double total = span(StampBuildBegin, StampCompositeEnd);
+        sums[0] += build;
+        sums[1] += trace;
+        sums[2] += resolve;
+        sums[3] += composite;
+        sums[4] += total;
+        maxTotal = std::max(maxTotal, total);
+        triangleSum += timingTriangles;
+        meshSum += timingMeshes;
+        alphaSum += timingAlphaMeshes;
+        pixelSum += timingPixels;
+        timingWritten = 0;
+        if (++count == 300) {
+            fprintf(stderr, "[wcw rt gpu] per traced workload avg: build=%.3f trace=%.3f resolve=%.3f composite=%.3f ms, build->composite span=%.3f (max %.3f) ms; %llu meshes (%llu alpha-tested), %llu tris, %llu trace px (300 workloads)
+",
+                sums[0] / count, sums[1] / count, sums[2] / count, sums[3] / count, sums[4] / count, maxTotal,
+                (unsigned long long)(meshSum / count), (unsigned long long)(alphaSum / count), (unsigned long long)(triangleSum / count), (unsigned long long)(pixelSum / count));
+            memset(sums, 0, sizeof(sums));
+            maxTotal = 0.0;
+            triangleSum = meshSum = alphaSum = pixelSum = 0;
+            count = 0;
+        }
     }
 };

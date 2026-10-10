@@ -128,6 +128,15 @@ namespace RT64 {
         RenderSampleCounts compositeSamples = RenderSampleCount::COUNT_0;
         uint32_t compositeMode = UINT32_MAX;
 
+        // WCW_GPU_LOG=1: per-stage GPU timestamps (build, trace, resolve, composite) of each workload.
+        enum TimingStamp : uint32_t { StampBuildBegin, StampBuildEnd, StampTraceBegin, StampTraceEnd, StampResolveEnd, StampCompositeBegin, StampCompositeEnd, StampCount };
+        std::unique_ptr<RenderQueryPool> timingPool;
+        uint32_t timingWritten = 0;
+        uint32_t timingTriangles = 0;
+        uint32_t timingMeshes = 0;
+        uint32_t timingAlphaMeshes = 0;
+        uint32_t timingPixels = 0;
+
         // Runtime settings from the frontend's graphics menu. Quality: 0 Performance (half-res,
         // 1 sample per light, 1 AO ray), 1 Balanced (half-res, 2/2), 2 Quality (full-res, 2/2).
         // WCW_RT forces it on; WCW_RT_SCALE / WCW_RT_SAMPLES / WCW_RT_AO_SAMPLES override quality.
@@ -159,5 +168,7 @@ namespace RT64 {
         // textureSet: the framebuffer renderer's bindless texture cache set (alpha tests).
         void recordTrace(RenderWorker *worker, RenderTarget *colorTarget, RenderDescriptorSet *textureSet);
         void recordComposite(RenderWorker *worker);
+        // After the workload's GPU work finished: accumulates and logs the stage timings (WCW_GPU_LOG).
+        void collectTimings();
     };
 };

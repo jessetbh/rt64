@@ -904,6 +904,9 @@ namespace RT64 {
             queryPool->queryResults();
             const uint64_t *frameTimestamps = queryPool->getResults();
             rendererGPUProfiler.log(double(frameTimestamps[1] - frameTimestamps[0]) / 1000000.0);
+            if (framebufferRenderer->wcwRaytracer != nullptr) {
+                framebufferRenderer->wcwRaytracer->collectTimings();
+            }
 
             // [wcw rt] WCW_GPU_LOG=1: average/max GPU time per workload every 300 workloads.
             static const bool wcwGpuLog = getenv("WCW_GPU_LOG") != nullptr;
