@@ -100,22 +100,31 @@ namespace RT64 {
     }
 
     // [wcw rt] AKI blob shadows: small translucent quads lying flat (constant world Y) on the
-    // mat under each wrestler. The ray-traced shadows replace them.
+    // mat under each wrestler, a few dozen units across. The ray-traced shadows replace them.
+    // Screen-space overlays (intro art, entrance videos, select-screen backgrounds) are also
+    // small blended quads, but their world positions collapse to a point: require a real
+    // footprint on the floor so they are kept.
     static bool wcwIsBlobShadow(const DrawData &drawData, uint32_t faceIndicesStart, uint32_t triangleCount, const interop::OtherMode &otherMode) {
         if ((triangleCount == 0) || (triangleCount > 4) || !wcwBlendsWithMemory(otherMode)) {
             return false;
         }
 
-        float minY = FLT_MAX, maxY = -FLT_MAX;
+        float minPos[3] = { FLT_MAX, FLT_MAX, FLT_MAX };
+        float maxPos[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
         for (uint32_t i = 0; i < triangleCount * 3; i++) {
             const uint32_t v = drawData.faceIndices[faceIndicesStart + i];
             const hlslpp::float4 objPos(drawData.posFloats[v * 3 + 0], drawData.posFloats[v * 3 + 1], drawData.posFloats[v * 3 + 2], 1.0f);
-            const float y = hlslpp::mul(objPos, hlslpp::float4x4(drawData.worldTransforms[drawData.worldIndices[v]])).y;
-            minY = std::min(minY, y);
-            maxY = std::max(maxY, y);
+            const hlslpp::float4 worldPos = hlslpp::mul(objPos, hlslpp::float4x4(drawData.worldTransforms[drawData.worldIndices[v]]));
+            const float pos[3] = { worldPos.x, worldPos.y, worldPos.z };
+            for (uint32_t c = 0; c < 3; c++) {
+                minPos[c] = std::min(minPos[c], pos[c]);
+                maxPos[c] = std::max(maxPos[c], pos[c]);
+            }
         }
 
-        return (maxY - minY) < 0.5f;
+        const float extentX = maxPos[0] - minPos[0];
+        const float extentZ = maxPos[2] - minPos[2];
+        return ((maxPos[1] - minPos[1]) < 0.5f) && (extentX > 1.0f) && (extentZ > 1.0f) && (extentX < 200.0f) && (extentZ < 200.0f);
     }
     // Helper functions.
     
