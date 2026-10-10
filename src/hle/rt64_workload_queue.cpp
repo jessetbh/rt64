@@ -735,7 +735,28 @@ namespace RT64 {
             ext.workloadGraphicsWorker->commandList->writeTimestamp(queryPool.get(), 0);
             framebufferRenderer->endFramebuffers(ext.workloadGraphicsWorker, &workload.drawBuffers, &workload.outputBuffers, workloadConfig.raytracingEnabled);
             framebufferRenderer->recordSetup(ext.workloadGraphicsWorker, bufferUploaders, processRSP ? rspProcessor.get() : nullptr, processWorldVertices ? vertexProcessor.get() : nullptr, &workload.outputBuffers, workloadConfig.raytracingEnabled);
-            
+
+            // [wcw hfr] WCW_HFR_PRIME=1: start a generated frame's target from the live target's content
+            // (ported from the July World Tour fix, bd35fac). Games that clear each buffer in the PREVIOUS
+            // frame submit no clear in this one, so a fresh override target keeps undefined (white)
+            // content behind the re-rendered geometry: World Tour's title fade alternated grey/white.
+            static const bool wcwHfrPrime = getenv("WCW_HFR_PRIME") != nullptr;
+            if (wcwHfrPrime && (overrideTarget != nullptr) && !usingMSAA) {
+                RenderTarget &liveTarget = targetManager.get(overrideTargetKey, true);
+                if (!liveTarget.isEmpty() && (&liveTarget != overrideTarget)) {
+                    overrideTarget->resize(ext.workloadGraphicsWorker, liveTarget.width, liveTarget.height);
+                    RenderTextureBarrier primeBarriers[] = {
+                        RenderTextureBarrier(liveTarget.texture.get(), RenderTextureLayout::COPY_SOURCE),
+                        RenderTextureBarrier(overrideTarget->texture.get(), RenderTextureLayout::COPY_DEST)
+                    };
+                    ext.workloadGraphicsWorker->commandList->barriers(RenderBarrierStage::COPY, primeBarriers, uint32_t(std::size(primeBarriers)));
+                    const RenderBox primeBox(0, 0, int32_t(std::min(liveTarget.width, overrideTarget->width)), int32_t(std::min(liveTarget.height, overrideTarget->height)));
+                    ext.workloadGraphicsWorker->commandList->copyTextureRegion(
+                        RenderTextureCopyLocation::Subresource(overrideTarget->texture.get()),
+                        RenderTextureCopyLocation::Subresource(liveTarget.texture.get()), 0, 0, 0, &primeBox);
+                }
+            }
+
             // Record all framebuffer pairs.
             uint32_t framebufferIndex = 0;
             for (uint32_t f = 0; f < fbPairCount; f++) {
