@@ -1403,7 +1403,7 @@ namespace RT64 {
 
             // [wcw rt] Hybrid ray tracing pass over the traced projection's raster result.
             if ((wcwRaytracer != nullptr) && (wcwSceneCursor++ == targetDrawCall.wcwRtSceneSlot)) {
-                wcwRaytracer->recordTrace(worker, targetDrawCall.fbStorage->colorTarget);
+                wcwRaytracer->recordTrace(worker, targetDrawCall.fbStorage->colorTarget, descTextureSet->get());
                 worker->commandList->setFramebuffer(depthState ? targetDrawCall.fbStorage->colorWriteDepthRead.get() : targetDrawCall.fbStorage->colorDepthWrite.get());
                 wcwRaytracer->recordComposite(worker);
             }
@@ -1644,7 +1644,8 @@ namespace RT64 {
                 const RenderViewport wcwViewport = convertViewportRect(drawData.rspViewports[proj.transformsIndex].rect(unitClipRatios), p.resolutionScale, p.fbWidth,
                     projInvRatioScale, extOriginPercentage, 0.0f, viewportOrigin, viewportOrigin);
                 wcwRaytracer->beginScene(wcwView, wcwProj, wcwViewport,
-                    worldPosRes, outputBuffers.worldPosBuffer.allocatedSize, indexRes, uint64_t(indexCount) * IndexStride);
+                    worldPosRes, outputBuffers.worldPosBuffer.allocatedSize, indexRes, uint64_t(indexCount) * IndexStride,
+                    drawBuffers.rdpTilesBuffer.get(), drawBuffers.gpuTilesBuffer.get(), tcRes);
             }
 
             for (uint32_t d = 0; (d < proj.gameCallCount) && (globalCallIndex < p.maxGameCall); d++) {
@@ -1849,7 +1850,13 @@ namespace RT64 {
                             const interop::float4x4 &wcwWorld = drawData.worldTransforms[drawData.worldIndices[drawData.faceIndices[call.meshDesc.faceIndicesStart]]];
                             const float wcwScale = std::sqrt(wcwWorld[0][0] * wcwWorld[0][0] + wcwWorld[0][1] * wcwWorld[0][1] + wcwWorld[0][2] * wcwWorld[0][2]);
                             const bool wcwCharacter = std::abs(wcwScale - 1.0f) > 0.005f;
-                            wcwRaytracer->addMesh(call.meshDesc.faceIndicesStart, call.callDesc.triangleCount, vertexCount, call.shaderDesc.flags.culling, wcwCharacter);
+                            // Alpha-tested draws (alpha compare or coverage x alpha) let rays through transparent texels.
+                            const interop::OtherMode &wcwOm = call.callDesc.otherMode;
+                            const bool wcwAlphaTest = (call.callDesc.textureOn != 0) && (call.callDesc.tileCount > 0) &&
+                                ((wcwOm.alphaCompare() != G_AC_NONE) || wcwOm.cvgXAlpha());
+                            const bool wcwUvCorrection = (wcwOm.textPersp() != G_TP_PERSP);
+                            wcwRaytracer->addMesh(call.meshDesc.faceIndicesStart, call.callDesc.triangleCount, vertexCount, call.shaderDesc.flags.culling, wcwCharacter,
+                                wcwAlphaTest, call.callDesc.tileIndex, wcwUvCorrection);
 
                             // WCW_RT_RAYTEST=<present>: CPU copy of the gathered triangles for a reference ray test.
                             static const int wcwRayTestAt = getenv("WCW_RT_RAYTEST") ? atoi(getenv("WCW_RT_RAYTEST")) : -1;

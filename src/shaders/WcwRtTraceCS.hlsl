@@ -8,6 +8,9 @@
 // (debug modes) or traces a shadow ray toward the scene light (shadow mode).
 
 #include "shared/rt64_wcw_rt.h"
+#include "shared/rt64_f3d_defines.h"
+#include "shared/rt64_gpu_tile.h"
+#include "shared/rt64_rdp_tile.h"
 
 ConstantBuffer<WcwRtParams> gParams : register(b0);
 RaytracingAccelerationStructure gScene : register(t1);
@@ -17,6 +20,83 @@ StructuredBuffer<uint> gMeshIndexStarts : register(t4);
 RWTexture2D<float4> gOutput : register(u5);
 // Shadow mode: (shadow factor, primary hit distance; 0 = no hit) for the resolve pass.
 RWTexture2D<float2> gCurrent : register(u6);
+StructuredBuffer<RDPTile> gRDPTiles : register(t7);
+StructuredBuffer<GPUTile> gGPUTiles : register(t8);
+StructuredBuffer<float2> gTexCoords : register(t9);
+StructuredBuffer<uint> gMeshTiles : register(t10);
+// The framebuffer renderer's bindless RGBA texture cache.
+Texture2D<float4> gTextures[8192] : register(t0, space1);
+
+int moduloInt(int a, int b) {
+    return (b > 0) ? (a - b * int(floor(float(a) / float(b)))) : a;
+}
+
+// Texel alpha of an alpha-tested draw at a hit, point sampled with the same tile transform
+// and clamp/wrap/mirror rules as TextureSampler.hlsli. Tiles needing raw TMEM decoding are
+// treated as opaque.
+float hitAlpha(uint geometryIndex, uint primitiveIndex, float2 barycentrics) {
+    const uint tileWord = gMeshTiles[geometryIndex];
+    const uint base = (gMeshIndexStarts[geometryIndex] & ~WCW_RT_MESH_FLAGS) + primitiveIndex * 3;
+    const float2 uv0 = gTexCoords[gFaceIndices[base + 0]];
+    const float2 uv1 = gTexCoords[gFaceIndices[base + 1]];
+    const float2 uv2 = gTexCoords[gFaceIndices[base + 2]];
+    const float2 inputUV = uv0 * (1.0f - barycentrics.x - barycentrics.y) + uv1 * barycentrics.x + uv2 * barycentrics.y;
+
+    const uint tileIndex = tileWord & WCW_RT_TILE_INDEX_MASK;
+    const RDPTile rdpTile = gRDPTiles[tileIndex];
+    const GPUTile gpuTile = gGPUTiles[tileIndex];
+    if (gpuTileFlagRawTMEM(gpuTile.flags)) {
+        return 1.0f;
+    }
+
+    const float correction = ((tileWord & WCW_RT_TILE_UV_CORRECTION) != 0) ? 0.5f : 1.0f;
+    float2 uvCoord = inputUV * correction * float2(rdpTile.shifts, rdpTile.shiftt);
+    if (gpuTileFlagShiftedByHalf(gpuTile.flags)) {
+        uvCoord += float2(0.5f, 0.5f);
+    }
+
+    uvCoord *= gpuTile.tcScale;
+    uvCoord -= (float2(rdpTile.uls, rdpTile.ult) * gpuTile.ulScale) / 4.0f;
+    int2 texel = int2(floor(uvCoord));
+    const float2 tcScale = gpuTile.tcScale;
+    if (rdpTile.cms & G_TX_CLAMP) {
+        texel.x = clamp(texel.x, 0, int(round(tcScale.x * rdpTile.lrs) / 4 - round(tcScale.x * rdpTile.uls) / 4 + round(tcScale.x - 1.0f)));
+    }
+
+    if (rdpTile.cmt & G_TX_CLAMP) {
+        texel.y = clamp(texel.y, 0, int(round(tcScale.y * rdpTile.lrt) / 4 - round(tcScale.y * rdpTile.ult) / 4 + round(tcScale.y - 1.0f)));
+    }
+
+    const int masks = int(round(rdpTile.masks * tcScale.x));
+    if ((rdpTile.cms & G_TX_MIRROR) && (masks > 0) && (moduloInt(texel.x, masks * 2) >= masks)) {
+        texel.x = (masks - 1) - moduloInt(texel.x, masks);
+    }
+    else {
+        texel.x = moduloInt(texel.x, masks);
+    }
+
+    const int maskt = int(round(rdpTile.maskt * tcScale.y));
+    if ((rdpTile.cmt & G_TX_MIRROR) && (maskt > 0) && (moduloInt(texel.y, maskt * 2) >= maskt)) {
+        texel.y = (maskt - 1) - moduloInt(texel.y, maskt);
+    }
+    else {
+        texel.y = moduloInt(texel.y, maskt);
+    }
+
+    const int2 size = int2(gpuTile.textureDimensions.xy);
+    texel = clamp(texel, int2(0, 0), max(size - 1, int2(0, 0)));
+    return gTextures[NonUniformResourceIndex(gpuTile.textureIndex)].Load(int3(texel, 0)).a;
+}
+
+// Non-opaque candidates of this workload's alpha-tested draws only count where the texel is
+// solid; other workloads' geometry (instance ID > 0) has no bound texture data here.
+bool candidateIsSolid(uint instanceId, uint geometryIndex, uint primitiveIndex, float2 barycentrics) {
+    if ((instanceId != 0) || ((gMeshTiles[geometryIndex] & WCW_RT_TILE_ALPHA_TEST) == 0)) {
+        return true;
+    }
+
+    return hitAlpha(geometryIndex, primitiveIndex, barycentrics) >= 0.5f;
+}
 
 // Interleaved gradient noise, decorrelated per frame and per use.
 float noise(uint2 pixel, uint seed) {
@@ -91,8 +171,12 @@ void CSMain(uint2 pixel : SV_DispatchThreadID) {
     primary.TraceRayInline(gScene, RAY_FLAG_NONE, 0x1, ray);
     while (primary.Proceed()) {
         if (primary.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE) {
-            const float3 n = triangleCross(primary.CandidateGeometryIndex(), primary.CandidatePrimitiveIndex());
-            if ((dot(n, ray.Direction) * gParams.cullSign) < 0.0f) {
+            const uint geometryIndex = primary.CandidateGeometryIndex();
+            const uint primitiveIndex = primary.CandidatePrimitiveIndex();
+            const bool culled = (gMeshIndexStarts[geometryIndex] & WCW_RT_MESH_CULLED) != 0;
+            const float3 n = triangleCross(geometryIndex, primitiveIndex);
+            const bool facing = !culled || ((dot(n, ray.Direction) * gParams.cullSign) < 0.0f);
+            if (facing && candidateIsSolid(primary.CandidateInstanceID(), geometryIndex, primitiveIndex, primary.CandidateTriangleBarycentrics())) {
                 primary.CommitNonOpaqueTriangleHit();
             }
         }
@@ -187,9 +271,14 @@ void CSMain(uint2 pixel : SV_DispatchThreadID) {
         shadowRay.TMin = 0.5f;
         shadowRay.TMax = lightDist;
 
-        RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> shadow;
+        RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> shadow;
         shadow.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, shadowRay);
-        shadow.Proceed();
+        while (shadow.Proceed()) {
+            if (candidateIsSolid(shadow.CandidateInstanceID(), shadow.CandidateGeometryIndex(), shadow.CandidatePrimitiveIndex(), shadow.CandidateTriangleBarycentrics())) {
+                shadow.CommitNonOpaqueTriangleHit();
+            }
+        }
+
         if (shadow.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
             occluderId = int(shadow.CommittedGeometryIndex());
         }
@@ -232,9 +321,14 @@ void CSMain(uint2 pixel : SV_DispatchThreadID) {
             aoRay.Direction = dir;
             aoRay.TMin = 0.5f;
             aoRay.TMax = gParams.aoRadius;
-            RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> ao;
+            RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> ao;
             ao.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, aoRay);
-            ao.Proceed();
+            while (ao.Proceed()) {
+                if (candidateIsSolid(ao.CandidateInstanceID(), ao.CandidateGeometryIndex(), ao.CandidatePrimitiveIndex(), ao.CandidateTriangleBarycentrics())) {
+                    ao.CommitNonOpaqueTriangleHit();
+                }
+            }
+
             if (ao.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
                 occluded += 1.0f;
             }

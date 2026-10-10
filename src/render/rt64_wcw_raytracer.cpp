@@ -8,7 +8,10 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "rt64_descriptor_sets.h"
 #include "rt64_render_target.h"
+#include "shared/rt64_gpu_tile.h"
+#include "shared/rt64_rdp_tile.h"
 #include "rt64_render_worker.h"
 
 #ifdef _WIN32
@@ -68,12 +71,18 @@ namespace RT64 {
         traceBuilder.addStructuredBuffer(4);
         traceBuilder.addReadWriteTexture(5);
         traceBuilder.addReadWriteTexture(6);
+        traceBuilder.addStructuredBuffer(7);
+        traceBuilder.addStructuredBuffer(8);
+        traceBuilder.addStructuredBuffer(9);
+        traceBuilder.addStructuredBuffer(10);
         traceBuilder.end();
         traceSet = traceBuilder.create(device);
 
+        // Set 1: the framebuffer renderer's bindless texture cache (gTextures, space1).
         RenderPipelineLayoutBuilder layoutBuilder;
         layoutBuilder.begin();
         layoutBuilder.addDescriptorSet(traceBuilder);
+        layoutBuilder.addDescriptorSet(FramebufferRendererDescriptorTextureSet());
         layoutBuilder.end();
         traceLayout = layoutBuilder.create(device);
 
@@ -136,6 +145,7 @@ namespace RT64 {
         structuresBuilt = false;
         meshes.clear();
         meshIndexStarts.clear();
+        meshTiles.clear();
     }
 
     bool WcwRaytracer::wantsScene() const {
@@ -148,8 +158,12 @@ namespace RT64 {
     }
 
     void WcwRaytracer::beginScene(const hlslpp::float4x4 &view, const hlslpp::float4x4 &proj, const RenderViewport &viewport,
-        const RenderBuffer *worldPosBuffer, uint64_t worldPosSize, const RenderBuffer *faceIndicesBuffer, uint64_t faceIndicesSize)
+        const RenderBuffer *worldPosBuffer, uint64_t worldPosSize, const RenderBuffer *faceIndicesBuffer, uint64_t faceIndicesSize,
+        const RenderBuffer *rdpTilesBuffer, const RenderBuffer *gpuTilesBuffer, const RenderBuffer *texCoordBuffer)
     {
+        this->rdpTilesBuffer = rdpTilesBuffer;
+        this->gpuTilesBuffer = gpuTilesBuffer;
+        this->texCoordBuffer = texCoordBuffer;
         sceneActive = true;
         viewMatrix = view;
         projMatrix = proj;
@@ -160,15 +174,20 @@ namespace RT64 {
         this->faceIndicesSize = faceIndicesSize;
     }
 
-    void WcwRaytracer::addMesh(uint32_t faceIndicesStart, uint32_t triangleCount, uint32_t vertexCount, bool culled, bool character) {
+    void WcwRaytracer::addMesh(uint32_t faceIndicesStart, uint32_t triangleCount, uint32_t vertexCount, bool culled, bool character,
+        bool alphaTest, uint32_t tileIndex, bool uvCorrection)
+    {
+        // Without tile data the alpha test can't be evaluated: keep the draw opaque.
+        alphaTest = alphaTest && (rdpTilesBuffer != nullptr) && (gpuTilesBuffer != nullptr) && (texCoordBuffer != nullptr);
         const uint32_t IndexStride = sizeof(uint32_t);
         const uint32_t PosStride = sizeof(float) * 4;
         meshes.emplace_back(RenderBufferReference(faceIndicesBuffer, faceIndicesStart * IndexStride), RenderBufferReference(worldPosBuffer, 0),
-            RenderFormat::R32_UINT, RenderFormat::R32G32B32_FLOAT, triangleCount * 3, vertexCount, PosStride, !culled);
+            RenderFormat::R32_UINT, RenderFormat::R32G32B32_FLOAT, triangleCount * 3, vertexCount, PosStride, !culled && !alphaTest);
 
         // Culled draws are non-opaque so the trace shader sees their candidates; the top bits
         // carry the culled/character flags.
         meshIndexStarts.emplace_back(faceIndicesStart | (culled ? WCW_RT_MESH_CULLED : 0u) | (character ? WCW_RT_MESH_CHARACTER : 0u));
+        meshTiles.emplace_back((tileIndex & WCW_RT_TILE_INDEX_MASK) | (alphaTest ? WCW_RT_TILE_ALPHA_TEST : 0u) | (uvCorrection ? WCW_RT_TILE_UV_CORRECTION : 0u));
     }
 
     void WcwRaytracer::recordBuild(RenderWorker *worker) {
@@ -235,6 +254,16 @@ namespace RT64 {
         memcpy(meshStartsBytes, meshIndexStarts.data(), meshStartsSize);
         meshStartsBuffer->unmap();
 
+        const uint64_t meshTilesSize = meshTiles.size() * sizeof(uint32_t);
+        if (meshTilesSize > meshTilesBufferSize) {
+            meshTilesBufferSize = alignUp((meshTilesSize * 3) / 2, 256);
+            meshTilesBuffer = device->createBuffer(RenderBufferDesc::UploadBuffer(meshTilesBufferSize, RenderBufferFlag::STORAGE));
+        }
+
+        void *meshTilesBytes = meshTilesBuffer->map();
+        memcpy(meshTilesBytes, meshTiles.data(), meshTilesSize);
+        meshTilesBuffer->unmap();
+
         worker->commandList->buildBottomLevelAS(slot.blas.get(), RenderBufferReference(scratchBuffer.get(), 0), blasInfo);
         worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderBufferBarrier(slot.blasBuffer.get(), RenderBufferAccess::READ));
         worker->commandList->buildTopLevelAS(tlas.get(), RenderBufferReference(scratchBuffer.get(), blasScratch), RenderBufferReference(instancesBuffer.get()), tlasInfo);
@@ -258,7 +287,7 @@ namespace RT64 {
         }
     }
 
-    void WcwRaytracer::recordTrace(RenderWorker *worker, RenderTarget *colorTarget) {
+    void WcwRaytracer::recordTrace(RenderWorker *worker, RenderTarget *colorTarget, RenderDescriptorSet *textureSet) {
         if (!structuresBuilt || (colorTarget == nullptr)) {
             return;
         }
@@ -353,6 +382,13 @@ namespace RT64 {
         traceSet->setBuffer(4, meshStartsBuffer.get(), meshStartsBufferSize, &uintView);
         traceSet->setTexture(5, outputTexture.get(), RenderTextureLayout::GENERAL);
         traceSet->setTexture(6, currentTexture.get(), RenderTextureLayout::GENERAL);
+        const RenderBufferStructuredView rdpTileView(sizeof(interop::RDPTile));
+        const RenderBufferStructuredView gpuTileView(sizeof(interop::GPUTile));
+        const RenderBufferStructuredView float2View(sizeof(float) * 2);
+        traceSet->setBuffer(7, (rdpTilesBuffer != nullptr) ? rdpTilesBuffer : meshTilesBuffer.get(), 0, &rdpTileView);
+        traceSet->setBuffer(8, (gpuTilesBuffer != nullptr) ? gpuTilesBuffer : meshTilesBuffer.get(), 0, &gpuTileView);
+        traceSet->setBuffer(9, (texCoordBuffer != nullptr) ? texCoordBuffer : meshTilesBuffer.get(), 0, &float2View);
+        traceSet->setBuffer(10, meshTilesBuffer.get(), meshTilesBufferSize, &uintView);
         compositeSet->setTexture(0, outputTexture.get(), RenderTextureLayout::SHADER_READ);
 
         // Trace.
@@ -363,6 +399,7 @@ namespace RT64 {
         worker->commandList->setPipeline(tracePipeline.get());
         worker->commandList->setComputePipelineLayout(traceLayout.get());
         worker->commandList->setComputeDescriptorSet(traceSet.get(), 0);
+        worker->commandList->setComputeDescriptorSet(textureSet, 1);
         worker->commandList->dispatch((outputWidth + 7) / 8, (outputHeight + 7) / 8, 1);
 
         // Shadow mode: temporal resolve of the jittered samples into this slot's history.

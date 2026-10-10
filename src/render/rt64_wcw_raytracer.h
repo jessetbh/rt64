@@ -38,6 +38,12 @@ namespace RT64 {
         std::vector<RenderBottomLevelASMesh> meshes;
         std::vector<uint32_t> meshIndexStarts;
         const RenderBuffer *worldPosBuffer = nullptr;
+        const RenderBuffer *rdpTilesBuffer = nullptr;
+        const RenderBuffer *gpuTilesBuffer = nullptr;
+        const RenderBuffer *texCoordBuffer = nullptr;
+        std::vector<uint32_t> meshTiles;
+        std::unique_ptr<RenderBuffer> meshTilesBuffer;
+        uint64_t meshTilesBufferSize = 0;
         const RenderBuffer *faceIndicesBuffer = nullptr;
         uint64_t worldPosSize = 0;
         uint64_t faceIndicesSize = 0;
@@ -122,12 +128,16 @@ namespace RT64 {
         // Shadow mode drops the game's blob shadows (WCW_RT_KEEP_BLOBS=1 keeps them).
         bool replacesBlobShadows() const;
         void beginScene(const hlslpp::float4x4 &view, const hlslpp::float4x4 &proj, const RenderViewport &viewport,
-            const RenderBuffer *worldPosBuffer, uint64_t worldPosSize, const RenderBuffer *faceIndicesBuffer, uint64_t faceIndicesSize);
+            const RenderBuffer *worldPosBuffer, uint64_t worldPosSize, const RenderBuffer *faceIndicesBuffer, uint64_t faceIndicesSize,
+            const RenderBuffer *rdpTilesBuffer, const RenderBuffer *gpuTilesBuffer, const RenderBuffer *texCoordBuffer);
         // culled: the draw has N64 face culling on, so primary rays skip its back faces.
         // character: a wrestler draw, shadowed with the weaker character strength.
-        void addMesh(uint32_t faceIndicesStart, uint32_t triangleCount, uint32_t vertexCount, bool culled, bool character);
+        // alphaTest: rays skip the draw's transparent texels (tileIndex, uvCorrection: its texture).
+        void addMesh(uint32_t faceIndicesStart, uint32_t triangleCount, uint32_t vertexCount, bool culled, bool character,
+            bool alphaTest, uint32_t tileIndex, bool uvCorrection);
         void recordBuild(RenderWorker *worker);
-        void recordTrace(RenderWorker *worker, RenderTarget *colorTarget);
+        // textureSet: the framebuffer renderer's bindless texture cache set (alpha tests).
+        void recordTrace(RenderWorker *worker, RenderTarget *colorTarget, RenderDescriptorSet *textureSet);
         void recordComposite(RenderWorker *worker);
     };
 };

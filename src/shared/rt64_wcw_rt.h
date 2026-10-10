@@ -23,6 +23,12 @@
 #define WCW_RT_MESH_CHARACTER 0x40000000u
 #define WCW_RT_MESH_FLAGS (WCW_RT_MESH_CULLED | WCW_RT_MESH_CHARACTER)
 
+// Per-mesh tile word: RDP/GPU tile index in the low bits, plus whether the draw alpha tests
+// (rays skip its transparent texels) and whether its UVs get the non-perspective correction.
+#define WCW_RT_TILE_ALPHA_TEST 0x80000000u
+#define WCW_RT_TILE_UV_CORRECTION 0x40000000u
+#define WCW_RT_TILE_INDEX_MASK 0x3FFFFFFFu
+
 #ifdef HLSL_CPU
 namespace interop {
 #endif
