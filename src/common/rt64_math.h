@@ -10,8 +10,8 @@
 #include <atomic>
 
 namespace RT64 {
-    // [wcw fix] Set once frame matching has started (60Hz target above the game's rate). The 60Hz changes
-    // for this game apply only while it is set, so the renderer behaves as stock RT64 until then.
+    // [wcw fix] Set once frame matching has started (target rate above the game's rate). The AKI-engine
+    // interpolation changes apply only while it is set, so the renderer behaves as stock RT64 until then.
     extern std::atomic<bool> wcwInterpActive;
     // [wcw hfr] Per-game interpolation profile, declared by the game through the frontend
     // (recompui::programconfig::set_frame_interpolation). The WCW_HFR_* environment variables force a

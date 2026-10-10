@@ -215,7 +215,7 @@ namespace RT64 {
                         }
                     }
 
-                    // [wcw fix] This game double-buffers in a match, so the buffer just drawn is never the
+                    // [wcw fix] AKI games double-buffer in a match, so the buffer just drawn is never the
                     // one being presented and the check below never passes. Allow interpolation for a
                     // buffer that VI history shows was presented, without changing what is presented.
                     if (!colorFb->interpolationEnabled && !present.debuggerFramebuffer.view) {

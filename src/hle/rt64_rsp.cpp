@@ -137,19 +137,21 @@ namespace RT64 {
         segments[seg] = address;
     }
 
-    // [wcw fix] 60Hz: this game uploads only fully combined model*camera matrices (gSPForceMatrix),
-    // which cannot be interpolated cleanly. Hand-edited hooks in the recompiled game code
-    // (tools/readd_hand_edits.py) report each object's camera-independent matrix and the camera it
-    // was combined with, keyed by the address of the result; forceMatrix looks the pair up when that
-    // result is uploaded. funcs_0.c's func_80001E08 (out = A * B with B the camera) stores entries,
-    // funcs_16.c's guMtxF2L moves them from the float source to the fixed-point upload address.
+    // [wcw fix] Frame interpolation: AKI games upload only fully combined model*camera matrices
+    // (gSPForceMatrix), which cannot be interpolated cleanly. In games whose camera multiply is a
+    // function (No Mercy, WM2000, VPW2), hand-edited hooks in the recompiled code (each game's
+    // tools/readd_hand_edits.py) report each object's camera-independent matrix and the camera it was
+    // combined with, keyed by the address of the result; forceMatrix looks the pair up when that result
+    // is uploaded. The camera multiply (out = A * B with B the camera) stores entries, guMtxF2L moves
+    // them from the float source to the fixed-point upload address. Games that multiply inline (World
+    // Tour, Revenge, VPW64) use the hookless path in forceMatrix instead.
     static std::mutex g_wcwLocalMatrixMutex;
     // entityAddr is the object's own local-matrix address: a stable per-object identity across frames.
     struct WcwLocalMatrixEntry { hlslpp::float4x4 pureLocal; hlslpp::float4x4 camera; uint32_t entityAddr = 0; };
     static std::unordered_map<uint32_t, WcwLocalMatrixEntry> g_wcwLocalMatrixByAddr;
-    // [pr5-test] The camera address differs per game (NoMercy 0x80062BA8, Wm2k 0x80057198,
-    // VPW2 0x80056F78). Each game's hook already filters on its own camera address before
-    // calling in, so opBAddr is not re-checked here.
+    // The camera address differs per game (No Mercy 0x80062BA8, WM2000 0x80057198, VPW2 0x80056F78).
+    // Each game's hook filters on its own camera address before calling in, so opBAddr is not
+    // re-checked here.
 
     static hlslpp::float4x4 wcwMatrixFromRowMajor16(const float *m16) {
         hlslpp::float4x4 m;
@@ -161,7 +163,7 @@ namespace RT64 {
         return m;
     }
 
-    extern "C" void wcw_nomercy_process_multiply(uint32_t destAddr, uint32_t opBAddr, uint32_t srcAddr, const float *aMatrix16, const float *bMatrix16) {
+    extern "C" void wcw_interp_process_multiply(uint32_t destAddr, uint32_t opBAddr, uint32_t srcAddr, const float *aMatrix16, const float *bMatrix16) {
         std::lock_guard<std::mutex> lock(g_wcwLocalMatrixMutex);
         if (bMatrix16 != nullptr) {
             // Only accept a real perspective camera matrix.
@@ -186,12 +188,12 @@ namespace RT64 {
         g_wcwLocalMatrixByAddr.erase(destAddr);
     }
 
-    extern "C" void wcw_nomercy_invalidate_local_matrix(uint32_t destAddr) {
+    extern "C" void wcw_interp_invalidate_local_matrix(uint32_t destAddr) {
         std::lock_guard<std::mutex> lock(g_wcwLocalMatrixMutex);
         g_wcwLocalMatrixByAddr.erase(destAddr);
     }
 
-    extern "C" void wcw_nomercy_forward_local_matrix(uint32_t srcAddr, uint32_t dstAddr) {
+    extern "C" void wcw_interp_forward_local_matrix(uint32_t srcAddr, uint32_t dstAddr) {
         std::lock_guard<std::mutex> lock(g_wcwLocalMatrixMutex);
         auto it = g_wcwLocalMatrixByAddr.find(srcAddr);
         if (it == g_wcwLocalMatrixByAddr.end()) {
@@ -907,7 +909,7 @@ namespace RT64 {
         }
 
         if (addWorldTransform) {
-            // [wcw fix] This game never updates the gSPMatrix address stack, so use the object's own
+            // [wcw fix] AKI games never update the gSPMatrix address stack, so use the object's own
             // local-matrix address as its cross-frame identity when it is known for THIS transform.
             const bool usePureEntityAddr = worldTransformsPureValid.back() != 0;
             uint32_t physicalAddress = usePureEntityAddr ? pureModelEntityAddr : modelMatrixPhysicalAddressStack[modelMatrixStackSize - 1];

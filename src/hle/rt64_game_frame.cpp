@@ -512,7 +512,7 @@ namespace RT64 {
                 const TransformGroup &curProjGroup = curWorkload.drawData.transformGroups[curProjGroupIndex];
                 const TransformGroup &prevProjGroup = prevWorkload.drawData.transformGroups[prevProjGroupIndex];
 
-                // [wcw fix] Decompose the camera: this game's untagged camera always takes this default, and
+                // [wcw fix] Decompose the camera: AKI games' untagged camera always takes this default, and
                 // a componentwise lerp of a rotating camera is not a rotation.
                 bool projectionDecompose = true;
                 uint8_t projectionLinearComponent = G_EX_COMPONENT_INTERPOLATE;
@@ -904,7 +904,7 @@ namespace RT64 {
             for (uint32_t m = call.callDesc.minWorldMatrix; m <= call.callDesc.maxWorldMatrix; m++) {
                 const uint32_t groupIndex = workload.drawData.worldTransformGroups[m];
                 const TransformGroup &group = workload.drawData.transformGroups[groupIndex];
-                // [wcw fix] Untagged matrices (this game never tags them) all share G_EX_ID_AUTO; use the
+                // [wcw fix] Untagged matrices (AKI games never tag them) all share G_EX_ID_AUTO; use the
                 // matrix's source address as a stable per-object identity instead.
                 const uint32_t idForHash = (group.matrixId != G_EX_ID_AUTO) ? group.matrixId : workload.drawData.worldTransformPhysicalAddresses[m];
                 matrixIdHash = matrixIdHash * 33 ^ idForHash;
@@ -940,7 +940,7 @@ namespace RT64 {
             const uint32_t groupIndex = workload.drawData.worldTransformGroups[i];
             const TransformGroup &group = workload.drawData.transformGroups[groupIndex];
             if (group.matrixId == G_EX_ID_AUTO) {
-                // [wcw fix] This game never tags its matrices. In a match, give each untagged transform the
+                // [wcw fix] AKI games never tag their matrices. In a match, give each untagged transform the
                 // key "Nth transform of the object at this address", which is stable from frame to frame;
                 // transforms with no known object address stay unkeyed.
                 if (autoIdFromAddr && (i < workload.drawData.worldTransformPhysicalAddresses.size())) {

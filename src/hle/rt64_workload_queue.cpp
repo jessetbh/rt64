@@ -1016,7 +1016,7 @@ namespace RT64 {
         uint32_t originalRateForTicks = 0;
         uint32_t displayRateForTicks = 0;
         int processCursor = -1;
-        // [wcw fix] This game draws one displayed frame as a run of layers (several workloads to the
+        // [wcw fix] AKI games draw one displayed frame as a run of layers (several workloads to the
         // same colour address, about 5 in a match). State for the current run: its length, recent run
         // lengths, its serial number, and its generated frame while it waits for the run's last layer.
         uint32_t wcwCompositeRunLength = 0;
