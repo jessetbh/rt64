@@ -418,6 +418,38 @@ namespace RT64 {
         }
     }
 
+    // [wcw hfr] AKI engines double-buffer their uploaded matrices: an object's matrix alternates between
+    // two slots 0x40 apart from frame to frame. Give both slots one identity: an address whose partner
+    // (address +/- 0x40) was already seen takes the partner's identity. WCW_HFR_SLOTSTRIDE overrides 0x40
+    // (0 disables).
+    static uint32_t wcwCanonicalSlot(uint32_t addr) {
+        static const uint32_t stride = getenv("WCW_HFR_SLOTSTRIDE") ? uint32_t(strtoul(getenv("WCW_HFR_SLOTSTRIDE"), nullptr, 0)) : 0x40u;
+        static std::unordered_map<uint32_t, uint32_t> canonical;
+        static std::mutex canonicalMutex;
+        if (stride == 0) {
+            return addr;
+        }
+
+        std::lock_guard<std::mutex> lock(canonicalMutex);
+        auto it = canonical.find(addr);
+        if (it != canonical.end()) {
+            return it->second;
+        }
+
+        uint32_t id = addr;
+        auto lower = canonical.find(addr - stride);
+        auto upper = canonical.find(addr + stride);
+        if (lower != canonical.end()) {
+            id = lower->second;
+        }
+        else if (upper != canonical.end()) {
+            id = upper->second;
+        }
+
+        canonical.emplace(addr, id);
+        return id;
+    }
+
     void RSP::wcwSetScreenSpace(bool screenSpace) {
         if (screenSpace == wcwScreenSpace) {
             return;
@@ -474,7 +506,7 @@ namespace RT64 {
             if (!pureModelMatrixValid && wcwHfrHookless && !isMatrixZero(wcwVP)) {
                 currentCameraMatrix = wcwVP;
                 pureModelMatrix = hlslpp::mul(modelViewProjMatrix, hlslpp::inverse(wcwVP));
-                pureModelEntityAddr = rdramAddress + 0x80000000u;
+                pureModelEntityAddr = wcwCanonicalSlot(rdramAddress + 0x80000000u);
                 pureModelMatrixValid = true;
             }
 

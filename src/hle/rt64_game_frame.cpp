@@ -290,6 +290,8 @@ namespace RT64 {
             workloadMap.prevLookAtMapped.resize(prevWorkload.drawData.rspLookAt.size());
 
             buildTransformIdMap(curWorkload, curWorkload.transformIdMap, curWorkload.transformIgnoredIds);
+            wcwHfrWorkloadsCompared.fetch_add(1, std::memory_order_relaxed);
+            wcwHfrIds.fetch_add(uint32_t(curWorkload.transformIdMap.size()), std::memory_order_relaxed);
 
             // Retrieve the matching maps for the current and previous workload.
             GameFrameMap::WorkloadMap &curWorkloadMap = frameMap.workloads[workloads[w]];
@@ -762,6 +764,7 @@ namespace RT64 {
 
     void GameFrame::matchTransform(Workload &curWorkload, const Workload &prevWorkload, GameFrameMap::WorkloadMap &curWorkloadMap, const GameFrameMap::WorkloadMap *prevWorkloadMap, uint32_t curTransformIndex, uint32_t prevTransformIndex, ModifiedBuffers &modifiedBuffers) {
         GameFrameMap::TransformMap &curTransformMap = curWorkloadMap.transforms[curTransformIndex];
+        wcwHfrIdPairs.fetch_add(1, std::memory_order_relaxed);
         if (prevWorkloadMap != nullptr) {
             curTransformMap.rigidBody = prevWorkloadMap->transforms[prevTransformIndex].rigidBody;
         }

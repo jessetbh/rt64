@@ -464,9 +464,10 @@ namespace RT64 {
                 wcwHfrMaxBurst = std::max(wcwHfrMaxBurst, uint32_t(framesToPresent));
                 const double wcwHfrSecs = std::chrono::duration<double>(std::chrono::steady_clock::now() - wcwHfrStart).count();
                 if (wcwHfrSecs >= 1.0) {
-                    fprintf(stderr, "[wcw hfr] %.1f presents/s, %.1f interpolated/s, max %u per game frame | in-between: fresh %u fallback %u (older run %u, max age %lld) | wait timeouts %u | 3D matrices %u, camera-independent %u, paired %u\n",
+                    fprintf(stderr, "[wcw hfr] %.1f presents/s, %.1f interpolated/s, max %u per game frame | in-between: fresh %u fallback %u (older run %u, max age %lld) | wait timeouts %u | 3D matrices %u, camera-independent %u, paired %u | passes compared %u, ids %u, id matches %u\n",
                         wcwHfrPresents / wcwHfrSecs, wcwHfrInterpolated / wcwHfrSecs, wcwHfrMaxBurst, wcwHfrFresh, wcwHfrFallback, wcwHfrStale,
-                        (long long)wcwHfrMaxAge, wcwHfrTimeouts, wcwHfrForced.exchange(0), wcwHfrPure.exchange(0), wcwHfrPurePairs.exchange(0));
+                        (long long)wcwHfrMaxAge, wcwHfrTimeouts, wcwHfrForced.exchange(0), wcwHfrPure.exchange(0), wcwHfrPurePairs.exchange(0),
+                        wcwHfrWorkloadsCompared.exchange(0), wcwHfrIds.exchange(0), wcwHfrIdPairs.exchange(0));
                     wcwHfrStart = std::chrono::steady_clock::now();
                     wcwHfrPresents = wcwHfrInterpolated = wcwHfrMaxBurst = 0;
                     wcwHfrFresh = wcwHfrFallback = wcwHfrStale = wcwHfrTimeouts = 0;
