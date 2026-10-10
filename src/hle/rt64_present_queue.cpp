@@ -431,6 +431,24 @@ namespace RT64 {
 
             uint32_t swapChainIndex = 0;
             const bool presentFrame = (i < framesToPresent) && swapChainValid;
+
+            // [wcw hfr] WCW_HFR_LOG=1: presents per second, and how many were generated in-between frames.
+            static const bool wcwHfrLog = getenv("WCW_HFR_LOG") != nullptr;
+            if (wcwHfrLog && presentFrame) {
+                static auto wcwHfrStart = std::chrono::steady_clock::now();
+                static uint32_t wcwHfrPresents = 0, wcwHfrInterpolated = 0, wcwHfrMaxBurst = 0;
+                wcwHfrPresents++;
+                wcwHfrInterpolated += (i > 0) ? 1 : 0;
+                wcwHfrMaxBurst = std::max(wcwHfrMaxBurst, uint32_t(framesToPresent));
+                const double wcwHfrSecs = std::chrono::duration<double>(std::chrono::steady_clock::now() - wcwHfrStart).count();
+                if (wcwHfrSecs >= 1.0) {
+                    fprintf(stderr, "[wcw hfr] %.1f presents/s, %.1f interpolated/s, max %u per game frame\n",
+                        wcwHfrPresents / wcwHfrSecs, wcwHfrInterpolated / wcwHfrSecs, wcwHfrMaxBurst);
+                    wcwHfrStart = std::chrono::steady_clock::now();
+                    wcwHfrPresents = wcwHfrInterpolated = wcwHfrMaxBurst = 0;
+                }
+            }
+
             double wcwAcqMs = 0.0;
             if (presentFrame) {
                 auto wcwAcq0 = std::chrono::steady_clock::now();

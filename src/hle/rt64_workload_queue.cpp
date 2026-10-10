@@ -1345,9 +1345,11 @@ namespace RT64 {
 
                     // [wcw fix] Cap the display frames per game frame (2 for a 30Hz game at 60Hz): the tick
                     // accounting can otherwise creep ahead and leave the present behind.
-                    if (displayFrames > 2) {
-                        displayTicks += workload.viOriginalRate * (displayFrames - 2);
-                        displayFrames = 2;
+                    // [wcw hfr] WCW_HFR_CAP=<n> overrides the cap (spike: 4 = 120Hz for a 30Hz game).
+                    static const uint32_t wcwHfrCap = getenv("WCW_HFR_CAP") ? std::max(atoi(getenv("WCW_HFR_CAP")), 2) : 2;
+                    if (displayFrames > wcwHfrCap) {
+                        displayTicks += workload.viOriginalRate * (displayFrames - wcwHfrCap);
+                        displayFrames = wcwHfrCap;
                     }
 
                     if (displayFrames <= 1) {
