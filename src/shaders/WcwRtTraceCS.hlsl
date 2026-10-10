@@ -157,12 +157,15 @@ void CSMain(uint2 pixel : SV_DispatchThreadID) {
     const float fillWeight = (fillCount > 0) ? (1.0f - keyWeight) / float(fillCount) : 0.0f;
     float lit = 0.0f;
     int occluderId = -1;
-    for (uint l = 0; l <= fillCount; l++) {
-        // Area light: one jittered sample on the light's panel per frame (soft penumbrae once
-        // the resolve pass accumulates them).
-        const float2 jitter = float2(noise(pixel, gParams.frameIndex * 10 + l * 2), noise(pixel + uint2(37, 113), gParams.frameIndex * 10 + l * 2 + 1)) - 0.5f;
+    const uint samples = max(gParams.samplesPerLight, 1);
+    for (uint i = 0; i < (fillCount + 1) * samples; i++) {
+        // Area light: jittered samples on the light's panel (soft penumbrae, refined over
+        // frames by the resolve pass).
+        const uint l = i / samples;
+        const uint seed = gParams.frameIndex * 64 + i * 2;
+        const float2 jitter = float2(noise(pixel, seed), noise(pixel + uint2(37, 113), seed + 1)) - 0.5f;
         const float2 offset = lightOffsets[l] * gParams.lightSpread + jitter * gParams.lightSize;
-        const float weight = (l == 0) ? keyWeight : fillWeight;
+        const float weight = ((l == 0) ? keyWeight : fillWeight) / float(samples);
         const float3 lightPos = gParams.lightPosition.xyz + float3(offset.x, 0.0f, offset.y);
         const float3 toLight = lightPos - hitPos;
         const float lightDist = length(toLight);

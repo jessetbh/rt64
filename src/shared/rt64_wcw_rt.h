@@ -50,7 +50,9 @@ namespace interop {
         uint frameIndex;
         float4x4 prevViewProj;
         uint historyValid;
-        float3 padding;
+        // Jittered shadow rays per light per pixel per frame.
+        uint samplesPerLight;
+        float2 padding;
     };
 #ifdef HLSL_CPU
 };

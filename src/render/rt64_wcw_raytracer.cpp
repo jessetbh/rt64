@@ -336,7 +336,8 @@ namespace RT64 {
         params.frameIndex = frameIndex++;
         params.prevViewProj = slot.prevViewProj;
         params.historyValid = slot.historyValid ? 1 : 0;
-        params.padding = { 0.0f, 0.0f, 0.0f };
+        params.samplesPerLight = std::max(uint32_t(envFloat(getenv("WCW_RT_SAMPLES"), 2.0f)), 1u);
+        params.padding = { 0.0f, 0.0f };
         void *paramsBytes = paramsBuffer->map();
         memcpy(paramsBytes, &params, sizeof(params));
         paramsBuffer->unmap();
