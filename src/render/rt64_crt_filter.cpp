@@ -187,6 +187,11 @@ namespace RT64 {
         float baseMaskStrength = -1.0f;
         float appliedMaskStrength = -1.0f;
         float hdrGain = 1.0f;
+        // [wcw hdr] Share of the headroom given to the beam simulator (its input is scaled down by this
+        // and the compose pass scales it back up), and the gain the next compose applies.
+        float beamHdrScale = 1.0f;
+        float appliedBeamHdrScale = -1.0f;
+        float composeGain = 1.0f;
         LibraChain guestChain;
         LibraChain beamChain;
         std::unique_ptr<RenderWorker> setupWorker;
@@ -485,6 +490,7 @@ namespace RT64 {
 
                 if (settings.beamSimulator && !beamChain.ready()) {
                     beamRatio = 0.0;
+                    appliedBeamHdrScale = -1.0f;
                     createChain(beamChain, BeamSimulatorPreset);
                 }
             }
@@ -543,6 +549,9 @@ namespace RT64 {
                     // Blur Busters' recommendation: ~0.5 at 120 Hz, ~0.7 at 240 Hz and up.
                     setParameter(beamChain, "GAIN_VS_BLUR", float(std::clamp(0.5 + (ratio - 2.0) * 0.1, 0.5, 0.7)));
                 }
+
+                // [wcw hdr] Re-apply the HDR beam settings over these.
+                appliedBeamHdrScale = -1.0f;
             }
 
             return beamRatio > 0.0;
@@ -590,14 +599,25 @@ namespace RT64 {
             const float paperWhite = HdrOutput::paperWhiteNits();
             const float peak = (HdrOutput::peakNits() > 0.0f) ? HdrOutput::peakNits() : 1000.0f;
             const float headroom = std::max(peak / paperWhite, 1.0f);
+            // With the beam simulator on, the mask and the beam share the headroom evenly.
+            const bool beamOn = settings.beamSimulator && (beamRatio > 0.0);
+            const float maskHeadroom = beamOn ? std::sqrt(headroom) : headroom;
             const float baseTransmission = 1.0f - baseMaskStrength * MaskLoss;
-            float strength = std::clamp((1.0f - baseTransmission / headroom) / MaskLoss, baseMaskStrength, 1.0f);
+            float strength = std::clamp((1.0f - baseTransmission / maskHeadroom) / MaskLoss, baseMaskStrength, 1.0f);
             static const float envMask = getenv("WCW_HDR_MASK") ? float(atof(getenv("WCW_HDR_MASK"))) : -1.0f;
             if (envMask >= 0.0f) {
                 strength = std::clamp(envMask, 0.0f, 1.0f);
             }
 
             hdrGain = baseTransmission / (1.0f - strength * MaskLoss);
+            beamHdrScale = beamOn ? std::clamp(headroom / hdrGain, 1.0f, 4.0f) : 1.0f;
+            if (beamOn && beamChain.ready() && (std::abs(beamHdrScale - appliedBeamHdrScale) > 0.005f)) {
+                // The beam's input is scaled down so it can run at full brightness (GAIN_VS_BLUR 1.0).
+                setParameter(beamChain, "INPUT_SCALE", 1.0f / beamHdrScale);
+                setParameter(beamChain, "GAIN_VS_BLUR", (beamHdrScale > 1.05f) ? 1.0f : float(std::clamp(0.5 + (beamRatio - 2.0) * 0.1, 0.5, 0.7)));
+                appliedBeamHdrScale = beamHdrScale;
+                fprintf(stderr, "[wcw hdr] Beam simulator HDR scale %.2f.\n", beamHdrScale);
+            }
             if (std::abs(strength - appliedMaskStrength) > 0.005f) {
                 setParameter(guestChain, "maskstr", strength);
                 appliedMaskStrength = strength;
@@ -625,7 +645,7 @@ namespace RT64 {
 
                 hdrComposeSet->setTexture(hdrComposeSet->gInput, hdrStage.texture.get(), RenderTextureLayout::SHADER_READ);
                 interop::VideoInterfaceCB constants = {};
-                constants.hdrScale = HdrOutput::sdrScale() * hdrGain;
+                constants.hdrScale = HdrOutput::sdrScale() * composeGain;
                 const ShaderRecord &compose = shaderLibrary->videoInterfaceHdrCompose;
                 commandList->setPipeline(compose.pipeline.get());
                 commandList->setGraphicsPipelineLayout(compose.pipelineLayout.get());
@@ -650,6 +670,7 @@ namespace RT64 {
 
             CrtTarget &front = guestTargets[frontTarget];
             RenderTexture *output = beginOutput(commandList, swapChainTexture, windowWidth, windowHeight);
+            composeGain = hdrGain * beamHdrScale;
             libra_viewport_t viewport = { 0.0f, 0.0f, windowWidth, windowHeight };
             const bool ok = runChain(beamChain, commandList, front.texture.get(), front.width, front.height, output, windowWidth, windowHeight,
                 viewport, size_t(refreshCounter), uint32_t(std::lround(beamRatio)), 1);
@@ -779,6 +800,7 @@ namespace RT64 {
             impl->haveFrontFrame = false;
             impl->pendingFrame = false;
             RenderTexture *output = impl->beginOutput(commandList, p.swapChainTexture, windowWidth, windowHeight);
+            impl->composeGain = impl->hdrGain;
             impl->runChain(impl->guestChain, commandList, sourceTexture, sourceWidth, sourceHeight, output, windowWidth, windowHeight,
                 viewport, impl->frameCount, 1, 1);
             impl->endOutput(commandList, p.swapChainTexture, p.swapChainFramebuffer, windowWidth, windowHeight);

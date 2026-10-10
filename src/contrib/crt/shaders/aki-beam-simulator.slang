@@ -98,7 +98,7 @@ layout(push_constant) uniform Push
 	uint FrameCount;
 	uint TotalSubFrames;
 	uint CurrentSubFrame;
-	float GAIN_VS_BLUR, GAMMA, FPS_DIVISOR, LCD_ANTI_RETENTION_TOGGLE, POS_MOD, LCD_INVERSION_COMPENSATION_SLEW, SCAN_DIRECTION, HZ_RATIO;
+	float GAIN_VS_BLUR, GAMMA, FPS_DIVISOR, LCD_ANTI_RETENTION_TOGGLE, POS_MOD, LCD_INVERSION_COMPENSATION_SLEW, SCAN_DIRECTION, HZ_RATIO, INPUT_SCALE;
 } params;
 
 //------------------ Constants migrated to runtime params --------------------//
@@ -145,6 +145,10 @@ bool LCD_ANTI_RETENTION = bool(params.LCD_ANTI_RETENTION_TOGGLE);
 // fractional, e.g. 2.75 at 165 Hz) number of display refreshes per CRT refresh as HZ_RATIO,
 // instead of RetroArch's integer sub-frames.
 #pragma parameter HZ_RATIO "Display Refreshes per CRT Refresh (set by the game)" 4.0 1.0 32.0 0.001
+// [AKI Recomp] With HDR output the game scales the (linear) input down by this and multiplies the
+// result back up afterwards, so bright pixels fit their photon budget in fewer refreshes without
+// losing brightness.
+#pragma parameter INPUT_SCALE "Linear Input Scale (set by the game)" 1.0 0.05 1.0 0.001
 #define iFrame (params.FrameCount)          // shader playback frame
 //uniform float     iChannelTime[4];       // channel playback time (in seconds)
 //uniform vec3      iChannelResolution[4]; // channel resolution (in pixels)
@@ -346,9 +350,9 @@ vec3 getPixelFromOrigFrame(vec2 uv, float getFromHzNumber, float currentHzCounte
 vec3 getPixelFromSimulatedCRT(vec2 uv, float crtRasterPos, float crtHzCounter, float framesPerHz)
 {
     // Get pixels from three consecutive refresh cycles
-    vec3 pixelPrev2 = srgb2linear(getPixelFromOrigFrame(uv, crtHzCounter - 2.0, crtHzCounter));
-    vec3 pixelPrev1 = srgb2linear(getPixelFromOrigFrame(uv, crtHzCounter - 1.0, crtHzCounter));
-    vec3 pixelCurr  = srgb2linear(getPixelFromOrigFrame(uv, crtHzCounter,      crtHzCounter));
+    vec3 pixelPrev2 = srgb2linear(getPixelFromOrigFrame(uv, crtHzCounter - 2.0, crtHzCounter)) * params.INPUT_SCALE;
+    vec3 pixelPrev1 = srgb2linear(getPixelFromOrigFrame(uv, crtHzCounter - 1.0, crtHzCounter)) * params.INPUT_SCALE;
+    vec3 pixelCurr  = srgb2linear(getPixelFromOrigFrame(uv, crtHzCounter,      crtHzCounter)) * params.INPUT_SCALE;
 
     vec3 result = vec3(0.0);
 
