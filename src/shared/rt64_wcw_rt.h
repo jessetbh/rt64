@@ -69,7 +69,7 @@ namespace interop {
         float traceScale;
         // Only the screen rect covered by this workload's geometry is traced (trace pixels).
         uint2 traceOffset;
-        float padding2;
+        float receiverRadius;
     };
 
     struct WcwRtCompositeCB {

@@ -240,6 +240,19 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
         return;
     }
 
+    // Outside the receiver radius (arena, crowd): no shadow or AO rays, faded out over its
+    // last 15% so the cutoff has no visible edge.
+    float receiverFade = 0.0f;
+    if (resolvedMode() && (gParams.receiverRadius > 0.0f)) {
+        const float receiverDist = length(hitPos.xz - gParams.lightPosition.xz);
+        if (receiverDist >= gParams.receiverRadius) {
+            gCurrent[pixel] = float2(1.0f, hitT);
+            return;
+        }
+
+        receiverFade = smoothstep(gParams.receiverRadius * 0.85f, gParams.receiverRadius, receiverDist);
+    }
+
     const float2 lightOffsets[5] = { float2(0.0f, 0.0f), float2(-1.0f, -1.0f), float2(1.0f, -1.0f), float2(-1.0f, 1.0f), float2(1.0f, 1.0f) };
     const uint fillCount = min(gParams.lightCount, 4);
     const float keyWeight = (fillCount > 0) ? gParams.keyWeight : 1.0f;
@@ -339,6 +352,8 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
         const float aoFactor = 1.0f - aoStrength * (occluded / float(gParams.aoSamples));
         factor = (gParams.mode == WCW_RT_MODE_AO) ? aoFactor : factor * aoFactor;
     }
+
+    factor = lerp(factor, 1.0f, receiverFade);
 
     gCurrent[pixel] = float2(factor, hitT);
 }

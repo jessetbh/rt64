@@ -187,6 +187,9 @@ namespace RT64 {
         boundsMin[0] = boundsMin[1] = FLT_MAX;
         boundsMax[0] = boundsMax[1] = -FLT_MAX;
         boundsFullScreen = false;
+        receiverRadius = std::max(envFloat(getenv("WCW_RT_RADIUS"), 750.0f), 0.0f);
+        receiverCenter[0] = envFloat(getenv("WCW_RT_LIGHT_X"), 0.0f);
+        receiverCenter[1] = envFloat(getenv("WCW_RT_LIGHT_Z"), 0.0f);
         for (uint32_t i = 0; i < 3; i++) {
             worldMin[i] = FLT_MAX;
             worldMax[i] = -FLT_MAX;
@@ -229,6 +232,24 @@ namespace RT64 {
 
         if (boundsFullScreen) {
             return;
+        }
+
+        // Triangles entirely outside the receiver radius only need primary rays where other
+        // geometry is traced anyway: they don't widen the rect.
+        if (receiverRadius > 0.0f) {
+            float minX = FLT_MAX, maxX = -FLT_MAX, minZ = FLT_MAX, maxZ = -FLT_MAX;
+            for (uint32_t i = 0; i < 3; i++) {
+                minX = std::min(minX, positions[i * 3 + 0]);
+                maxX = std::max(maxX, positions[i * 3 + 0]);
+                minZ = std::min(minZ, positions[i * 3 + 2]);
+                maxZ = std::max(maxZ, positions[i * 3 + 2]);
+            }
+
+            const float dx = std::max({ minX - receiverCenter[0], 0.0f, receiverCenter[0] - maxX });
+            const float dz = std::max({ minZ - receiverCenter[1], 0.0f, receiverCenter[1] - maxZ });
+            if ((dx * dx + dz * dz) > (receiverRadius * receiverRadius)) {
+                return;
+            }
         }
 
         // Clip the triangle against the near plane (w > NearW) so vertices behind the camera
@@ -516,7 +537,7 @@ namespace RT64 {
         }
 
         params.traceOffset = { traceRect[0], traceRect[1] };
-        params.padding2 = 0.0f;
+        params.receiverRadius = receiverRadius;
         void *paramsBytes = paramsBuffer->map();
         memcpy(paramsBytes, &params, sizeof(params));
         paramsBuffer->unmap();

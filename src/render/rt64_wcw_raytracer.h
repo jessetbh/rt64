@@ -58,6 +58,11 @@ namespace RT64 {
         float boundsMin[2] = {};
         float boundsMax[2] = {};
         bool boundsFullScreen = false;
+        // Shadows and AO are only cast onto surfaces within receiverRadius (XZ) of the lights'
+        // center: the ring and ringside. The arena and crowd beyond it only get primary rays,
+        // and geometry entirely outside it doesn't widen the traced rect (WCW_RT_RADIUS, 0 = off).
+        float receiverRadius = 750.0f;
+        float receiverCenter[2] = {};
         float worldMin[3] = {};
         float worldMax[3] = {};
 
