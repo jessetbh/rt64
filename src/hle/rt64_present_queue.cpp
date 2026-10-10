@@ -664,7 +664,19 @@ namespace RT64 {
 
     // [wcw crt] Presents the next beam simulator sub-frame of the last frame, with the UI on top.
     void PresentQueue::threadBeamPresent(bool &swapChainValid) {
+        // [wcw crt] DIAGNOSTIC (env WCW_CRT_LOG=1): per-phase timing of the idle beam present.
+        using BeamClock = std::chrono::steady_clock;
+        static double phaseMs[6] = {};
+        static uint32_t skippedTotal = 0;
+        auto phaseStart = BeamClock::now();
+        auto phase = [&](int index) {
+            const auto now = BeamClock::now();
+            phaseMs[index] += std::chrono::duration<double, std::milli>(now - phaseStart).count();
+            phaseStart = now;
+        };
+
         std::unique_lock<std::mutex> threadLock(threadMutex);
+        phase(0);
         if (!swapChainValid || ext.swapChain->needsResize() || ext.swapChain->isEmpty() || swapChainFramebuffers.empty()) {
             threadLock.unlock();
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -677,6 +689,7 @@ namespace RT64 {
             return;
         }
 
+        phase(1);
         RenderTexture *swapChainTexture = ext.swapChain->getTexture(swapChainIndex);
         RenderFramebuffer *swapChainFramebuffer = swapChainFramebuffers[swapChainIndex].get();
         RenderCommandList *commandList = ext.presentGraphicsWorker->commandList.get();
@@ -700,14 +713,20 @@ namespace RT64 {
         RenderCommandSemaphore *signalSemaphore = drawSemaphores[swapChainIndex].get();
         ext.presentGraphicsWorker->commandQueue->executeCommandLists(&commandListConst, 1, &waitSemaphore, 1, &signalSemaphore, 1, ext.presentGraphicsWorker->commandFence.get());
         ext.presentGraphicsWorker->wait();
+        phase(2);
 
         if (presentWaitEnabled) {
             ext.swapChain->wait();
         }
 
-        crtFilter->skipBeamRefreshes(beamWaitForVBlank(ext.appWindow->windowHandle, ext.appWindow->getRefreshRate()));
+        phase(3);
+        const uint32_t skipped = beamWaitForVBlank(ext.appWindow->windowHandle, ext.appWindow->getRefreshRate());
+        crtFilter->skipBeamRefreshes(skipped);
+        skippedTotal += skipped;
+        phase(4);
         presentTimestamp = Timer::current();
         swapChainValid = ext.swapChain->present(swapChainIndex, &signalSemaphore, 1);
+        phase(5);
 
         // [wcw crt] DIAGNOSTIC (env WCW_CRT_LOG=1): beam sub-frame presents per second.
         static const bool crtLog = getenv("WCW_CRT_LOG") != nullptr;
@@ -717,7 +736,14 @@ namespace RT64 {
             beamPresents++;
             const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - windowStart).count();
             if (seconds >= 2.0) {
-                fprintf(stderr, "[wcw crt] idle beam presents: %.1f/s\n", beamPresents / seconds);
+                fprintf(stderr, "[wcw crt] idle beam presents: %.1f/s | avg ms: lock %.2f acquire %.2f gpu %.2f swapwait %.2f vblank %.2f present %.2f | skipped %u (presentWait=%d)\n",
+                    beamPresents / seconds, phaseMs[0] / beamPresents, phaseMs[1] / beamPresents, phaseMs[2] / beamPresents, phaseMs[3] / beamPresents,
+                    phaseMs[4] / beamPresents, phaseMs[5] / beamPresents, skippedTotal, int(presentWaitEnabled));
+                for (double &ms : phaseMs) {
+                    ms = 0.0;
+                }
+
+                skippedTotal = 0;
                 beamPresents = 0;
                 windowStart = std::chrono::steady_clock::now();
             }

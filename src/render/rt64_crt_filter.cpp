@@ -95,6 +95,24 @@ namespace RT64 {
     // The simulated CRT refreshes at the N64's 60 Hz.
     static const double BeamCrtRate = 60.0;
 
+    // Swap chain textures don't record their VkFormat (plume only sets it for textures it allocates).
+    static VkFormat vulkanImageFormat(const VulkanTexture *texture) {
+        if (texture->imageFormat != VK_FORMAT_UNDEFINED) {
+            return texture->imageFormat;
+        }
+
+        switch (texture->desc.format) {
+        case RenderFormat::B8G8R8A8_UNORM:
+            return VK_FORMAT_B8G8R8A8_UNORM;
+        case RenderFormat::R8G8B8A8_UNORM:
+            return VK_FORMAT_R8G8B8A8_UNORM;
+        case RenderFormat::R16G16B16A16_FLOAT:
+            return VK_FORMAT_R16G16B16A16_SFLOAT;
+        default:
+            return VK_FORMAT_UNDEFINED;
+        }
+    }
+
     // CrtFilter::Impl
 
     enum class CrtBackend {
@@ -357,10 +375,15 @@ namespace RT64 {
 #       endif
             if (chain.vk != nullptr) {
                 VulkanCommandList *vulkanCommandList = static_cast<VulkanCommandList *>(commandList);
+
+                // librashader must not be called inside a render pass; plume leaves one open after a
+                // clear or draw until the next barrier or framebuffer change.
+                vulkanCommandList->endActiveRenderPass();
+
                 const VulkanTexture *vulkanInput = static_cast<const VulkanTexture *>(input);
                 const VulkanTexture *vulkanOutput = static_cast<const VulkanTexture *>(output);
-                libra_image_vk_t inputImage = { vulkanInput->vk, vulkanInput->imageFormat, inputWidth, inputHeight };
-                libra_image_vk_t outputImage = { vulkanOutput->vk, vulkanOutput->imageFormat, outputWidth, outputHeight };
+                libra_image_vk_t inputImage = { vulkanInput->vk, vulkanImageFormat(vulkanInput), inputWidth, inputHeight };
+                libra_image_vk_t outputImage = { vulkanOutput->vk, vulkanImageFormat(vulkanOutput), outputWidth, outputHeight };
                 frame_vk_opt_t options = {};
                 options.version = LIBRASHADER_CURRENT_VERSION;
                 options.frame_direction = 1;
