@@ -44,8 +44,10 @@ namespace RT64 {
     }
 
     bool WcwRaytracer::active() {
-        static const bool forcedByEnv = getenv("WCW_RT") != nullptr;
-        return forcedByEnv || wcwRtUserEnabled;
+        // WCW_RT=1 forces it on, WCW_RT=0 forces it off (whatever the menu says).
+        static const char *envText = getenv("WCW_RT");
+        static const int forced = (envText == nullptr) ? -1 : ((atoi(envText) != 0) ? 1 : 0);
+        return (forced >= 0) ? (forced == 1) : wcwRtUserEnabled.load();
     }
 
     uint32_t WcwRaytracer::userQuality() {
@@ -214,25 +216,48 @@ namespace RT64 {
         meshTiles.emplace_back((tileIndex & WCW_RT_TILE_INDEX_MASK) | (alphaTest ? WCW_RT_TILE_ALPHA_TEST : 0u) | (uvCorrection ? WCW_RT_TILE_UV_CORRECTION : 0u));
     }
 
-    void WcwRaytracer::extendBounds(float x, float y, float z) {
+    void WcwRaytracer::extendBounds(const float *positions) {
         if (boundsFullScreen) {
             return;
         }
 
-        const hlslpp::float4 clip = hlslpp::mul(hlslpp::float4(x, y, z, 1.0f), boundsViewProj);
-        const float w = clip.w;
-        if (w <= 1e-3f) {
-            // Behind the camera: the projected footprint is unbounded.
-            boundsFullScreen = true;
+        // Clip the triangle against the near plane (w > NearW) so vertices behind the camera
+        // (crowd and set pieces around it) don't blow the footprint up to the whole screen.
+        const float NearW = 1e-2f;
+        hlslpp::float4 clip[3];
+        bool inside[3];
+        uint32_t insideCount = 0;
+        for (uint32_t i = 0; i < 3; i++) {
+            clip[i] = hlslpp::mul(hlslpp::float4(positions[i * 3 + 0], positions[i * 3 + 1], positions[i * 3 + 2], 1.0f), boundsViewProj);
+            inside[i] = float(clip[i].w) > NearW;
+            insideCount += inside[i] ? 1 : 0;
+        }
+
+        if (insideCount == 0) {
             return;
         }
 
-        const float px = viewport.x + (float(clip.x) / w * 0.5f + 0.5f) * viewport.width;
-        const float py = viewport.y + (0.5f - float(clip.y) / w * 0.5f) * viewport.height;
-        boundsMin[0] = std::min(boundsMin[0], px);
-        boundsMin[1] = std::min(boundsMin[1], py);
-        boundsMax[0] = std::max(boundsMax[0], px);
-        boundsMax[1] = std::max(boundsMax[1], py);
+        auto extend = [&](const hlslpp::float4 &c) {
+            const float w = c.w;
+            const float px = viewport.x + (float(c.x) / w * 0.5f + 0.5f) * viewport.width;
+            const float py = viewport.y + (0.5f - float(c.y) / w * 0.5f) * viewport.height;
+            boundsMin[0] = std::min(boundsMin[0], px);
+            boundsMin[1] = std::min(boundsMin[1], py);
+            boundsMax[0] = std::max(boundsMax[0], px);
+            boundsMax[1] = std::max(boundsMax[1], py);
+        };
+
+        for (uint32_t i = 0; i < 3; i++) {
+            const uint32_t j = (i + 1) % 3;
+            if (inside[i]) {
+                extend(clip[i]);
+            }
+
+            if (inside[i] != inside[j]) {
+                const float t = (NearW - float(clip[i].w)) / (float(clip[j].w) - float(clip[i].w));
+                extend(clip[i] + (clip[j] - clip[i]) * t);
+            }
+        }
     }
 
     void WcwRaytracer::recordBuild(RenderWorker *worker) {
@@ -357,8 +382,16 @@ namespace RT64 {
         // Output texture at the color target's resolution.
         // Quality preset (or env overrides) for this frame.
         const uint32_t quality = userQuality();
-        const float presetScale = (quality >= 2) ? 1.0f : 0.5f;
-        const float frameScale = std::clamp(envFloat(getenv("WCW_RT_SCALE"), presetScale), 0.25f, 1.0f);
+        // Soft, temporally resolved shadows don't need the full internal resolution: the presets
+        // also cap the trace height (Performance 720 lines, Balanced 1080), so 4K+ targets don't
+        // multiply the ray count. WCW_RT_MAX_LINES overrides the cap, WCW_RT_SCALE the whole scale.
+        const float presetLines = envFloat(getenv("WCW_RT_MAX_LINES"), (quality == 0) ? 720.0f : ((quality == 1) ? 1080.0f : 0.0f));
+        float presetScale = (quality >= 2) ? 1.0f : 0.5f;
+        if ((presetLines > 0.0f) && (colorTarget->height > 0)) {
+            presetScale = std::min(presetScale, presetLines / float(colorTarget->height));
+        }
+
+        const float frameScale = std::clamp(envFloat(getenv("WCW_RT_SCALE"), presetScale), 0.1f, 1.0f);
         const uint32_t presetSamples = (quality == 0) ? 1u : 2u;
 
         // Re-enabled after being off: the histories are stale.
@@ -517,6 +550,8 @@ namespace RT64 {
             worker->commandList->writeTimestamp(timingPool.get(), StampTraceEnd);
             timingWritten |= (1u << StampTraceEnd);
             timingPixels = rectWidth * rectHeight;
+            timingFullScreen = boundsFullScreen;
+            timingTraceHeight = traceHeight;
         }
 
         // Shadow mode: temporal resolve of the jittered samples into this slot's history.
@@ -590,7 +625,7 @@ namespace RT64 {
 
         static double sums[5] = {};
         static double maxTotal = 0.0;
-        static uint64_t triangleSum = 0, meshSum = 0, alphaSum = 0, pixelSum = 0;
+        static uint64_t triangleSum = 0, meshSum = 0, alphaSum = 0, pixelSum = 0, fullScreenSum = 0;
         static uint32_t count = 0;
         timingPool->queryResults();
         const uint64_t *t = timingPool->getResults();
@@ -614,14 +649,15 @@ namespace RT64 {
         meshSum += timingMeshes;
         alphaSum += timingAlphaMeshes;
         pixelSum += timingPixels;
+        fullScreenSum += timingFullScreen ? 1 : 0;
         timingWritten = 0;
         if (++count == 300) {
-            fprintf(stderr, "[wcw rt gpu] per traced workload avg: build=%.3f trace=%.3f resolve=%.3f composite=%.3f ms, build->composite span=%.3f (max %.3f) ms; %llu meshes (%llu alpha-tested), %llu tris, %llu trace px (300 workloads)\n",
+            fprintf(stderr, "[wcw rt gpu] per traced workload avg: build=%.3f trace=%.3f resolve=%.3f composite=%.3f ms, build->composite span=%.3f (max %.3f) ms; %llu meshes (%llu alpha-tested), %llu tris, %llu trace px of %u lines, %llu full-screen (300 workloads)\n",
                 sums[0] / count, sums[1] / count, sums[2] / count, sums[3] / count, sums[4] / count, maxTotal,
-                (unsigned long long)(meshSum / count), (unsigned long long)(alphaSum / count), (unsigned long long)(triangleSum / count), (unsigned long long)(pixelSum / count));
+                (unsigned long long)(meshSum / count), (unsigned long long)(alphaSum / count), (unsigned long long)(triangleSum / count), (unsigned long long)(pixelSum / count), timingTraceHeight, (unsigned long long)fullScreenSum);
             memset(sums, 0, sizeof(sums));
             maxTotal = 0.0;
-            triangleSum = meshSum = alphaSum = pixelSum = 0;
+            triangleSum = meshSum = alphaSum = pixelSum = fullScreenSum = 0;
             count = 0;
         }
     }

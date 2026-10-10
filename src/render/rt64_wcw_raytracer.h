@@ -136,6 +136,8 @@ namespace RT64 {
         uint32_t timingMeshes = 0;
         uint32_t timingAlphaMeshes = 0;
         uint32_t timingPixels = 0;
+        uint32_t timingTraceHeight = 0;
+        bool timingFullScreen = false;
 
         // Runtime settings from the frontend's graphics menu. Quality: 0 Performance (half-res,
         // 1 sample per light, 1 AO ray), 1 Balanced (half-res, 2/2), 2 Quality (full-res, 2/2).
@@ -162,8 +164,8 @@ namespace RT64 {
         // alphaTest: rays skip the draw's transparent texels (tileIndex, uvCorrection: its texture).
         void addMesh(uint32_t faceIndicesStart, uint32_t triangleCount, uint32_t vertexCount, bool culled, bool character,
             bool alphaTest, uint32_t tileIndex, bool uvCorrection);
-        // Grows the screen bounds with a world-space vertex of a gathered draw.
-        void extendBounds(float x, float y, float z);
+        // Grows the screen bounds with a world-space triangle (3 xyz positions) of a gathered draw.
+        void extendBounds(const float *positions);
         void recordBuild(RenderWorker *worker);
         // textureSet: the framebuffer renderer's bindless texture cache set (alpha tests).
         void recordTrace(RenderWorker *worker, RenderTarget *colorTarget, RenderDescriptorSet *textureSet);
