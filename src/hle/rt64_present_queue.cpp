@@ -600,16 +600,33 @@ namespace RT64 {
 
     // [wcw crt] The beam simulator must land exactly one sub-frame on every display refresh, but the
     // swap chain doesn't block on vsync (RT64 presents with a sync interval of 0 and leaves pacing to
-    // the game). Waiting for the vblank of the window's monitor through DXGI paces it on both D3D12
-    // and Vulkan. Returns the display refreshes that went by since the previous wait minus one (the
-    // sub-frames that were skipped).
+    // the game). Two ways to pace it, picked automatically:
+    // - vblank: wait for the vblank of the window's monitor through DXGI (works for D3D12 and Vulkan).
+    // - timer: a precise sleep to a fixed cadence at the refresh rate. Used when vblank waits keep
+    //   overshooting by a refresh, as they do under variable refresh rate (G-Sync/FreeSync engages
+    //   for the focused window, and the display then refreshes when the app presents).
+    // WCW_CRT_PACE=vblank|timer forces one. Returns the display refreshes that went by without a
+    // present since the previous call (the sub-frames that were skipped).
     static uint32_t beamWaitForVBlank(RenderWindow window, uint32_t refreshRate) {
 #   if defined(_WIN32)
+        enum class Pacing { Auto, VBlank, Timer };
+        static const Pacing forcedPacing = []() {
+            const char *env = getenv("WCW_CRT_PACE");
+            if ((env != nullptr) && (strcmp(env, "vblank") == 0)) return Pacing::VBlank;
+            if ((env != nullptr) && (strcmp(env, "timer") == 0)) return Pacing::Timer;
+            return Pacing::Auto;
+        }();
+
         static IDXGIFactory1 *factory = nullptr;
         static IDXGIOutput *output = nullptr;
         static HMONITOR outputMonitor = nullptr;
         static std::chrono::steady_clock::time_point lastVBlank;
         static bool haveLastVBlank = false;
+        static bool timerPacing = (forcedPacing == Pacing::Timer);
+        static int probeWaits = 0;
+        static int probeOvershoots = 0;
+        static std::chrono::steady_clock::time_point nextDeadline;
+        static bool haveDeadline = false;
 
         const HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
         if (monitor != outputMonitor) {
@@ -638,24 +655,73 @@ namespace RT64 {
                 adapter->Release();
             }
 
+            // A different monitor gets probed again.
             outputMonitor = monitor;
             haveLastVBlank = false;
+            haveDeadline = false;
+            timerPacing = (forcedPacing == Pacing::Timer);
+            probeWaits = 0;
+            probeOvershoots = 0;
         }
 
-        if ((output == nullptr) || FAILED(output->WaitForVBlank())) {
+        if (refreshRate == 0) {
+            return 0;
+        }
+
+        const std::chrono::duration<double> period(1.0 / double(refreshRate));
+        if (timerPacing || (output == nullptr)) {
+            const auto now = std::chrono::steady_clock::now();
+            uint32_t skipped = 0;
+            if (!haveDeadline || ((now - nextDeadline) > period)) {
+                // First present, or fell behind: count the refreshes that went by and restart the cadence.
+                if (haveDeadline) {
+                    skipped = uint32_t(std::chrono::duration<double>(now - nextDeadline) / period);
+                }
+
+                nextDeadline = now;
+                haveDeadline = true;
+            }
+            else {
+                // Timestamp is high_resolution_clock, which is steady_clock on MSVC's standard library.
+                Timer::preciseSleepUntil(nextDeadline);
+            }
+
+            nextDeadline += std::chrono::duration_cast<std::chrono::steady_clock::duration>(period);
+            return skipped;
+        }
+
+        if (FAILED(output->WaitForVBlank())) {
             haveLastVBlank = false;
             return 0;
         }
 
         const auto now = std::chrono::steady_clock::now();
         uint32_t skipped = 0;
-        if (haveLastVBlank && (refreshRate > 0)) {
-            const double periods = std::chrono::duration<double>(now - lastVBlank).count() * double(refreshRate);
+        if (haveLastVBlank) {
+            const double periods = std::chrono::duration<double>(now - lastVBlank) / period;
             skipped = uint32_t(std::max(std::lround(periods), 1L) - 1);
         }
 
         lastVBlank = now;
         haveLastVBlank = true;
+
+        // Under fixed refresh only presents that ran long overshoot; if nearly all of them do, the
+        // vblanks aren't on a fixed clock (variable refresh rate) and the timer paces better.
+        if (forcedPacing == Pacing::Auto) {
+            probeWaits++;
+            probeOvershoots += (skipped > 0) ? 1 : 0;
+            if (probeWaits >= 60) {
+                if (probeOvershoots >= 45) {
+                    timerPacing = true;
+                    haveDeadline = false;
+                    fprintf(stderr, "[wcw crt] Beam pacing: %d of %d vblank waits overshot (variable refresh rate?); pacing by timer at %u Hz.\n", probeOvershoots, probeWaits, refreshRate);
+                }
+
+                probeWaits = 0;
+                probeOvershoots = 0;
+            }
+        }
+
         return skipped;
 #   else
         return 0;
