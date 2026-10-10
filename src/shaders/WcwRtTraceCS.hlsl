@@ -24,8 +24,12 @@ float noise(uint2 pixel, uint seed) {
     return frac(52.9829189f * frac(0.06711056f * p.x + 0.00583715f * p.y));
 }
 
+bool resolvedMode() {
+    return (gParams.mode == WCW_RT_MODE_SHADOW) || (gParams.mode == WCW_RT_MODE_AO);
+}
+
 void writeNoHit(uint2 pixel) {
-    if (gParams.mode == WCW_RT_MODE_SHADOW) {
+    if (resolvedMode()) {
         gCurrent[pixel] = float2(1.0f, 0.0f);
     }
     else {
@@ -207,6 +211,39 @@ void CSMain(uint2 pixel : SV_DispatchThreadID) {
 
     const bool characterReceiver = (gMeshIndexStarts[primary.CommittedGeometryIndex()] & WCW_RT_MESH_CHARACTER) != 0;
     const float strength = characterReceiver ? gParams.characterShadowStrength : gParams.shadowStrength;
-    const float factor = 1.0f - strength * (1.0f - lit);
+    float factor = 1.0f - strength * (1.0f - lit);
+
+    // Contact shadows: short cosine-weighted hemisphere rays against all workloads' geometry.
+    if (gParams.aoSamples > 0) {
+        const float3 helper = (abs(normal.y) < 0.99f) ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
+        const float3 tangent = normalize(cross(helper, normal));
+        const float3 bitangent = cross(normal, tangent);
+        float occluded = 0.0f;
+        for (uint a = 0; a < gParams.aoSamples; a++) {
+            const uint seed = gParams.frameIndex * 64 + 40 + a * 2;
+            const float u = noise(pixel + uint2(71, 29), seed);
+            const float v = noise(pixel + uint2(13, 97), seed + 1);
+            const float r = sqrt(u);
+            const float phi = 6.2831853f * v;
+            const float3 dir = normalize(tangent * (r * cos(phi)) + bitangent * (r * sin(phi)) + normal * sqrt(max(1.0f - u, 0.0f)));
+
+            RayDesc aoRay;
+            aoRay.Origin = hitPos + normal * 0.5f;
+            aoRay.Direction = dir;
+            aoRay.TMin = 0.5f;
+            aoRay.TMax = gParams.aoRadius;
+            RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> ao;
+            ao.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, aoRay);
+            ao.Proceed();
+            if (ao.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+                occluded += 1.0f;
+            }
+        }
+
+        const float aoStrength = gParams.aoStrength * (characterReceiver ? 0.5f : 1.0f);
+        const float aoFactor = 1.0f - aoStrength * (occluded / float(gParams.aoSamples));
+        factor = (gParams.mode == WCW_RT_MODE_AO) ? aoFactor : factor * aoFactor;
+    }
+
     gCurrent[pixel] = float2(factor, hitT);
 }

@@ -15,6 +15,7 @@
 #define WCW_RT_MODE_SHADOW_OCCLUDER 4
 #define WCW_RT_MODE_HIT_POSITION 5
 #define WCW_RT_MODE_SHADOW_DISTANCE 6
+#define WCW_RT_MODE_AO 7
 
 // Bit 31 of a mesh index start: N64 face culling is on for that draw.
 #define WCW_RT_MESH_CULLED 0x80000000u
@@ -52,7 +53,11 @@ namespace interop {
         uint historyValid;
         // Jittered shadow rays per light per pixel per frame.
         uint samplesPerLight;
-        float2 padding;
+        // Contact shadows: aoSamples short cosine-weighted rays of length aoRadius per pixel
+        // per frame; occluded fraction darkens by aoStrength (halved on characters).
+        uint aoSamples;
+        float aoRadius;
+        float aoStrength;
     };
 #ifdef HLSL_CPU
 };

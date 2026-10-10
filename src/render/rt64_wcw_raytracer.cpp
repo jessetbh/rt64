@@ -296,7 +296,7 @@ namespace RT64 {
             pipelineDesc.renderTargetCount = 1;
             pipelineDesc.depthTargetFormat = RenderFormat::D32_FLOAT;
             pipelineDesc.multisampling = colorTarget->multisampling;
-            if (mode == WCW_RT_MODE_SHADOW) {
+            if ((mode == WCW_RT_MODE_SHADOW) || (mode == WCW_RT_MODE_AO)) {
                 RenderBlendDesc multiply;
                 multiply.blendEnabled = true;
                 multiply.srcBlend = RenderBlend::ZERO;
@@ -337,7 +337,9 @@ namespace RT64 {
         params.prevViewProj = slot.prevViewProj;
         params.historyValid = slot.historyValid ? 1 : 0;
         params.samplesPerLight = std::max(uint32_t(envFloat(getenv("WCW_RT_SAMPLES"), 2.0f)), 1u);
-        params.padding = { 0.0f, 0.0f };
+        params.aoSamples = uint32_t(envFloat(getenv("WCW_RT_AO_SAMPLES"), 2.0f));
+        params.aoRadius = envFloat(getenv("WCW_RT_AO_RADIUS"), 25.0f);
+        params.aoStrength = envFloat(getenv("WCW_RT_AO"), 0.5f);
         void *paramsBytes = paramsBuffer->map();
         memcpy(paramsBytes, &params, sizeof(params));
         paramsBuffer->unmap();
@@ -364,7 +366,7 @@ namespace RT64 {
         worker->commandList->dispatch((outputWidth + 7) / 8, (outputHeight + 7) / 8, 1);
 
         // Shadow mode: temporal resolve of the jittered samples into this slot's history.
-        if (mode == WCW_RT_MODE_SHADOW) {
+        if ((mode == WCW_RT_MODE_SHADOW) || (mode == WCW_RT_MODE_AO)) {
             RenderTexture *historyIn = slot.history[slot.historyIndex].get();
             RenderTexture *historyOut = slot.history[slot.historyIndex ^ 1].get();
             resolveSet->setBuffer(0, paramsBuffer.get(), alignUp(sizeof(interop::WcwRtParams), 256));
