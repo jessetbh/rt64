@@ -257,6 +257,8 @@ namespace RT64 {
         bool wantsScene() const;
         // Shadow mode drops the game's blob shadows (WCW_RT_KEEP_BLOBS=1 keeps them).
         bool replacesBlobShadows() const;
+        // WCW_RT_SPLIT: ray tracing only on the right half of the screen (before/after comparisons).
+        static bool splitScreen();
         void beginScene(const hlslpp::float4x4 &view, const hlslpp::float4x4 &proj, const RenderViewport &viewport,
             const RenderBuffer *worldPosBuffer, uint64_t worldPosSize, const RenderBuffer *faceIndicesBuffer, uint64_t faceIndicesSize,
             const RenderBuffer *rdpTilesBuffer, const RenderBuffer *gpuTilesBuffer, const RenderBuffer *texCoordBuffer);

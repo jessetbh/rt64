@@ -99,15 +99,20 @@ namespace RT64 {
         return (p1 == 1) || (p2 == 1) || (m1 == 1) || (m2 == 1);
     }
 
-    // [wcw rt] AKI blob shadows: small translucent quads lying flat (constant world Y) on the
+    // [wcw rt] AKI blob shadows: small translucent quads lying flat (or gently tilted, at the ring's edge) on the
     // mat under each wrestler, a few dozen units across. The ray-traced shadows replace them.
     // Screen-space overlays (intro art, entrance videos, select-screen backgrounds) are also
     // small blended quads, but their world positions collapse to a point: require a real
     // footprint on the floor so they are kept.
-    static bool wcwIsBlobShadow(const DrawData &drawData, uint32_t faceIndicesStart, uint32_t triangleCount, const interop::OtherMode &otherMode) {
-        if ((triangleCount == 0) || (triangleCount > 4) || !wcwBlendsWithMemory(otherMode)) {
+    static bool wcwIsBlobShadow(const DrawData &drawData, uint32_t faceIndicesStart, uint32_t triangleCount, const interop::OtherMode &otherMode, uint64_t textureHash) {
+        if ((triangleCount == 0) || (triangleCount > 16) || !wcwBlendsWithMemory(otherMode)) {
             return false;
         }
+
+        // WCW_RT_BLOB_LOG=1: learn the blob textures from detected blobs and log the draws using
+        // them that the test lets through (with their shape).
+        static const bool blobLog = getenv("WCW_RT_BLOB_LOG") != nullptr;
+        static std::unordered_set<uint64_t> blobTextures;
 
         float minPos[3] = { FLT_MAX, FLT_MAX, FLT_MAX };
         float maxPos[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
@@ -124,7 +129,24 @@ namespace RT64 {
 
         const float extentX = maxPos[0] - minPos[0];
         const float extentZ = maxPos[2] - minPos[2];
-        return ((maxPos[1] - minPos[1]) < 0.5f) && (extentX > 1.0f) && (extentZ > 1.0f) && (extentX < 200.0f) && (extentZ < 200.0f);
+        const bool blob = (triangleCount <= 4) && ((maxPos[1] - minPos[1]) < std::max(0.5f, 0.15f * std::max(extentX, extentZ))) && (extentX > 1.0f) && (extentZ > 1.0f) && (extentX < 200.0f) && (extentZ < 200.0f);
+        static const int blobLogAll = getenv("WCW_RT_BLOB_LOG_AT") ? atoi(getenv("WCW_RT_BLOB_LOG_AT")) : -1;
+        if ((blobLogAll >= 0) && (wcwRtPresentCounter >= blobLogAll) && (wcwRtPresentCounter < blobLogAll + 4)) {
+            fprintf(stderr, "[wcw rt] blob cand present %d: blob %d tex %016llX tris %u y %.1f..%.1f x %.1f..%.1f z %.1f..%.1f\n", int(wcwRtPresentCounter), int(blob), (unsigned long long)(textureHash),
+                triangleCount, minPos[1], maxPos[1], minPos[0], maxPos[0], minPos[2], maxPos[2]);
+        }
+
+        if (blobLog) {
+            if (blob && blobTextures.insert(textureHash).second) {
+                fprintf(stderr, "[wcw rt] blob texture %016llX learned (present %d)\n", (unsigned long long)(textureHash), int(wcwRtPresentCounter));
+            }
+            else if (!blob && blobTextures.count(textureHash)) {
+                fprintf(stderr, "[wcw rt] blob miss present %d: tex %016llX tris %u y %.1f..%.1f x %.1f..%.1f z %.1f..%.1f\n", int(wcwRtPresentCounter), (unsigned long long)(textureHash),
+                    triangleCount, minPos[1], maxPos[1], minPos[0], maxPos[0], minPos[2], maxPos[2]);
+            }
+        }
+
+        return blob;
     }
     // Helper functions.
     
@@ -2004,9 +2026,22 @@ namespace RT64 {
 #           endif
                 {
                     // [wcw rt] With ray-traced shadows on, the game's blob shadows are not drawn.
-                    const bool wcwSkipBlob = (wcwRaytracer != nullptr) && wcwRaytracer->replacesBlobShadows() && (proj.type == Projection::Type::Perspective) &&
+                    uint64_t wcwBlobTexture = 0;
+                    if ((call.callDesc.textureOn != 0) && (call.callDesc.tileCount > 0)) {
+                        const DrawCallTile &wcwTile = drawData.callTiles[call.callDesc.tileIndex];
+                        wcwBlobTexture = wcwTile.tileCopyUsed ? 0 : wcwTile.tmemHashOrID;
+                    }
+
+                    bool wcwSkipBlob = (wcwRaytracer != nullptr) && wcwRaytracer->replacesBlobShadows() && (proj.type == Projection::Type::Perspective) &&
                         (instanceDrawCall.type == InstanceDrawCall::Type::IndexedTriangles) &&
-                        wcwIsBlobShadow(drawData, call.meshDesc.faceIndicesStart, call.callDesc.triangleCount, call.callDesc.otherMode);
+                        wcwIsBlobShadow(drawData, call.meshDesc.faceIndicesStart, call.callDesc.triangleCount, call.callDesc.otherMode, wcwBlobTexture);
+
+                    // Split screen: keep the blobs on the left (original) half.
+                    if (wcwSkipBlob && WcwRaytracer::splitScreen() && (p.fbStorage->colorTarget != nullptr)) {
+                        instanceDrawCall.triangles.scissor.right = std::min(instanceDrawCall.triangles.scissor.right, int32_t(p.fbStorage->colorTarget->width / 2));
+                        wcwSkipBlob = instanceDrawCall.triangles.scissor.isEmpty();
+                    }
+
                     if (!wcwSkipBlob) {
                         rasterScene.instanceIndices.push_back(instanceIndex);
                     }

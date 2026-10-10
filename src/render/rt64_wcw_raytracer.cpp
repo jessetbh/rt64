@@ -508,6 +508,11 @@ namespace RT64 {
         return supported && active() && !sceneActive;
     }
 
+    bool WcwRaytracer::splitScreen() {
+        static const bool split = getenv("WCW_RT_SPLIT") != nullptr;
+        return split;
+    }
+
     bool WcwRaytracer::replacesBlobShadows() const {
         static const bool keepBlobs = getenv("WCW_RT_KEEP_BLOBS") != nullptr;
         return supported && active() && (mode == WCW_RT_MODE_SHADOW) && !keepBlobs;
@@ -1060,8 +1065,7 @@ namespace RT64 {
             std::min(int32_t((traceRect[2] - 1) * invScale), int32_t(outputWidth)), std::min(int32_t((traceRect[3] - 1) * invScale), int32_t(outputHeight)));
 
         // WCW_RT_SPLIT: composite only the right half of the screen (before/after comparisons).
-        static const bool splitScreen = getenv("WCW_RT_SPLIT") != nullptr;
-        if (splitScreen) {
+        if (splitScreen()) {
             fullRect.left = std::max(fullRect.left, int32_t(outputWidth / 2));
             if (fullRect.left >= fullRect.right) {
                 return;
