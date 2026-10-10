@@ -1056,8 +1056,17 @@ namespace RT64 {
         // Composite only the traced rect (inside its margin), in color target pixels.
         const float invScale = float(outputWidth) / float(traceWidth);
         const RenderViewport fullViewport(0.0f, 0.0f, float(outputWidth), float(outputHeight));
-        const RenderRect fullRect(int32_t((traceRect[0] + 1) * invScale), int32_t((traceRect[1] + 1) * invScale),
+        RenderRect fullRect(int32_t((traceRect[0] + 1) * invScale), int32_t((traceRect[1] + 1) * invScale),
             std::min(int32_t((traceRect[2] - 1) * invScale), int32_t(outputWidth)), std::min(int32_t((traceRect[3] - 1) * invScale), int32_t(outputHeight)));
+
+        // WCW_RT_SPLIT: composite only the right half of the screen (before/after comparisons).
+        static const bool splitScreen = getenv("WCW_RT_SPLIT") != nullptr;
+        if (splitScreen) {
+            fullRect.left = std::max(fullRect.left, int32_t(outputWidth / 2));
+            if (fullRect.left >= fullRect.right) {
+                return;
+            }
+        }
         worker->commandList->setPipeline(compositePipeline.get());
         worker->commandList->setGraphicsPipelineLayout(compositeLayout.get());
         interop::WcwRtCompositeCB compositeCB;
