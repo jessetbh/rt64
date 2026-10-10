@@ -774,6 +774,7 @@ namespace RT64 {
             return;
         }
 
+        wcwHfrPurePairs.fetch_add(1, std::memory_order_relaxed);
         const hlslpp::float4x4 &curTransform = curWorkload.drawData.worldTransformsPure[curTransformIndex];
         const hlslpp::float4x4 &prevTransform = prevWorkload.drawData.worldTransformsPure[prevTransformIndex];
         const uint32_t curGroupIndex = curWorkload.drawData.worldTransformGroups[curTransformIndex];

@@ -465,6 +465,23 @@ namespace RT64 {
         // [wcw fix] The hooks key entries by KSEG0 address; rdramAddress is the physical offset.
         pureModelMatrixValid = wcwLookupLocalMatrix(rdramAddress + 0x80000000u, pureModelMatrix, currentCameraMatrix, pureModelEntityAddr);
 
+        // [wcw hfr] WCW_HFR_HOOKLESS=1: with the camera loaded and no hook entry, derive the
+        // camera-independent matrix from the combined one (pure = MVP * inv(camera VP)); the object's
+        // identity across frames is the address the matrix is uploaded from.
+        static const bool wcwHfrHookless = getenv("WCW_HFR_HOOKLESS") != nullptr;
+        if (wcwCameraLoaded && !wcwScreenSpace) {
+            const hlslpp::float4x4 &wcwVP = viewProjMatrixStack[projectionMatrixStackSize - 1];
+            if (!pureModelMatrixValid && wcwHfrHookless && !isMatrixZero(wcwVP)) {
+                currentCameraMatrix = wcwVP;
+                pureModelMatrix = hlslpp::mul(modelViewProjMatrix, hlslpp::inverse(wcwVP));
+                pureModelEntityAddr = rdramAddress + 0x80000000u;
+                pureModelMatrixValid = true;
+            }
+
+            wcwHfrForced.fetch_add(1, std::memory_order_relaxed);
+            wcwHfrPure.fetch_add(pureModelMatrixValid ? 1 : 0, std::memory_order_relaxed);
+        }
+
         // [wcw2k] WCW2K_MTXLOG=1: log gSPForceMatrix loads (AKI engines CPU-transform
         // and force the combined MVP via G_MOVEMEM instead of gSPMatrix).
         static const bool wcw2kMtxLog = getenv("WCW2K_MTXLOG") != nullptr;
@@ -516,7 +533,12 @@ namespace RT64 {
 
         // With ray tracing off the camera is consumed and ignored, so the default path keeps the
         // identity-VP [wcw fix] behavior and never touches the extended correction matrices.
-        if (!WcwRaytracer::active()) {
+        // [wcw hfr] Interpolation (framerate above Original) also uses the camera: it splits forced
+        // matrices into object and camera, and keeps screen-space draws out of the camera.
+        const bool wcwInterpCamera = (state->ext.workloadQueue != nullptr) &&
+            (state->ext.workloadQueue->ext.sharedResources->userConfig.refreshRate != UserConfiguration::RefreshRate::Original) &&
+            (getenv("WCW_HFR_NOCAMERA") == nullptr);
+        if (!WcwRaytracer::active() && !wcwInterpCamera) {
             return true;
         }
 

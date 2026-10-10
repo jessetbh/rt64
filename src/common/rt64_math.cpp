@@ -11,6 +11,7 @@
 
 namespace RT64 {
     std::atomic<bool> wcwInterpActive = { false };
+    std::atomic<uint32_t> wcwHfrForced = { 0 }, wcwHfrPure = { 0 }, wcwHfrPurePairs = { 0 };
     std::atomic<uint32_t> wcwLastRunLength = { 0 };
     std::atomic<uint64_t> wcwSlotRealSerial[3] = {};
     std::atomic<uint64_t> wcwSlotRealComplete[3] = {};

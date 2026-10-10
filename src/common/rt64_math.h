@@ -13,6 +13,9 @@ namespace RT64 {
     // [wcw fix] Set once frame matching has started (60Hz target above the game's rate). The 60Hz changes
     // for this game apply only while it is set, so the renderer behaves as stock RT64 until then.
     extern std::atomic<bool> wcwInterpActive;
+    // [wcw hfr] Spike counters for WCW_HFR_LOG: forced matrices drawn in 3D with a camera loaded, how many
+    // of them had a camera-independent matrix (hook or hookless), and pairs matched on it across frames.
+    extern std::atomic<uint32_t> wcwHfrForced, wcwHfrPure, wcwHfrPurePairs;
     // [wcw fix] Number of layers in the last completed multi-layer frame (a "run").
     extern std::atomic<uint32_t> wcwLastRunLength;
     // [wcw fix] Per rotating target set (run serial % 3): the run whose real frame it holds, and that run
