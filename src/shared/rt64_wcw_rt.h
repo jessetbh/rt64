@@ -16,6 +16,11 @@
 #define WCW_RT_MODE_HIT_POSITION 5
 #define WCW_RT_MODE_SHADOW_DISTANCE 6
 #define WCW_RT_MODE_AO 7
+// Light placement view: red dots under the lights, a 100-unit world grid, and the lights'
+// center lines (X red, Z blue) on every surface. Also set by "debugMode": 8 in the presets file.
+#define WCW_RT_MODE_LIGHT_MAP 8
+
+#define WCW_RT_MAX_LIGHTS 8
 
 // Bit 31 of a mesh index start: N64 face culling is on for that draw.
 #define WCW_RT_MESH_CULLED 0x80000000u
@@ -70,6 +75,13 @@ namespace interop {
         // Only the screen rect covered by this workload's geometry is traced (trace pixels).
         uint2 traceOffset;
         float receiverRadius;
+        // The lights (xyz, weight; weights sum to 1), from the venue's light preset.
+        uint lightListCount;
+        // Shadow rays stop this far short of the light, so geometry right around a light (a
+        // titantron the light sits behind) doesn't block it.
+        float lightClearance;
+        float padding3;
+        float4 lights[WCW_RT_MAX_LIGHTS];
     };
 
     struct WcwRtCompositeCB {

@@ -211,6 +211,32 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
     }
 
     const float3 hitPos = ray.Origin + ray.Direction * hitT;
+    if (gParams.mode == WCW_RT_MODE_LIGHT_MAP) {
+        float4 color = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        const float2 grid = abs(frac(hitPos.xz / 100.0f + 0.5f) - 0.5f) * 100.0f;
+        if (min(grid.x, grid.y) < 2.0f) {
+            color = float4(1.0f, 1.0f, 1.0f, 0.5f);
+        }
+
+        const float2 rel = hitPos.xz - gParams.lightPosition.xz;
+        if (abs(rel.y) < 4.0f) {
+            color = float4(1.0f, 0.2f, 0.2f, 0.9f);
+        }
+        else if (abs(rel.x) < 4.0f) {
+            color = float4(0.2f, 0.4f, 1.0f, 0.9f);
+        }
+
+        const uint count = min(gParams.lightListCount, WCW_RT_MAX_LIGHTS);
+        for (uint l = 0; l < count; l++) {
+            if (length(hitPos.xz - gParams.lights[l].xz) < 25.0f) {
+                color = float4(1.0f, 0.0f, 0.0f, 1.0f);
+            }
+        }
+
+        gOutput[pixel] = color;
+        return;
+    }
+
     if (gParams.mode == WCW_RT_MODE_HIT_POSITION) {
         // R/B: 50-unit X/Z grid; G: height in 0..300.
         const float2 grid = step(0.5f, frac(hitPos.xz / 50.0f));
@@ -253,22 +279,19 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
         receiverFade = smoothstep(gParams.receiverRadius * 0.85f, gParams.receiverRadius, receiverDist);
     }
 
-    const float2 lightOffsets[5] = { float2(0.0f, 0.0f), float2(-1.0f, -1.0f), float2(1.0f, -1.0f), float2(-1.0f, 1.0f), float2(1.0f, 1.0f) };
-    const uint fillCount = min(gParams.lightCount, 4);
-    const float keyWeight = (fillCount > 0) ? gParams.keyWeight : 1.0f;
-    const float fillWeight = (fillCount > 0) ? (1.0f - keyWeight) / float(fillCount) : 0.0f;
+    const uint lightCount = min(gParams.lightListCount, WCW_RT_MAX_LIGHTS);
     float lit = 0.0f;
     int occluderId = -1;
     const uint samples = max(gParams.samplesPerLight, 1);
-    for (uint i = 0; i < (fillCount + 1) * samples; i++) {
+    for (uint i = 0; i < lightCount * samples; i++) {
         // Area light: jittered samples on the light's panel (soft penumbrae, refined over
         // frames by the resolve pass).
         const uint l = i / samples;
         const uint seed = gParams.frameIndex * 64 + i * 2;
         const float2 jitter = float2(noise(pixel, seed), noise(pixel + uint2(37, 113), seed + 1)) - 0.5f;
-        const float2 offset = lightOffsets[l] * gParams.lightSpread + jitter * gParams.lightSize;
-        const float weight = ((l == 0) ? keyWeight : fillWeight) / float(samples);
-        const float3 lightPos = gParams.lightPosition.xyz + float3(offset.x, 0.0f, offset.y);
+        const float2 offset = jitter * gParams.lightSize;
+        const float weight = gParams.lights[l].w / float(samples);
+        const float3 lightPos = gParams.lights[l].xyz + float3(offset.x, 0.0f, offset.y);
         const float3 toLight = lightPos - hitPos;
         const float lightDist = length(toLight);
 
@@ -283,7 +306,11 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
         shadowRay.Origin = hitPos + normal * 0.5f;
         shadowRay.Direction = toLight / lightDist;
         shadowRay.TMin = 0.5f;
-        shadowRay.TMax = lightDist;
+        shadowRay.TMax = lightDist - gParams.lightClearance;
+        if (shadowRay.TMax <= shadowRay.TMin) {
+            lit += weight;
+            continue;
+        }
 
         RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> shadow;
         shadow.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, shadowRay);

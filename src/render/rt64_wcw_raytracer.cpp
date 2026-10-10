@@ -10,6 +10,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+
+#include <json/json.hpp>
 
 #include "rt64_descriptor_sets.h"
 #include "rt64_render_target.h"
@@ -60,6 +64,7 @@ namespace RT64 {
 
         if (const char *modeText = getenv("WCW_RT_MODE")) {
             mode = uint32_t(atoi(modeText));
+            envMode = mode;
         }
 
         const RenderDeviceCapabilities capabilities = device->getCapabilities();
@@ -147,6 +152,7 @@ namespace RT64 {
 
     void WcwRaytracer::beginWorkload(uint64_t presentId) {
         if (presentId != lastPresentId) {
+            finishPresent();
             lastPresentId = presentId;
             workloadInFrame = 0;
             frameCounter++;
@@ -156,6 +162,200 @@ namespace RT64 {
         }
 
         workloadCounter++;
+    }
+
+    static WcwRaytracer::LightPreset parsePreset(const nlohmann::json &j, const WcwRaytracer::LightPreset &base) {
+        WcwRaytracer::LightPreset p = base;
+        p.name = j.value("name", std::string());
+        p.match.clear();
+        if (j.contains("match")) {
+            for (const auto &h : j["match"]) {
+                p.match.push_back(strtoull(h.get<std::string>().c_str(), nullptr, 16));
+            }
+        }
+
+        if (j.contains("center")) {
+            for (uint32_t i = 0; i < 3; i++) {
+                p.center[i] = j["center"][i].get<float>();
+            }
+        }
+
+        p.spread = j.value("spread", p.spread);
+        p.fills = j.value("fills", p.fills);
+        p.keyWeight = j.value("keyWeight", p.keyWeight);
+        p.size = j.value("size", p.size);
+        p.radius = j.value("radius", p.radius);
+        p.clearance = j.value("clearance", p.clearance);
+        p.shadow = j.value("shadow", p.shadow);
+        p.characterShadow = j.value("characterShadow", p.characterShadow);
+        p.anchorScene = (j.value("anchor", std::string(p.anchorScene ? "scene" : "world")) == "scene");
+        if (j.contains("lights")) {
+            p.lights.clear();
+            for (const auto &l : j["lights"]) {
+                p.lights.push_back({ l[0].get<float>(), l[1].get<float>(), l[2].get<float>(), (l.size() > 3) ? l[3].get<float>() : 1.0f });
+            }
+        }
+
+        return p;
+    }
+
+    void WcwRaytracer::loadPresets(bool force) {
+        if (presetsPath.empty()) {
+            const char *pathText = getenv("WCW_RT_LIGHTS_FILE");
+            presetsPath = (pathText != nullptr) ? pathText : "assets/rt_lights.json";
+        }
+
+        std::error_code ec;
+        const auto stampTime = std::filesystem::last_write_time(presetsPath, ec);
+        const int64_t stamp = ec ? INT64_MIN + 1 : int64_t(stampTime.time_since_epoch().count());
+        if (!force && (stamp == presetsStamp)) {
+            return;
+        }
+
+        presetsStamp = stamp;
+        defaultPreset = LightPreset();
+        venuePresets.clear();
+        mode = envMode;
+        activeVenue = -1;
+        candidateVenue = -1;
+        candidateFrames = 0;
+        if (ec) {
+            return;
+        }
+
+        try {
+            std::ifstream file(presetsPath);
+            const nlohmann::json root = nlohmann::json::parse(file, nullptr, true, true);
+            if (root.contains("debugMode")) {
+                mode = root["debugMode"].get<uint32_t>();
+            }
+
+            if (root.contains("default")) {
+                defaultPreset = parsePreset(root["default"], LightPreset());
+                defaultPreset.name = "default";
+            }
+
+            if (root.contains("venues")) {
+                for (const auto &v : root["venues"]) {
+                    venuePresets.push_back(parsePreset(v, defaultPreset));
+                }
+            }
+
+            fprintf(stderr, "[wcw rt] light presets loaded from %s: %zu venue(s)\n", presetsPath.c_str(), venuePresets.size());
+        }
+        catch (const std::exception &e) {
+            fprintf(stderr, "[wcw rt] light presets %s failed to parse: %s\n", presetsPath.c_str(), e.what());
+        }
+    }
+
+    void WcwRaytracer::finishPresent() {
+        // Textures drawn by world geometry this present, kept for the last VenueWindow presents.
+        std::vector<uint64_t> hashes;
+        hashes.reserve(frameTextureTris.size());
+        for (const auto &it : frameTextureTris) {
+            hashes.push_back(it.first);
+            textureCounts[it.first]++;
+            uint32_t &maxTris = textureMaxTris[it.first];
+            maxTris = std::max(maxTris, it.second);
+        }
+
+        frameTextureTris.clear();
+        textureHistory.push_back(std::move(hashes));
+        if (presentMin[0] <= presentMax[0]) {
+            for (uint32_t i = 0; i < 3; i++) {
+                sceneMin[i] = presentMin[i];
+                sceneMax[i] = presentMax[i];
+                presentMin[i] = FLT_MAX;
+                presentMax[i] = -FLT_MAX;
+            }
+
+            sceneBoundsValid = true;
+        }
+
+        if (textureHistory.size() > VenueWindow) {
+            for (uint64_t h : textureHistory.front()) {
+                auto it = textureCounts.find(h);
+                if ((it != textureCounts.end()) && (--it->second == 0)) {
+                    textureCounts.erase(it);
+                    textureMaxTris.erase(h);
+                }
+            }
+
+            textureHistory.pop_front();
+        }
+
+        if ((presentCount++ % 30) == 0) {
+            loadPresets(false);
+        }
+
+        // Best venue: the largest fraction of its match textures seen in the window (at least half).
+        int best = -1;
+        float bestScore = 0.5f;
+        for (size_t v = 0; v < venuePresets.size(); v++) {
+            const LightPreset &p = venuePresets[v];
+            if (p.match.empty()) {
+                continue;
+            }
+
+            uint32_t seen = 0;
+            for (uint64_t h : p.match) {
+                seen += textureCounts.count(h) ? 1 : 0;
+            }
+
+            const float score = float(seen) / float(p.match.size());
+            if (score >= bestScore) {
+                bestScore = score;
+                best = int(v);
+            }
+        }
+
+        // Switch only after the choice held for a few presents (no flapping on cut scenes).
+        if (best != activeVenue) {
+            candidateFrames = (best == candidateVenue) ? (candidateFrames + 1) : 0;
+            candidateVenue = best;
+            if (candidateFrames >= 10) {
+                activeVenue = best;
+                fprintf(stderr, "[wcw rt] venue: %s\n", (best >= 0) ? venuePresets[best].name.c_str() : "default");
+            }
+        }
+        else {
+            candidateVenue = best;
+            candidateFrames = 0;
+        }
+
+        static const bool venueLog = getenv("WCW_RT_VENUE_LOG") != nullptr;
+        if (venueLog && ((presentCount % 300) == 0) && (textureHistory.size() == VenueWindow)) {
+            std::vector<std::pair<uint32_t, uint64_t>> stable;
+            for (const auto &it : textureCounts) {
+                if (it.second >= (VenueWindow * 9) / 10) {
+                    stable.emplace_back(textureMaxTris[it.first], it.first);
+                }
+            }
+
+            std::sort(stable.begin(), stable.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
+            fprintf(stderr, "[wcw rt] venue log (active %s): scene (%.0f,%.0f,%.0f)-(%.0f,%.0f,%.0f), %zu stable world textures (hash(max tris)), largest first:", (activeVenue >= 0) ? venuePresets[activeVenue].name.c_str() : "default",
+                sceneMin[0], sceneMin[1], sceneMin[2], sceneMax[0], sceneMax[1], sceneMax[2], stable.size());
+            for (size_t i = 0; i < stable.size(); i++) {
+                fprintf(stderr, " %016llX(%u)", (unsigned long long)stable[i].second, stable[i].first);
+            }
+
+            fprintf(stderr, "\n");
+        }
+    }
+
+    void WcwRaytracer::presetOrigin(const LightPreset &preset, float origin[3]) const {
+        if (preset.anchorScene && sceneBoundsValid) {
+            origin[0] = (sceneMin[0] + sceneMax[0]) * 0.5f;
+            origin[1] = sceneMin[1];
+            origin[2] = (sceneMin[2] + sceneMax[2]) * 0.5f;
+        }
+        else {
+            origin[0] = origin[1] = origin[2] = 0.0f;
+        }
+    }
+
+    const WcwRaytracer::LightPreset &WcwRaytracer::activePreset() const {
+        return (activeVenue >= 0) ? venuePresets[activeVenue] : defaultPreset;
     }
 
     uint32_t WcwRaytracer::chooseSlot() const {
@@ -241,9 +441,16 @@ namespace RT64 {
         boundsMin[0] = boundsMin[1] = FLT_MAX;
         boundsMax[0] = boundsMax[1] = -FLT_MAX;
         boundsFullScreen = false;
-        receiverRadius = std::max(envFloat(getenv("WCW_RT_RADIUS"), 750.0f), 0.0f);
-        receiverCenter[0] = envFloat(getenv("WCW_RT_LIGHT_X"), 0.0f);
-        receiverCenter[1] = envFloat(getenv("WCW_RT_LIGHT_Z"), 0.0f);
+        if (presetsStamp == INT64_MIN) {
+            loadPresets(true);
+        }
+
+        const LightPreset &preset = activePreset();
+        receiverRadius = std::max(envFloat(getenv("WCW_RT_RADIUS"), preset.radius), 0.0f);
+        float origin[3];
+        presetOrigin(preset, origin);
+        receiverCenter[0] = envFloat(getenv("WCW_RT_LIGHT_X"), origin[0] + preset.center[0]);
+        receiverCenter[1] = envFloat(getenv("WCW_RT_LIGHT_Z"), origin[2] + preset.center[2]);
         for (uint32_t i = 0; i < 3; i++) {
             worldMin[i] = FLT_MAX;
             worldMax[i] = -FLT_MAX;
@@ -263,8 +470,12 @@ namespace RT64 {
     }
 
     void WcwRaytracer::addMesh(uint32_t faceIndicesStart, uint32_t triangleCount, uint32_t vertexCount, bool culled, bool character,
-        bool alphaTest, uint32_t tileIndex, bool uvCorrection)
+        bool alphaTest, uint32_t tileIndex, bool uvCorrection, uint64_t textureHash)
     {
+        if ((textureHash != 0) && !character) {
+            frameTextureTris[textureHash] += triangleCount;
+        }
+
         // Without tile data the alpha test can't be evaluated: keep the draw opaque.
         alphaTest = alphaTest && (rdpTilesBuffer != nullptr) && (gpuTilesBuffer != nullptr) && (texCoordBuffer != nullptr);
         const uint32_t IndexStride = sizeof(uint32_t);
@@ -278,10 +489,14 @@ namespace RT64 {
         meshTiles.emplace_back((tileIndex & WCW_RT_TILE_INDEX_MASK) | (alphaTest ? WCW_RT_TILE_ALPHA_TEST : 0u) | (uvCorrection ? WCW_RT_TILE_UV_CORRECTION : 0u));
     }
 
-    void WcwRaytracer::extendBounds(const float *positions) {
+    void WcwRaytracer::extendBounds(const float *positions, bool character) {
         for (uint32_t i = 0; i < 9; i++) {
             worldMin[i % 3] = std::min(worldMin[i % 3], positions[i]);
             worldMax[i % 3] = std::max(worldMax[i % 3], positions[i]);
+            if (!character) {
+                presentMin[i % 3] = std::min(presentMin[i % 3], positions[i]);
+                presentMax[i % 3] = std::max(presentMax[i % 3], positions[i]);
+            }
         }
 
         if (boundsFullScreen) {
@@ -559,17 +774,50 @@ namespace RT64 {
         const hlslpp::float4x4 invView = hlslpp::inverse(viewMatrix);
         params.invViewProj = hlslpp::inverse(viewProj);
         params.eyePosition = hlslpp::float4(invView[3].xyz, 1.0f);
-        params.lightPosition = hlslpp::float4(envFloat(getenv("WCW_RT_LIGHT_X"), 0.0f), envFloat(getenv("WCW_RT_LIGHT_Y"), 460.0f), envFloat(getenv("WCW_RT_LIGHT_Z"), 0.0f), 1.0f);
+        const LightPreset &preset = activePreset();
+        float origin[3];
+        presetOrigin(preset, origin);
+        const float centerX = envFloat(getenv("WCW_RT_LIGHT_X"), origin[0] + preset.center[0]);
+        const float centerY = envFloat(getenv("WCW_RT_LIGHT_Y"), origin[1] + preset.center[1]);
+        const float centerZ = envFloat(getenv("WCW_RT_LIGHT_Z"), origin[2] + preset.center[2]);
+        params.lightPosition = hlslpp::float4(centerX, centerY, centerZ, 1.0f);
         params.viewport = hlslpp::float4(viewport.x, viewport.y, viewport.width, viewport.height);
         params.resolution = { traceWidth, traceHeight };
         params.mode = mode;
-        params.shadowStrength = envFloat(getenv("WCW_RT_SHADOW"), 0.6f);
-        params.lightSpread = envFloat(getenv("WCW_RT_LIGHT_SPREAD"), 200.0f);
-        params.lightCount = uint32_t(envFloat(getenv("WCW_RT_LIGHTS"), 4.0f));
+        params.shadowStrength = envFloat(getenv("WCW_RT_SHADOW"), preset.shadow);
+        params.lightSpread = envFloat(getenv("WCW_RT_LIGHT_SPREAD"), preset.spread);
+        params.lightCount = std::min(uint32_t(envFloat(getenv("WCW_RT_LIGHTS"), float(preset.fills))), 4u);
         params.cullSign = envFloat(getenv("WCW_RT_CULL_SIGN"), 1.0f);
-        params.keyWeight = envFloat(getenv("WCW_RT_KEY_WEIGHT"), 0.5f);
-        params.characterShadowStrength = envFloat(getenv("WCW_RT_SHADOW_CHAR"), 0.35f);
-        params.lightSize = envFloat(getenv("WCW_RT_LIGHT_SIZE"), 20.0f);
+        params.keyWeight = envFloat(getenv("WCW_RT_KEY_WEIGHT"), preset.keyWeight);
+        params.characterShadowStrength = envFloat(getenv("WCW_RT_SHADOW_CHAR"), preset.characterShadow);
+        params.lightSize = envFloat(getenv("WCW_RT_LIGHT_SIZE"), preset.size);
+
+        // Light list: the preset's explicit lights, or the generated rig (key + fills at +-spread).
+        params.lightListCount = 0;
+        params.lightClearance = std::max(preset.clearance, 0.0f);
+        params.padding3 = 0.0f;
+        if (!preset.lights.empty() && (getenv("WCW_RT_LIGHTS") == nullptr)) {
+            float weightSum = 0.0f;
+            for (const auto &l : preset.lights) {
+                weightSum += l[3];
+            }
+
+            for (const auto &l : preset.lights) {
+                if (params.lightListCount < WCW_RT_MAX_LIGHTS) {
+                    params.lights[params.lightListCount++] = { origin[0] + l[0], origin[1] + l[1], origin[2] + l[2], l[3] / std::max(weightSum, 1e-6f) };
+                }
+            }
+        }
+        else {
+            const float offsets[4][2] = { { -1.0f, -1.0f }, { 1.0f, -1.0f }, { -1.0f, 1.0f }, { 1.0f, 1.0f } };
+            const uint32_t fills = params.lightCount;
+            const float keyWeight = (fills > 0) ? params.keyWeight : 1.0f;
+            const float fillWeight = (fills > 0) ? (1.0f - keyWeight) / float(fills) : 0.0f;
+            params.lights[params.lightListCount++] = { centerX, centerY, centerZ, keyWeight };
+            for (uint32_t f = 0; f < fills; f++) {
+                params.lights[params.lightListCount++] = { centerX + offsets[f][0] * params.lightSpread, centerY, centerZ + offsets[f][1] * params.lightSpread, fillWeight };
+            }
+        }
         params.temporalAlpha = envFloat(getenv("WCW_RT_TEMPORAL"), 0.1f);
         params.frameIndex = frameIndex++;
         params.prevViewProj = slot.prevViewProj;

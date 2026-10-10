@@ -6,6 +6,11 @@
 
 #include <atomic>
 #include <memory>
+#include <array>
+#include <cfloat>
+#include <deque>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "common/rt64_common.h"
@@ -32,6 +37,8 @@ namespace RT64 {
         RenderShaderFormat shaderFormat = RenderShaderFormat::UNKNOWN;
         bool supported = false;
         uint32_t mode = WCW_RT_MODE_SHADOW;
+        // WCW_RT_MODE (startup); the presets file's "debugMode" overrides it while present.
+        uint32_t envMode = WCW_RT_MODE_SHADOW;
         bool wasActive = false;
 
         // Scene gathered for the current workload.
@@ -155,6 +162,59 @@ namespace RT64 {
         uint32_t timingTraceHeight = 0;
         bool timingFullScreen = false;
 
+        // Per-venue light presets: a JSON file (WCW_RT_LIGHTS_FILE, default assets/rt_lights.json,
+        // relative to the working directory) with a "default" preset and a "venues" list. A venue
+        // is recognized by the textures of the world geometry (its "match" list of texture hashes,
+        // most of which must have been drawn in the last VenueWindow presents). The file is
+        // reloaded when it changes, so presets can be tuned while the game runs. WCW_RT_VENUE_LOG=1
+        // prints the current scene's stable world textures to build a match list from.
+        struct LightPreset {
+            std::string name;
+            std::vector<uint64_t> match;
+            // Lights' center (receiver center on X/Z, key light height on Y).
+            float center[3] = { 0.0f, 460.0f, 0.0f };
+            // Generated rig: a key light at the center plus "fills" lights at center +- spread
+            // on X/Z; or an explicit "lights" list (xyz + relative weight) replacing it.
+            float spread = 200.0f;
+            uint32_t fills = 4;
+            float keyWeight = 0.5f;
+            std::vector<std::array<float, 4>> lights;
+            float size = 20.0f;
+            float radius = 750.0f;
+            float clearance = 0.0f;
+            // "anchor": "scene": center and explicit lights are offsets from the drawn world
+            // geometry's center on X/Z and its floor (lowest point) on Y, so one preset fits rooms
+            // placed anywhere in the world (backstage zones).
+            bool anchorScene = false;
+            float shadow = 0.6f;
+            float characterShadow = 0.35f;
+        };
+
+        static const uint32_t VenueWindow = 60;
+        LightPreset defaultPreset;
+        std::vector<LightPreset> venuePresets;
+        int activeVenue = -1;
+        int candidateVenue = -1;
+        uint32_t candidateFrames = 0;
+        std::string presetsPath;
+        int64_t presetsStamp = INT64_MIN;
+        uint32_t presentCount = 0;
+        std::unordered_map<uint64_t, uint32_t> frameTextureTris;
+        std::deque<std::vector<uint64_t>> textureHistory;
+        std::unordered_map<uint64_t, uint32_t> textureCounts;
+        std::unordered_map<uint64_t, uint32_t> textureMaxTris;
+        // World bounds of this present's non-character geometry, and of the last finished present.
+        float presentMin[3] = { FLT_MAX, FLT_MAX, FLT_MAX };
+        float presentMax[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+        float sceneMin[3] = {};
+        float sceneMax[3] = {};
+        bool sceneBoundsValid = false;
+        // The preset's light origin: zero, or the scene anchor.
+        void presetOrigin(const LightPreset &preset, float origin[3]) const;
+        void loadPresets(bool force);
+        void finishPresent();
+        const LightPreset &activePreset() const;
+
         // Runtime settings from the frontend's graphics menu. Quality: 0 Performance (half-res,
         // 1 sample per light, 1 AO ray), 1 Balanced (half-res, 2/2), 2 Quality (full-res, 2/2).
         // WCW_RT forces it on; WCW_RT_SCALE / WCW_RT_SAMPLES / WCW_RT_AO_SAMPLES override quality.
@@ -178,10 +238,12 @@ namespace RT64 {
         // culled: the draw has N64 face culling on, so primary rays skip its back faces.
         // character: a wrestler draw, shadowed with the weaker character strength.
         // alphaTest: rays skip the draw's transparent texels (tileIndex, uvCorrection: its texture).
+        // textureHash: the draw's first texture (0 if none), a venue fingerprint for the light presets.
         void addMesh(uint32_t faceIndicesStart, uint32_t triangleCount, uint32_t vertexCount, bool culled, bool character,
-            bool alphaTest, uint32_t tileIndex, bool uvCorrection);
+            bool alphaTest, uint32_t tileIndex, bool uvCorrection, uint64_t textureHash);
         // Grows the screen bounds with a world-space triangle (3 xyz positions) of a gathered draw.
-        void extendBounds(const float *positions);
+        // character: a wrestler triangle (left out of the scene bounds the light anchor uses).
+        void extendBounds(const float *positions, bool character);
         void recordBuild(RenderWorker *worker);
         // textureSet: the framebuffer renderer's bindless texture cache set (alpha tests).
         void recordTrace(RenderWorker *worker, RenderTarget *colorTarget, RenderDescriptorSet *textureSet);

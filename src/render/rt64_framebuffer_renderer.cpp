@@ -1869,12 +1869,18 @@ namespace RT64 {
                                     wcwTri[k * 3 + 2] = float(wp.z);
                                 }
 
-                                wcwRaytracer->extendBounds(wcwTri);
+                                wcwRaytracer->extendBounds(wcwTri, wcwCharacter);
                             }
 
                             // The geometry's vertex range ends at its highest index, not the whole buffer.
+                            uint64_t wcwTextureHash = 0;
+                            if ((call.callDesc.textureOn != 0) && (call.callDesc.tileCount > 0)) {
+                                const DrawCallTile &wcwTile = drawData.callTiles[call.callDesc.tileIndex];
+                                wcwTextureHash = wcwTile.tileCopyUsed ? 0 : wcwTile.tmemHashOrID;
+                            }
+
                             wcwRaytracer->addMesh(call.meshDesc.faceIndicesStart, call.callDesc.triangleCount, std::min(wcwMaxVertex + 1, vertexCount), call.shaderDesc.flags.culling, wcwCharacter,
-                                wcwAlphaTest, call.callDesc.tileIndex, wcwUvCorrection);
+                                wcwAlphaTest, call.callDesc.tileIndex, wcwUvCorrection, wcwTextureHash);
 
                             // WCW_RT_RAYTEST=<present>: CPU copy of the gathered triangles for a reference ray test.
                             static const int wcwRayTestAt = getenv("WCW_RT_RAYTEST") ? atoi(getenv("WCW_RT_RAYTEST")) : -1;
