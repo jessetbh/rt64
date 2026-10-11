@@ -511,7 +511,9 @@ namespace RT64 {
             // start + i * gameFrame / framesToPresent). Presenting on the next refresh bunches them on fast
             // displays (2 frames ~7 ms apart at 144 Hz, then a long gap), which looks like judder.
             static const bool wcwHfrPaceEnv = getenv("WCW_HFR_PACE") != nullptr;
-            const bool wcwHfrPace = wcwInterpolationProfile().evenPacing || wcwHfrPaceEnv;
+            // [wcw crt] The beam simulator always paces evenly: the wait happens before the swap chain image is
+            // acquired, so it can be filled with beam sub-frames (one per display refresh).
+            const bool wcwHfrPace = wcwInterpolationProfile().evenPacing || wcwHfrPaceEnv || crtFilter->beamActive();
             static std::chrono::steady_clock::time_point wcwHfrFrameStart;
             if (wcwHfrPace && presentFrame && (framesToPresent > 1) && (viOriginalRate > 0)) {
                 if (i == 0) {
@@ -520,6 +522,7 @@ namespace RT64 {
                 else {
                     const auto gameFrame = std::chrono::microseconds(1000000 / viOriginalRate);
                     const auto target = wcwHfrFrameStart + (gameFrame * i) / framesToPresent;
+                    threadBeamFillUntil(target, swapChainValid);
                     const auto coarse = target - std::chrono::milliseconds(1);
                     if (std::chrono::steady_clock::now() < coarse) {
                         std::this_thread::sleep_until(coarse);
@@ -599,8 +602,9 @@ namespace RT64 {
                 if (renderParams.texture != nullptr) {
                     commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(renderParams.texture, RenderTextureLayout::SHADER_READ));
 
-                    crtFilter->setDisplayConditions(ext.appWindow->getRefreshRate(), ext.swapChain->isVsyncEnabled(),
-                        (framesToPresent > 1) || (refreshRate != UserConfiguration::RefreshRate::Original));
+                    const bool crtInterpolating = (framesToPresent > 1) || (refreshRate != UserConfiguration::RefreshRate::Original);
+                    crtFilter->setDisplayConditions(ext.appWindow->getRefreshRate(), ext.swapChain->isVsyncEnabled(), crtInterpolating,
+                        crtInterpolating ? targetRate : 0);
 
                     CrtFilter::RenderParams crtParams;
                     crtParams.presentWorker = ext.presentGraphicsWorker;
@@ -981,7 +985,24 @@ namespace RT64 {
     }
 
     // [wcw crt] Presents the next beam simulator sub-frame of the last frame, with the UI on top.
-    void PresentQueue::threadBeamPresent(bool &swapChainValid) {
+    // [wcw crt] Frame interpolation presents a few frames per game frame (e.g. 4 at 120 fps), fewer than the
+    // display's refreshes (280 Hz: 2.33 per frame): fill the refreshes before the next interpolated frame is
+    // due with beam sub-frames of the current one. Called from threadPresent, which holds threadMutex.
+    void PresentQueue::threadBeamFillUntil(std::chrono::steady_clock::time_point deadline, bool &swapChainValid) {
+        const uint32_t refreshRate = ext.appWindow->getRefreshRate();
+        if ((refreshRate == 0) || !crtFilter->beamActive()) {
+            return;
+        }
+
+        const auto period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / double(refreshRate)));
+        while (swapChainValid && ((std::chrono::steady_clock::now() + period) < deadline) &&
+            crtFilter->hasBeamFrame(ext.swapChain->getWidth(), ext.swapChain->getHeight()))
+        {
+            threadBeamPresent(swapChainValid, false);
+        }
+    }
+
+    void PresentQueue::threadBeamPresent(bool &swapChainValid, bool lockThread) {
         // [wcw crt] DIAGNOSTIC (env WCW_CRT_LOG=1): per-phase timing of the idle beam present.
         using BeamClock = std::chrono::steady_clock;
         static double phaseMs[6] = {};
@@ -993,10 +1014,17 @@ namespace RT64 {
             phaseStart = now;
         };
 
-        std::unique_lock<std::mutex> threadLock(threadMutex);
+        std::unique_lock<std::mutex> threadLock(threadMutex, std::defer_lock);
+        if (lockThread) {
+            threadLock.lock();
+        }
+
         phase(0);
         if (!swapChainValid || ext.swapChain->needsResize() || ext.swapChain->isEmpty() || swapChainFramebuffers.empty()) {
-            threadLock.unlock();
+            if (threadLock.owns_lock()) {
+                threadLock.unlock();
+            }
+
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             return;
         }

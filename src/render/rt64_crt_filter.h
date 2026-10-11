@@ -63,8 +63,10 @@ namespace RT64 {
         bool active();
 
         // Display conditions the beam simulator depends on, updated by the present queue before
-        // each present: it needs vsync, an integer multiple (2x+) of 60 Hz and no frame interpolation.
-        void setDisplayConditions(uint32_t refreshRate, bool vsyncEnabled, bool interpolating);
+        // each present: it needs vsync and a display of at least twice the simulated CRT's rate. The
+        // CRT runs at 60 Hz, or at the interpolated framerate (contentRate, e.g. 120) when the display
+        // is fast enough for that, so interpolated frames each get a scan of their own.
+        void setDisplayConditions(uint32_t refreshRate, bool vsyncEnabled, bool interpolating, uint32_t contentRate);
 
         // True when the beam simulator is running, so the present queue should present a sub-frame
         // every display refresh (renderBeamSubframe) instead of waiting for the game's next frame.
@@ -77,6 +79,9 @@ namespace RT64 {
         // Draws the next beam simulator sub-frame of the last frame into the swap chain. Returns
         // false (having recorded nothing) when there is nothing to present.
         bool renderBeamSubframe(RenderWorker *presentWorker, RenderTexture *swapChainTexture, const RenderFramebuffer *swapChainFramebuffer, uint32_t windowWidth, uint32_t windowHeight);
+
+        // True when renderBeamSubframe has a frame to draw at this window size.
+        bool hasBeamFrame(uint32_t windowWidth, uint32_t windowHeight);
 
         // Display refreshes that went by without a beam sub-frame (a present that missed its vblank);
         // keeps the simulated scan in phase with the display.

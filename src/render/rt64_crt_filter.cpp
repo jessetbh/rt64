@@ -218,8 +218,11 @@ namespace RT64 {
         uint32_t displayRefreshRate = 0;
         bool displayVsync = false;
         bool displayInterpolating = false;
+        uint32_t displayContentRate = 0;
         // Display refreshes per simulated CRT refresh (e.g. 2.75 at 165 Hz), 0 when unavailable.
         double beamRatio = 0.0;
+        double beamCrtRate = BeamCrtRate;
+        bool beamStateLogged = false;
         std::string beamUnavailableReason;
 
         ~Impl() {
@@ -507,12 +510,17 @@ namespace RT64 {
         // Display refreshes per simulated CRT refresh, or 0 when the display can't run the beam simulator.
         double computeBeamRatio() {
             std::string reason;
-            double ratio = double(displayRefreshRate) / BeamCrtRate;
+            // [wcw hfr] With frame interpolation above 60 fps (e.g. 120), the simulated CRT refreshes at that
+            // rate when the display has at least two refreshes per frame, so every interpolated frame gets a
+            // scan of its own. Otherwise it stays at 60 Hz and each scan shows the latest frame.
+            double crtRate = BeamCrtRate;
+            if (displayInterpolating && (double(displayContentRate) > BeamCrtRate) && ((double(displayRefreshRate) / double(displayContentRate)) >= 1.95)) {
+                crtRate = double(displayContentRate);
+            }
+
+            double ratio = double(displayRefreshRate) / crtRate;
             if (!displayVsync) {
                 reason = "it needs V-Sync";
-            }
-            else if (displayInterpolating) {
-                reason = "it doesn't work with frame interpolation (set the framerate to Original)";
             }
             else if (ratio < 1.95) {
                 reason = "the display refresh rate (" + std::to_string(displayRefreshRate) + " Hz) must be 120 Hz or higher";
@@ -522,15 +530,18 @@ namespace RT64 {
                 ratio = 0.0;
             }
 
-            if (reason != beamUnavailableReason) {
+            if (!beamStateLogged || (reason != beamUnavailableReason) || (crtRate != beamCrtRate)) {
                 if (!reason.empty()) {
                     fprintf(stderr, "[wcw crt] Beam simulator inactive: %s.\n", reason.c_str());
                 }
                 else {
-                    fprintf(stderr, "[wcw crt] Beam simulator active: %u Hz display, %.3f refreshes per 60 Hz CRT refresh.\n", displayRefreshRate, ratio);
+                    fprintf(stderr, "[wcw crt] Beam simulator active: %u Hz display, %.3f refreshes per %.0f Hz CRT refresh%s.\n", displayRefreshRate, ratio, crtRate,
+                        displayInterpolating ? " (frame interpolation)" : "");
                 }
 
                 beamUnavailableReason = reason;
+                beamCrtRate = crtRate;
+                beamStateLogged = true;
             }
 
             return ratio;
@@ -709,10 +720,11 @@ namespace RT64 {
         return impl->guestActive();
     }
 
-    void CrtFilter::setDisplayConditions(uint32_t refreshRate, bool vsyncEnabled, bool interpolating) {
+    void CrtFilter::setDisplayConditions(uint32_t refreshRate, bool vsyncEnabled, bool interpolating, uint32_t contentRate) {
         impl->displayRefreshRate = refreshRate;
         impl->displayVsync = vsyncEnabled;
         impl->displayInterpolating = interpolating;
+        impl->displayContentRate = contentRate;
     }
 
     bool CrtFilter::beamActive() {
@@ -807,6 +819,15 @@ namespace RT64 {
         }
 
         return true;
+    }
+
+    bool CrtFilter::hasBeamFrame(uint32_t windowWidth, uint32_t windowHeight) {
+        if (!beamActive() || !impl->haveFrontFrame) {
+            return false;
+        }
+
+        const CrtTarget &front = impl->guestTargets[impl->frontTarget];
+        return (front.width == windowWidth) && (front.height == windowHeight);
     }
 
     void CrtFilter::skipBeamRefreshes(uint32_t count) {
