@@ -957,6 +957,25 @@ namespace RT64 {
         params.outsideEdge = std::max(envFloat(getenv("WCW_RT_DARKNESS_EDGE"), preset.outsideEdge), 0.0f);
         // Misses land on the arena floor: the lowest point of the scene's world geometry.
         params.missFloorY = sceneBoundsValid ? sceneMin[1] : 0.0f;
+        // Lit areas (offsets from the anchor like lights and glows): where outside darkness eases off.
+        {
+            float litOrigin[3];
+            presetOrigin(preset, litOrigin);
+            float *litFields[WCW_RT_MAX_LIT_AREAS][4] = {
+                { &params.litArea0X, &params.litArea0Z, &params.litArea0Radius, &params.litArea0Edge },
+                { &params.litArea1X, &params.litArea1Z, &params.litArea1Radius, &params.litArea1Edge }
+            };
+
+            params.litAreaCount = 0;
+            for (uint32_t a = 0; a < WCW_RT_MAX_LIT_AREAS; a++) {
+                const bool used = a < preset.litAreas.size();
+                *litFields[a][0] = used ? litOrigin[0] + preset.litAreas[a][0] : 0.0f;
+                *litFields[a][1] = used ? litOrigin[2] + preset.litAreas[a][1] : 0.0f;
+                *litFields[a][2] = used ? preset.litAreas[a][2] : 0.0f;
+                *litFields[a][3] = used ? preset.litAreas[a][3] : 0.0f;
+                params.litAreaCount += used ? 1u : 0u;
+            }
+        }
         const bool darkenMisses = missDarkening.darkenThisPass(colorTarget, lastPresentId, meshes.size());
         params.darkenMisses = ((outsideDarkness > 0.0f) && darkenMisses) ? 1u : 0u;
 

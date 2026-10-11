@@ -409,3 +409,42 @@ TEST_CASE("colored light: adding lights and glows pads the color lists (no own c
     CHECK(presetLightColor(p, 0) == p.color);
     CHECK(presetGlowColor(p, 0) == WhiteLight);
 }
+
+// Lit areas: the entrance set keeps its own lighting under outside darkness.
+
+TEST_CASE("lit areas: no darkness inside a lit area, the ring rule elsewhere, wrestlers never darkened") {
+    const std::vector<std::array<float, 4>> areas = { { 0.0f, 2700.0f, 600.0f, 400.0f } };
+    // The entrance set (far from the ring, inside the lit area) keeps its brightness.
+    CHECK_NEAR(outsideDarknessAt(0.0f, 2700.0f, 0.0f, 0.0f, 650.0f, 500.0f, 0.55f, areas, false), 1.0f, 1e-6f);
+    // Halfway through the lit area's edge: half way (smoothstep 0.5) into the darkness.
+    CHECK_NEAR(outsideDarknessAt(0.0f, 2700.0f - 800.0f, 0.0f, 0.0f, 650.0f, 500.0f, 0.55f, areas, false), 1.0f - 0.55f * 0.5f, 1e-5f);
+    // The stands at the side: full darkness, as without lit areas.
+    CHECK_NEAR(outsideDarknessAt(1800.0f, 0.0f, 0.0f, 0.0f, 650.0f, 500.0f, 0.55f, areas, false), 0.45f, 1e-6f);
+    CHECK_NEAR(outsideDarknessAt(1800.0f, 0.0f, 0.0f, 0.0f, 650.0f, 500.0f, 0.55f, areas, true), 1.0f, 1e-6f);
+}
+
+TEST_CASE("lit areas: without any, the darkness matches outsideDarknessFactor") {
+    for (float d = 0.0f; d < 2000.0f; d += 37.0f) {
+        CHECK_NEAR(outsideDarknessAt(d, 0.0f, 0.0f, 0.0f, 650.0f, 500.0f, 0.6f, {}, false), outsideDarknessFactor(d, 650.0f, 500.0f, 0.6f, false), 1e-6f);
+    }
+}
+
+TEST_CASE("lit areas: parse (at most two), inherit from default, and round-trip") {
+    const char *text = R"json({
+        "default": { "outsideDarkness": 0.55, "litAreas": [[0, 2700, 600, 400]] },
+        "venues": [
+            { "name": "A", "match": ["0000000000000001"] },
+            { "name": "B", "match": ["0000000000000002"], "litAreas": [[1, 2, 3, 4], [5, 6, 7, 8], [9, 9, 9, 9]] },
+            { "name": "C", "match": ["0000000000000003"], "litAreas": [] }
+        ]
+    })json";
+    const LightPresetFile file = parseLightPresets(text);
+    CHECK_EQ(file.venues[0].litAreas.size(), size_t(1));
+    CHECK_EQ(file.venues[1].litAreas.size(), MaxLitAreas);
+    CHECK(file.venues[2].litAreas.empty());
+    const LightPresetFile again = parseLightPresets(writeLightPresets(file));
+    for (size_t i = 0; i < file.venues.size(); i++) {
+        CHECK(again.venues[i].litAreas == file.venues[i].litAreas);
+        CHECK_EQ(again.venues[i].setFields, file.venues[i].setFields);
+    }
+}

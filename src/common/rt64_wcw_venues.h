@@ -35,8 +35,12 @@ namespace RT64::WcwLogic {
         FieldOutsideEdge = 1u << 14,
         FieldColor = 1u << 15,
         FieldKeyColor = 1u << 16,
-        FieldFillColor = 1u << 17
+        FieldFillColor = 1u << 17,
+        FieldLitAreas = 1u << 18
     };
+
+    // Lit areas per preset (WCW_RT_MAX_LIT_AREAS in the shader).
+    constexpr size_t MaxLitAreas = 2;
 
     using LightColor = std::array<float, 3>;
     constexpr LightColor WhiteLight = { 1.0f, 1.0f, 1.0f };
@@ -86,6 +90,11 @@ namespace RT64::WcwLogic {
         // past the radius. Wrestlers are never darkened. 0 = off (the arena stays as the game draws it).
         float outsideDarkness = 0.0f;
         float outsideEdge = 400.0f;
+        // "litAreas": [[x, z, radius, edge], ...] (offsets from the anchor like lights, at most MaxLitAreas): places with
+        // their own lighting, typically the entrance set, where outside darkness eases off like around the ring (none
+        // within radius, full beyond radius + edge). Without them the set and its titantron (geometry) sank into the
+        // house-lights-down darkness and glows had to fight it.
+        std::vector<std::array<float, 4>> litAreas;
         // PresetField bits of the fields this preset sets itself (read from the file, or edited).
         uint32_t setFields = 0;
     };
@@ -148,6 +157,15 @@ namespace RT64::WcwLogic {
     // outside darkness: 1 inside the radius, easing (smoothstep) to 1 - darkness at radius + edge and beyond.
     // Characters (wrestlers) always keep 1. The trace shader (WcwRtTraceCS) mirrors this.
     float outsideDarknessFactor(float receiverDistance, float radius, float edge, float darkness, bool character);
+
+    // How much of the outside darkness applies at a distance from a lit region: 0 within radius, easing (smoothstep)
+    // to 1 at radius + edge and beyond.
+    float darknessRamp(float distance, float radius, float edge);
+
+    // outsideDarknessFactor at a point on the floor plane (x, z), with lit areas: the darkness ramp is the smallest of
+    // the ring's (distance from center, radius, edge) and each lit area's, so the ring and the lit areas are all lit.
+    float outsideDarknessAt(float x, float z, float centerX, float centerZ, float radius, float edge, float darkness,
+        const std::vector<std::array<float, 4>> &litAreas, bool character);
 
     // Outside darkness for a ray miss: misses carry no position, so the ray is projected onto the arena floor plane
     // (y = floorY) and judged by the XZ distance from the center (centerX, centerZ) where it lands. A miss over the

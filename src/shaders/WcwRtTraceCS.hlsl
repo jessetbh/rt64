@@ -131,15 +131,37 @@ bool resolvedMode() {
     return (gParams.mode == WCW_RT_MODE_SHADOW) || (gParams.mode == WCW_RT_MODE_AO);
 }
 
-// Outside darkness of a world surface at an XZ distance from the lights' center (WcwLogic::outsideDarknessFactor).
-float outsideFactor(float receiverDist) {
-    if ((gParams.outsideDarkness <= 0.0f) || (receiverDist <= gParams.receiverRadius)) {
+// How much outside darkness applies at a distance from a lit region (WcwLogic::darknessRamp).
+float darknessRamp(float distance, float radius, float edge) {
+    if (distance <= radius) {
+        return 0.0f;
+    }
+
+    if (edge <= 0.0f) {
         return 1.0f;
     }
 
-    float t = (gParams.outsideEdge > 0.0f) ? saturate((receiverDist - gParams.receiverRadius) / gParams.outsideEdge) : 1.0f;
-    t = t * t * (3.0f - 2.0f * t);
-    return 1.0f - saturate(gParams.outsideDarkness) * t;
+    const float t = saturate((distance - radius) / edge);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+// Outside darkness of a world surface at a floor point (WcwLogic::outsideDarknessAt): the smallest darkness ramp of
+// the ring's and the lit areas' (the entrance set has its own lighting).
+float outsideFactorAt(float2 xz) {
+    if (gParams.outsideDarkness <= 0.0f) {
+        return 1.0f;
+    }
+
+    float ramp = darknessRamp(length(xz - gParams.lightPosition.xz), gParams.receiverRadius, gParams.outsideEdge);
+    if (gParams.litAreaCount > 0) {
+        ramp = min(ramp, darknessRamp(length(xz - float2(gParams.litArea0X, gParams.litArea0Z)), gParams.litArea0Radius, gParams.litArea0Edge));
+    }
+
+    if (gParams.litAreaCount > 1) {
+        ramp = min(ramp, darknessRamp(length(xz - float2(gParams.litArea1X, gParams.litArea1Z)), gParams.litArea1Radius, gParams.litArea1Edge));
+    }
+
+    return 1.0f - saturate(gParams.outsideDarkness) * ramp;
 }
 
 void writeNoHit(uint2 pixel, RayDesc ray) {
@@ -148,15 +170,14 @@ void writeNoHit(uint2 pixel, RayDesc ray) {
         // floor (WcwLogic::missFloorDistance): the mat drawn by another pass stays lit, the stands darken.
         float missFactor = 1.0f;
         if ((gParams.darkenMisses != 0) && (gParams.outsideDarkness > 0.0f)) {
-            float dist = 1e9f;
+            // Rays that point up or never reach the floor count as infinitely far: full darkness.
+            missFactor = 1.0f - saturate(gParams.outsideDarkness);
             if (ray.Direction.y < -1e-4f) {
                 const float t = (gParams.missFloorY - ray.Origin.y) / ray.Direction.y;
                 if (t > 0.0f) {
-                    dist = length(ray.Origin.xz + ray.Direction.xz * t - gParams.lightPosition.xz);
+                    missFactor = outsideFactorAt(ray.Origin.xz + ray.Direction.xz * t);
                 }
             }
-
-            missFactor = outsideFactor(dist);
         }
 
         gCurrent[pixel] = float4(missFactor, missFactor, missFactor, 0.0f);
@@ -432,7 +453,7 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
             // Outside darkness (mirrors WcwLogic::outsideDarknessFactor): the arena and crowd fall into shadow,
             // wrestlers don't; glows still brighten what they reach.
             const bool outsideCharacter = (gMeshIndexStarts[primary.CommittedGeometryIndex()] & WCW_RT_MESH_CHARACTER) != 0;
-            const float outside = outsideCharacter ? 1.0f : outsideFactor(receiverDist);
+            const float outside = outsideCharacter ? 1.0f : outsideFactorAt(hitPos.xz);
 
             gCurrent[pixel] = float4(outside * (1.0f + glowLight(hitPos, normal, pixel)), hitT);
             gCurrentAo[pixel] = 1.0f;

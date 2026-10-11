@@ -29,6 +29,7 @@
 
 #define WCW_RT_MAX_LIGHTS 8
 #define WCW_RT_MAX_GLOWS 4
+#define WCW_RT_MAX_LIT_AREAS 2
 
 // Bit 31 of a mesh index start: N64 face culling is on for that draw.
 #define WCW_RT_MESH_CULLED 0x80000000u
@@ -159,6 +160,18 @@ namespace interop {
         uint darkenMisses;
         // Misses are judged where their ray lands on the arena floor plane at this height (WcwLogic::missFloorDistance).
         float missFloorY;
+        // Lit areas (the preset's litAreas, WcwLogic::outsideDarknessAt): world X/Z center, radius and edge of up to
+        // WCW_RT_MAX_LIT_AREAS places where outside darkness eases off like around the ring. Scalars, so the C++ and
+        // HLSL layouts can't disagree on padding.
+        uint litAreaCount;
+        float litArea0X;
+        float litArea0Z;
+        float litArea0Radius;
+        float litArea0Edge;
+        float litArea1X;
+        float litArea1Z;
+        float litArea1Radius;
+        float litArea1Edge;
     };
 
     struct WcwRtCompositeCB {

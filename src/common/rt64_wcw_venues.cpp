@@ -21,7 +21,7 @@ namespace RT64::WcwLogic {
             { "lights", FieldLights }, { "size", FieldSize }, { "radius", FieldRadius }, { "clearance", FieldClearance },
             { "falloff", FieldFalloff }, { "glows", FieldGlows }, { "anchor", FieldAnchor }, { "shadow", FieldShadow },
             { "characterShadow", FieldCharacterShadow }, { "outsideDarkness", FieldOutsideDarkness }, { "outsideEdge", FieldOutsideEdge },
-            { "color", FieldColor }, { "keyColor", FieldKeyColor }, { "fillColor", FieldFillColor }
+            { "color", FieldColor }, { "keyColor", FieldKeyColor }, { "fillColor", FieldFillColor }, { "litAreas", FieldLitAreas }
         };
 
         uint32_t fields = 0;
@@ -107,6 +107,14 @@ namespace RT64::WcwLogic {
         p.characterShadow = j.value("characterShadow", p.characterShadow);
         p.outsideDarkness = std::clamp(j.value("outsideDarkness", p.outsideDarkness), 0.0f, 1.0f);
         p.outsideEdge = std::max(j.value("outsideEdge", p.outsideEdge), 0.0f);
+        if (j.contains("litAreas")) {
+            p.litAreas.clear();
+            for (const auto &a : j["litAreas"]) {
+                if ((a.size() >= 4) && (p.litAreas.size() < MaxLitAreas)) {
+                    p.litAreas.push_back({ a[0].get<float>(), a[1].get<float>(), std::max(a[2].get<float>(), 0.0f), std::max(a[3].get<float>(), 0.0f) });
+                }
+            }
+        }
         p.anchorScene = (j.value("anchor", std::string(p.anchorScene ? "scene" : "world")) == "scene");
         if (j.contains("lights")) {
             p.lights.clear();
@@ -244,6 +252,14 @@ namespace RT64::WcwLogic {
         field("falloff", FieldFalloff, p.falloff, base.falloff);
         field("outsideDarkness", FieldOutsideDarkness, p.outsideDarkness, base.outsideDarkness);
         field("outsideEdge", FieldOutsideEdge, p.outsideEdge, base.outsideEdge);
+        if (wanted(FieldLitAreas, p.litAreas != base.litAreas)) {
+            Json a = Json::array();
+            for (const auto &area : p.litAreas) {
+                a.push_back(Json::array({ number(area[0]), number(area[1]), number(area[2]), number(area[3]) }));
+            }
+
+            j["litAreas"] = a;
+        }
         if (wanted(FieldGlows, (p.glows != base.glows) || (p.glowColors != base.glowColors))) {
             Json g = Json::array();
             for (size_t i = 0; i < p.glows.size(); i++) {
@@ -316,6 +332,7 @@ namespace RT64::WcwLogic {
         if (!(s & FieldCharacterShadow)) { p.characterShadow = d.characterShadow; }
         if (!(s & FieldOutsideDarkness)) { p.outsideDarkness = d.outsideDarkness; }
         if (!(s & FieldOutsideEdge)) { p.outsideEdge = d.outsideEdge; }
+        if (!(s & FieldLitAreas)) { p.litAreas = d.litAreas; }
         syncColorLists(p);
     }
 
@@ -395,6 +412,35 @@ namespace RT64::WcwLogic {
         }
 
         return 1.0f - std::min(darkness, 1.0f) * t;
+    }
+
+    float darknessRamp(float distance, float radius, float edge) {
+        if (distance <= radius) {
+            return 0.0f;
+        }
+
+        if (edge <= 0.0f) {
+            return 1.0f;
+        }
+
+        const float t = std::clamp((distance - radius) / edge, 0.0f, 1.0f);
+        return t * t * (3.0f - 2.0f * t);
+    }
+
+    float outsideDarknessAt(float x, float z, float centerX, float centerZ, float radius, float edge, float darkness,
+        const std::vector<std::array<float, 4>> &litAreas, bool character)
+    {
+        if (character || (darkness <= 0.0f)) {
+            return 1.0f;
+        }
+
+        float ramp = darknessRamp(std::hypot(x - centerX, z - centerZ), radius, edge);
+        for (size_t i = 0; (i < litAreas.size()) && (i < MaxLitAreas); i++) {
+            const auto &a = litAreas[i];
+            ramp = std::min(ramp, darknessRamp(std::hypot(x - a[0], z - a[1]), a[2], a[3]));
+        }
+
+        return 1.0f - std::min(darkness, 1.0f) * ramp;
     }
 
     float missFloorDistance(const float origin[3], const float direction[3], float floorY, float centerX, float centerZ) {

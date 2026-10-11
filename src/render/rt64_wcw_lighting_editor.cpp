@@ -299,6 +299,30 @@ namespace RT64 {
                 ImGui::TextDisabled("Outside darkness: dims the arena and crowd beyond the receiver radius (wrestlers stay lit).");
                 changed |= edited(ImGui::SliderFloat((std::string("Outside darkness") + fieldMark(p, WcwLogic::FieldOutsideDarkness, isDefault)).c_str(), &p.outsideDarkness, 0.0f, 1.0f), p, WcwLogic::FieldOutsideDarkness);
                 changed |= edited(ImGui::DragFloat((std::string("Darkness edge") + fieldMark(p, WcwLogic::FieldOutsideEdge, isDefault)).c_str(), &p.outsideEdge, 10.0f, 0.0f, 5000.0f), p, WcwLogic::FieldOutsideEdge);
+                ImGui::TextDisabled("Lit areas%s: places with their own lighting (the entrance set) stay out of the darkness.", fieldMark(p, WcwLogic::FieldLitAreas, isDefault));
+                int removeArea = -1;
+                for (int i = 0; i < int(p.litAreas.size()); i++) {
+                    ImGui::PushID(2000 + i);
+                    changed |= edited(ImGui::DragFloat4("X Z radius edge", p.litAreas[i].data(), 10.0f), p, WcwLogic::FieldLitAreas);
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Remove")) {
+                        removeArea = i;
+                    }
+
+                    ImGui::PopID();
+                }
+
+                if (removeArea >= 0) {
+                    p.litAreas.erase(p.litAreas.begin() + removeArea);
+                    p.setFields |= WcwLogic::FieldLitAreas;
+                    changed = true;
+                }
+
+                if ((p.litAreas.size() < WcwLogic::MaxLitAreas) && ImGui::Button("Add lit area")) {
+                    p.litAreas.push_back({ p.center[0], p.center[2], 500.0f, 400.0f });
+                    p.setFields |= WcwLogic::FieldLitAreas;
+                    changed = true;
+                }
             }
 
             changed |= edited(ImGui::DragFloat((std::string("Clearance") + fieldMark(p, WcwLogic::FieldClearance, isDefault)).c_str(), &p.clearance, 1.0f, 0.0f, 1000.0f), p, WcwLogic::FieldClearance);
