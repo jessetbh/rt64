@@ -270,6 +270,16 @@ namespace RT64 {
                 });
             }
 
+            // [wcw fix] Also wait for the present thread to finish the present it is in: with frame interpolation
+            // it can still be showing a target from another set (the three rotating sets, a run's real frame)
+            // while the counters above say this set is done, and destroying the targets under it crashed
+            // (switching the framerate, ray tracing or fullscreen while playing). Not threadMutex: the present
+            // thread holds that while it waits for this thread's workloads.
+            std::unique_lock<std::mutex> presentLock;
+            if (ext.presentQueue != nullptr) {
+                presentLock = std::unique_lock<std::mutex>(ext.presentQueue->wcwPresentTargetsMutex);
+            }
+
             std::scoped_lock<std::mutex> managerLock(ext.sharedResources->managerMutex);
             FramebufferManager &fbManager = ext.sharedResources->framebufferManager;
             RenderTargetManager &targetManager = ext.sharedResources->renderTargetManager;
