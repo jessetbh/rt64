@@ -49,6 +49,10 @@ namespace RT64::WcwLogic {
         return (periodMs == 0) || (((unixMs / periodMs) % 2) == 0);
     }
 
+    DenoiseSettings denoiseSettings() {
+        return DenoiseSettings();
+    }
+
     std::vector<float> blueNoiseTile(uint32_t size) {
         const uint32_t count = size * size;
         std::vector<float> values(count, 0.0f);

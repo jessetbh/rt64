@@ -825,7 +825,7 @@ namespace RT64 {
             traceWidth = std::max(uint32_t(std::ceil(outputWidth * traceScale)), 1u);
             traceHeight = std::max(uint32_t(std::ceil(outputHeight * traceScale)), 1u);
             outputTexture = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16G16B16A16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
-            currentTexture = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R32G32_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
+            currentTexture = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R32G32B32A32_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
         }
 
         Slot &slot = slots[currentSlot];
@@ -833,7 +833,7 @@ namespace RT64 {
             slot.historyWidth = traceWidth;
             slot.historyHeight = traceHeight;
             for (auto &history : slot.history) {
-                history = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
+                history = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16G16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
             }
 
             slot.output = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16G16B16A16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
@@ -952,6 +952,15 @@ namespace RT64 {
         params.aoGain = std::max(envFloat(getenv("WCW_RT_AO_GAIN"), ao.gain), 0.0f);
         params.aoSplit = (envFloat(getenv("WCW_RT_AO_SPLIT"), 0.0f) != 0.0f) ? 1u : 0u;
         params.filterRadius = uint32_t(std::clamp(envFloat(getenv("WCW_RT_FILTER_RADIUS"), 2.0f), 1.0f, 4.0f));
+        {
+            const WcwLogic::DenoiseSettings denoise = WcwLogic::denoiseSettings();
+            const float maxRadius = float(WcwLogic::DenoiseMaxRadius);
+            params.shadowFilterRadius = uint32_t(std::clamp(envFloat(getenv("WCW_RT_SHADOW_FILTER_RADIUS"), float(denoise.shadowRadius)), 1.0f, maxRadius));
+            params.aoFilterRadius = uint32_t(std::clamp(envFloat(getenv("WCW_RT_AO_FILTER_RADIUS"), float(denoise.aoRadius)), 1.0f, maxRadius));
+            params.shadowTemporalAlpha = std::clamp(envFloat(getenv("WCW_RT_SHADOW_ALPHA"), denoise.shadowAlpha), 0.01f, 1.0f);
+            params.aoTemporalAlpha = std::clamp(envFloat(getenv("WCW_RT_AO_ALPHA"), denoise.aoAlpha), 0.01f, 1.0f);
+            params.denoiseSplit = (envFloat(getenv("WCW_RT_DENOISE_SPLIT"), 0.0f) != 0.0f) ? 1u : 0u;
+        }
         params.aoCharacterGain = std::max(envFloat(getenv("WCW_RT_AO_GAIN_CHAR"), ao.characterGain), 0.0f);
         params.noiseMode = (envFloat(getenv("WCW_RT_NOISE"), 1.0f) != 0.0f) ? 1u : 0u;
         params.noiseSplit = (envFloat(getenv("WCW_RT_NOISE_SPLIT"), 0.0f) != 0.0f) ? 1u : 0u;
@@ -970,7 +979,8 @@ namespace RT64 {
         params.traceScale = float(traceWidth) / float(outputWidth);
 
         // Trace only this workload's screen footprint (plus a margin for the bilinear upsample
-        // and the resolve's 3x3 neighborhood).
+        // and the resolve filters' neighborhoods).
+        const float margin = float(std::max({ 3u, params.shadowFilterRadius + 1, params.aoFilterRadius + 1, params.filterRadius + 1 }));
         if (boundsFullScreen) {
             traceRect[0] = traceRect[1] = 0;
             traceRect[2] = traceWidth;
@@ -978,10 +988,10 @@ namespace RT64 {
         }
         else {
             const float scale = params.traceScale;
-            traceRect[0] = uint32_t(std::clamp(std::floor(boundsMin[0] * scale) - 3.0f, 0.0f, float(traceWidth)));
-            traceRect[1] = uint32_t(std::clamp(std::floor(boundsMin[1] * scale) - 3.0f, 0.0f, float(traceHeight)));
-            traceRect[2] = uint32_t(std::clamp(std::ceil(boundsMax[0] * scale) + 3.0f, 0.0f, float(traceWidth)));
-            traceRect[3] = uint32_t(std::clamp(std::ceil(boundsMax[1] * scale) + 3.0f, 0.0f, float(traceHeight)));
+            traceRect[0] = uint32_t(std::clamp(std::floor(boundsMin[0] * scale) - margin, 0.0f, float(traceWidth)));
+            traceRect[1] = uint32_t(std::clamp(std::floor(boundsMin[1] * scale) - margin, 0.0f, float(traceHeight)));
+            traceRect[2] = uint32_t(std::clamp(std::ceil(boundsMax[0] * scale) + margin, 0.0f, float(traceWidth)));
+            traceRect[3] = uint32_t(std::clamp(std::ceil(boundsMax[1] * scale) + margin, 0.0f, float(traceHeight)));
         }
 
         traceRectEmpty = (traceRect[2] <= traceRect[0]) || (traceRect[3] <= traceRect[1]);
@@ -1005,6 +1015,7 @@ namespace RT64 {
         slot.tracedMeshes = uint32_t(meshes.size());
 
         params.traceOffset = { traceRect[0], traceRect[1] };
+        params.traceEnd = { traceRect[2], traceRect[3] };
         params.receiverRadius = receiverRadius;
         void *paramsBytes = paramsBuffer->map();
         memcpy(paramsBytes, &params, sizeof(params));
