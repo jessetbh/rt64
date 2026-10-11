@@ -185,12 +185,14 @@ TEST_CASE("denoise: AO accumulates longer than shadows, and both keep some histo
 
 // Wrestler sheen
 
-TEST_CASE("sheen: highlights and backlight brighten without blowing out") {
-    // The shadow factor is stored up to 2: a fully lit wrestler (factor 1) at the peak of both terms stays below it.
+TEST_CASE("sheen: highlights and outlines brighten without blowing out") {
+    // The shadow factor is stored up to 2. Neither term alone may double a fully lit wrestler (factor 1), and the
+    // two together (they peak in different places: the highlight faces the light, the outline is the silhouette)
+    // stay close to that ceiling. The owner found 0.3 / 0.35 too faint and 0.65 / 0.7 too much.
     const SheenSettings s = sheenSettings();
-    CHECK(s.specular > 0.0f);
-    CHECK(s.rim > 0.0f);
-    CHECK(1.0f + s.specular + s.rim < 2.0f);
+    CHECK(s.specular > 0.35f && s.specular < 0.65f);
+    CHECK(s.rim > 0.35f && s.rim < 0.7f);
+    CHECK(s.specular + s.rim <= 1.1f);
 }
 
 TEST_CASE("sheen: a glossy highlight and a thin outline, not a wash") {
