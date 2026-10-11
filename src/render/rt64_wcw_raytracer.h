@@ -140,6 +140,8 @@ namespace RT64 {
         std::unique_ptr<RenderBuffer> blueNoiseBuffer;
         std::unique_ptr<RenderTexture> outputTexture;
         std::unique_ptr<RenderTexture> currentTexture;
+        // The traced AO term beside currentTexture's colored shadow term and hit distance.
+        std::unique_ptr<RenderTexture> currentAoTexture;
         uint32_t frameIndex = 0;
         uint32_t reusedTraces = 0;
         std::unique_ptr<RenderDescriptorSet> resolveSet;
@@ -195,12 +197,20 @@ namespace RT64 {
             uint32_t fills = 4;
             float keyWeight = 0.5f;
             std::vector<std::array<float, 4>> lights;
+            // Colored light: "color" is every light's RGB by default (white); the generated rig's key and fills can
+            // differ ("keyColor", "fillColor"), and an explicit light can carry its own as [x, y, z, weight, r, g, b].
+            std::array<float, 3> color = { 1.0f, 1.0f, 1.0f };
+            std::array<float, 3> keyColor = { 1.0f, 1.0f, 1.0f };
+            std::array<float, 3> fillColor = { 1.0f, 1.0f, 1.0f };
+            std::vector<std::array<float, 3>> lightColors;
             float size = 20.0f;
             float radius = 750.0f;
             float clearance = 0.0f;
             float falloff = 0.0f;
-            // "glows": [[x, y, z, intensity, range], ...] (offsets from the anchor like lights).
+            // "glows": [[x, y, z, intensity, range], ...] (offsets from the anchor like lights), optionally with
+            // [..., r, g, b] for a colored glow (white otherwise; not normalized, so the color scales the intensity).
             std::vector<std::array<float, 5>> glows;
+            std::vector<std::array<float, 3>> glowColors;
             // "anchor": "scene": center and explicit lights are offsets from the drawn world
             // geometry's center on X/Z and its floor (lowest point) on Y, so one preset fits rooms
             // placed anywhere in the world (backstage zones).

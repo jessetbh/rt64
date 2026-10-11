@@ -104,6 +104,18 @@ namespace RT64::WcwLogic {
         return DenoiseSettings();
     }
 
+    std::array<float, 3> normalizedLightColor(float r, float g, float b) {
+        r = std::max(r, 0.0f);
+        g = std::max(g, 0.0f);
+        b = std::max(b, 0.0f);
+        const float luminance = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+        if (!(luminance > 1e-4f)) {
+            return { 1.0f, 1.0f, 1.0f };
+        }
+
+        return { std::min(r / luminance, MaxLightChannel), std::min(g / luminance, MaxLightChannel), std::min(b / luminance, MaxLightChannel) };
+    }
+
     std::vector<float> blueNoiseTile(uint32_t size) {
         const uint32_t count = size * size;
         std::vector<float> values(count, 0.0f);

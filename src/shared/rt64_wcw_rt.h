@@ -103,6 +103,10 @@ namespace interop {
         float glowPadding2;
         float4 glows[WCW_RT_MAX_GLOWS];
         float4 glowIntensity;
+        // Colored light: each light's and glow's RGB. Lights are normalized to unit luminance
+        // (WcwLogic::normalizedLightColor), so a color tints without changing the brightness; white = no tint.
+        float4 lightColors[WCW_RT_MAX_LIGHTS];
+        float4 glowColors[WCW_RT_MAX_GLOWS];
         float aoCharacterStrength;
         float aoCharacterRadius;
         // 1: lit draws use their interpolated vertex normals for the AO hemisphere (WCW_RT_AO_SMOOTH=0 turns it off).
@@ -144,6 +148,8 @@ namespace interop {
         uint denoiseSplit;
         // End of the traced rect (exclusive, trace pixels): the resolve filter doesn't read past it.
         uint2 traceEnd;
+        // WCW_RT_COLOR_SPLIT=1: white lights and glows on the left half of the screen (same-moment comparisons).
+        uint colorSplit;
     };
 
     struct WcwRtCompositeCB {
