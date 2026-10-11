@@ -19,6 +19,8 @@
 // Light placement view: red dots under the lights, a 100-unit world grid, and the lights'
 // center lines (X red, Z blue) on every surface. Also set by "debugMode": 8 in the presets file.
 #define WCW_RT_MODE_LIGHT_MAP 8
+// Raw ambient occlusion of this frame in grey, not filtered or composited (tuning the AO's look and noise).
+#define WCW_RT_MODE_AO_RAW 9
 
 #define WCW_RT_MAX_LIGHTS 8
 #define WCW_RT_MAX_GLOWS 4
@@ -100,7 +102,15 @@ namespace interop {
         float aoCharacterRadius;
         // 1: lit draws use their interpolated vertex normals for the AO hemisphere (WCW_RT_AO_SMOOTH=0 turns it off).
         uint aoSmoothNormals;
+        // Contrast: the occluded fraction is scaled by this (then clamped to 1) before darkening, so creases
+        // that block part of the hemisphere read clearly. Wrestlers are mostly convex: without it, AO only shows
+        // in the tightest corners.
+        float aoGain;
+        // WCW_RT_AO_SPLIT=1: no AO on the left half of the screen (same-moment before/after comparisons).
+        uint aoSplit;
         float aoPadding0;
+        float aoPadding1;
+        float aoPadding2;
     };
 
     struct WcwRtCompositeCB {

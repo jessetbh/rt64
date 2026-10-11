@@ -422,7 +422,8 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
     // Ambient occlusion: cosine-weighted hemisphere rays against all workloads' geometry, around the smooth
     // normal on lit draws. Directions that dip below the flat triangle are mirrored back above it (no self-hits
     // from the smoothing); a hit at distance t occludes by 1 - (t / radius)^2, so far hits fade in softly.
-    if (gParams.aoSamples > 0) {
+    const bool aoSplitOff = (gParams.aoSplit != 0) && (pixel.x < (gParams.resolution.x / 2));
+    if ((gParams.aoSamples > 0) && !aoSplitOff) {
         const float3 hemisphere = aoNormal(primary.CommittedGeometryIndex(), primary.CommittedPrimitiveIndex(), primary.CommittedTriangleBarycentrics(), normal);
         const float3 helper = (abs(hemisphere.y) < 0.99f) ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
         const float3 tangent = normalize(cross(helper, hemisphere));
@@ -461,7 +462,11 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
         }
 
         const float aoStrength = characterReceiver ? gParams.aoCharacterStrength : gParams.aoStrength;
-        const float aoFactor = 1.0f - aoStrength * (occluded / float(gParams.aoSamples));
+        const float aoFactor = 1.0f - aoStrength * saturate(gParams.aoGain * occluded / float(gParams.aoSamples));
+        if (gParams.mode == WCW_RT_MODE_AO_RAW) {
+            gOutput[pixel] = float4(aoFactor, aoFactor, aoFactor, 1.0f);
+            return;
+        }
         factor = (gParams.mode == WCW_RT_MODE_AO) ? aoFactor : factor * aoFactor;
     }
 

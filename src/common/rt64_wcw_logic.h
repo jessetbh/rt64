@@ -41,6 +41,8 @@ namespace RT64::WcwLogic {
         // Ray length: occluders further away don't count, nearer ones count more (1 - (t / radius)^2).
         float radius = 0.0f;
         float characterRadius = 0.0f;
+        // Contrast: the occluded fraction is multiplied by this (clamped to 1) before darkening.
+        float gain = 1.0f;
     };
 
     // The AO parameters for a menu level at a ray tracing quality (0 Performance, 1 Balanced, 2 Quality). Higher
