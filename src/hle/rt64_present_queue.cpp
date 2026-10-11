@@ -634,9 +634,14 @@ namespace RT64 {
                     // BMP dump window configurable: WCW_BMP_START (default 600), WCW_BMP_COUNT
                     // (default 13), WCW_LUM_END (default 1500) — lets captures target any moment
                     // (e.g. in-game menus) instead of only early boot.
-                    static const int wcwBmpStart = getenv("WCW_BMP_START") ? atoi(getenv("WCW_BMP_START")) : 600;
+                    static int wcwBmpStart = getenv("WCW_BMP_START") ? atoi(getenv("WCW_BMP_START")) : 600;
+                    // WCW_BMP_START_SEC=S: start the dump window at the first present S seconds after the first
+                    // present instead (present counts per second vary with the framerate; game time does not).
+                    static const double wcwBmpStartSec = getenv("WCW_BMP_START_SEC") ? atof(getenv("WCW_BMP_START_SEC")) : -1.0;
+                    static std::chrono::steady_clock::time_point wcwBmpClock0 = std::chrono::steady_clock::now();
+                    static bool wcwBmpStartResolved = false;
                     static const int wcwBmpCount = getenv("WCW_BMP_COUNT") ? atoi(getenv("WCW_BMP_COUNT")) : 13;
-                    static const int wcwLumEnd = getenv("WCW_LUM_END") ? atoi(getenv("WCW_LUM_END")) : 1500;
+                    static int wcwLumEnd = getenv("WCW_LUM_END") ? atoi(getenv("WCW_LUM_END")) : 1500;
                     // WCW_BMP_EVERY=N: dump every Nth present from WCW_BMP_START instead (WCW_BMP_COUNT
                     // dumps), reading back only those presents.
                     static const int wcwBmpEvery = getenv("WCW_BMP_EVERY") ? atoi(getenv("WCW_BMP_EVERY")) : 0;
@@ -647,7 +652,18 @@ namespace RT64 {
                     if (wcwLum) {
                         wcwPresentN++;
                         wcwRtPresentCounter = wcwPresentN;
-                        const bool wcwEveryHit = (wcwBmpEvery <= 0) || ((wcwPresentN >= wcwBmpStart) && (((wcwPresentN - wcwBmpStart) % wcwBmpEvery) == 0));
+                        if ((wcwBmpStartSec >= 0.0) && !wcwBmpStartResolved) {
+                            wcwBmpStart = INT_MAX;
+                            if (std::chrono::duration<double>(std::chrono::steady_clock::now() - wcwBmpClock0).count() >= wcwBmpStartSec) {
+                                wcwBmpStart = wcwPresentN;
+                                wcwBmpStartResolved = true;
+                                // Read back only the dump window (reading every present slows the presents).
+                                wcwLumEnd = wcwBmpStart + wcwBmpCount * std::max(wcwBmpEvery, 1);
+                                fprintf(stderr, "[wcw] BMP window starts at present %d (%.1f s)\n", wcwPresentN, wcwBmpStartSec);
+                            }
+                        }
+                        const bool wcwEveryHit = (wcwBmpEvery <= 0) ? ((wcwBmpStartSec < 0.0) || (wcwPresentN >= wcwBmpStart))
+                            : ((wcwPresentN >= wcwBmpStart) && (((wcwPresentN - wcwBmpStart) % wcwBmpEvery) == 0));
                         if (wcwPresentN >= 240 && wcwPresentN <= wcwLumEnd && wcwEveryHit) {
                             uint32_t w = ext.swapChain->getWidth(), h = ext.swapChain->getHeight();
                             uint32_t row = (w + 63) & ~63u;
