@@ -136,6 +136,8 @@ namespace RT64 {
         std::unique_ptr<RenderBuffer> paramsBuffer;
         std::unique_ptr<RenderBuffer> meshStartsBuffer;
         uint64_t meshStartsBufferSize = 0;
+        // Blue noise tile for the trace's random samples (WcwLogic::blueNoiseTile), uploaded once.
+        std::unique_ptr<RenderBuffer> blueNoiseBuffer;
         std::unique_ptr<RenderTexture> outputTexture;
         std::unique_ptr<RenderTexture> currentTexture;
         uint32_t frameIndex = 0;

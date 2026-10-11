@@ -124,6 +124,95 @@ TEST_CASE("ao: out-of-range levels clamp to Strong") {
     CHECK_EQ(aoSettings(7, 1).samples, aoSettings(uint32_t(AoLevel::Strong), 1).samples);
 }
 
+// Blue noise (ray tracer sample jitter)
+
+static const std::vector<float> &blueTile() {
+    static const std::vector<float> tile = blueNoiseTile(BlueNoiseSize);
+    return tile;
+}
+
+TEST_CASE("blue noise: every rank appears exactly once") {
+    const std::vector<float> &tile = blueTile();
+    const uint32_t count = BlueNoiseSize * BlueNoiseSize;
+    CHECK_EQ(tile.size(), size_t(count));
+    std::vector<int> seen(count, 0);
+    for (float v : tile) {
+        CHECK(v > 0.0f && v < 1.0f);
+        const int rank = int(std::lround(v * float(count) - 0.5f));
+        CHECK(rank >= 0 && rank < int(count));
+        if (rank >= 0 && rank < int(count)) {
+            seen[rank]++;
+        }
+    }
+
+    CHECK(std::all_of(seen.begin(), seen.end(), [](int n) { return n == 1; }));
+}
+
+TEST_CASE("blue noise: the same size always gives the same tile") {
+    CHECK(blueNoiseTile(BlueNoiseSize) == blueTile());
+}
+
+TEST_CASE("blue noise: sizes that aren't powers of two give an all-zero tile") {
+    const std::vector<float> tile = blueNoiseTile(48);
+    CHECK_EQ(tile.size(), size_t(48 * 48));
+    CHECK(std::all_of(tile.begin(), tile.end(), [](float v) { return v == 0.0f; }));
+}
+
+TEST_CASE("blue noise: 4x4 neighbourhoods average close to 0.5 (no low-frequency blotches)") {
+    // White noise: the mean of 16 uniform values has a standard deviation of about 0.072. Blotchy noise is what
+    // the old interleaved gradient noise turned into after filtering; blue noise keeps every block near 0.5.
+    const std::vector<float> &tile = blueTile();
+    double sumSq = 0.0, worst = 0.0;
+    int blocks = 0;
+    for (uint32_t by = 0; by < BlueNoiseSize; by += 4) {
+        for (uint32_t bx = 0; bx < BlueNoiseSize; bx += 4) {
+            double mean = 0.0;
+            for (uint32_t y = 0; y < 4; y++) {
+                for (uint32_t x = 0; x < 4; x++) {
+                    mean += tile[(by + y) * BlueNoiseSize + bx + x];
+                }
+            }
+
+            mean /= 16.0;
+            sumSq += (mean - 0.5) * (mean - 0.5);
+            worst = std::max(worst, std::abs(mean - 0.5));
+            blocks++;
+        }
+    }
+
+    CHECK(std::sqrt(sumSq / blocks) < 0.04);
+    CHECK(worst < 0.15);
+}
+
+TEST_CASE("blue noise: the lowest 10% of values never sit next to each other") {
+    // Any threshold of a blue noise tile is an evenly spread point set: at 10% density no two points touch,
+    // diagonals included, even across the tile's wrap-around edges.
+    const std::vector<float> &tile = blueTile();
+    const int n = int(BlueNoiseSize);
+    std::vector<std::pair<int, int>> points;
+    for (int y = 0; y < n; y++) {
+        for (int x = 0; x < n; x++) {
+            if (tile[y * n + x] < 0.1f) {
+                points.emplace_back(x, y);
+            }
+        }
+    }
+
+    int touching = 0;
+    for (size_t i = 0; i < points.size(); i++) {
+        for (size_t j = i + 1; j < points.size(); j++) {
+            int dx = std::abs(points[i].first - points[j].first), dy = std::abs(points[i].second - points[j].second);
+            dx = std::min(dx, n - dx);
+            dy = std::min(dy, n - dy);
+            if ((dx <= 1) && (dy <= 1)) {
+                touching++;
+            }
+        }
+    }
+
+    CHECK_EQ(touching, 0);
+}
+
 // CRT beam simulator
 
 TEST_CASE("beam: 120 fps on a 280 Hz display simulates a 120 Hz CRT") {

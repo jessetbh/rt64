@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 
 // [wcw] Decision logic for frame interpolation, present pacing, the CRT beam simulator and ray-traced shadows, kept
 // free of renderer state so it can be unit tested (tests/wcw). The renderer calls these functions; a change to any
@@ -53,6 +54,14 @@ namespace RT64::WcwLogic {
     // The AO parameters for a menu level at a ray tracing quality (0 Performance, 1 Balanced, 2 Quality). Higher
     // quality only adds samples; the look (strengths, radii) depends on the level alone.
     AoSettings aoSettings(uint32_t level, uint32_t quality);
+
+    // Blue noise for the ray tracer's random samples (soft shadow jitter, AO directions): a size x size tile
+    // (size a power of two) built with void-and-cluster (Ulichney 1993) on a torus, so it tiles seamlessly.
+    // Returns the values in [0, 1), row-major: each rank appears once, as (rank + 0.5) / (size * size). Unlike
+    // white or interleaved gradient noise, neighbouring pixels get well-spread values, so the filtered result
+    // is fine even grain instead of blotches. Deterministic: the same size gives the same tile.
+    constexpr uint32_t BlueNoiseSize = 64;
+    std::vector<float> blueNoiseTile(uint32_t size);
 
     // CRT beam simulator
 

@@ -99,6 +99,7 @@ namespace RT64 {
         traceBuilder.addStructuredBuffer(9);
         traceBuilder.addStructuredBuffer(10);
         traceBuilder.addStructuredBuffer(11);
+        traceBuilder.addStructuredBuffer(12);
         traceBuilder.end();
         traceSet = traceBuilder.create(device);
 
@@ -154,6 +155,13 @@ namespace RT64 {
         }
 
         paramsBuffer = device->createBuffer(RenderBufferDesc::UploadBuffer(alignUp(sizeof(interop::WcwRtParams), 256), RenderBufferFlag::CONSTANT));
+
+        static_assert(WcwLogic::BlueNoiseSize == WCW_RT_BLUE_NOISE_SIZE, "the trace shader's blue noise tile size");
+        const std::vector<float> blueNoise = WcwLogic::blueNoiseTile(WcwLogic::BlueNoiseSize);
+        blueNoiseBuffer = device->createBuffer(RenderBufferDesc::UploadBuffer(blueNoise.size() * sizeof(float), RenderBufferFlag::STORAGE));
+        void *blueNoiseBytes = blueNoiseBuffer->map();
+        memcpy(blueNoiseBytes, blueNoise.data(), blueNoise.size() * sizeof(float));
+        blueNoiseBuffer->unmap();
     }
 
     void WcwRaytracer::beginWorkload(uint64_t presentId) {
@@ -945,6 +953,8 @@ namespace RT64 {
         params.aoSplit = (envFloat(getenv("WCW_RT_AO_SPLIT"), 0.0f) != 0.0f) ? 1u : 0u;
         params.filterRadius = uint32_t(std::clamp(envFloat(getenv("WCW_RT_FILTER_RADIUS"), 2.0f), 1.0f, 4.0f));
         params.aoCharacterGain = std::max(envFloat(getenv("WCW_RT_AO_GAIN_CHAR"), ao.characterGain), 0.0f);
+        params.noiseMode = (envFloat(getenv("WCW_RT_NOISE"), 1.0f) != 0.0f) ? 1u : 0u;
+        params.noiseSplit = (envFloat(getenv("WCW_RT_NOISE_SPLIT"), 0.0f) != 0.0f) ? 1u : 0u;
         {
             static const uint64_t aoCyclePeriodMs = uint64_t(std::max(envFloat(getenv("WCW_RT_AO_CYCLE"), 0.0f), 0.0f) * 1000.0f);
             const uint64_t unixMs = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
@@ -1010,6 +1020,8 @@ namespace RT64 {
         traceSet->setBuffer(9, (texCoordBuffer != nullptr) ? texCoordBuffer : meshTilesBuffer.get(), 0, &float2View);
         traceSet->setBuffer(10, meshTilesBuffer.get(), meshTilesBufferSize, &uintView);
         traceSet->setBuffer(11, (worldNormBuffer != nullptr) ? worldNormBuffer : worldPosBuffer, (worldNormBuffer != nullptr) ? worldNormSize : worldPosSize, &float4View);
+        const RenderBufferStructuredView floatView(sizeof(float));
+        traceSet->setBuffer(12, blueNoiseBuffer.get(), WcwLogic::BlueNoiseSize * WcwLogic::BlueNoiseSize * sizeof(float), &floatView);
         compositeSet->setTexture(0, slot.output.get(), RenderTextureLayout::SHADER_READ);
 
         // Trace.
