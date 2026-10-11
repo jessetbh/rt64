@@ -115,6 +115,14 @@ namespace interop {
         float aoCharacterGain;
         // 1 while WCW_RT_AO_CYCLE has AO switched off (full-screen on/off comparisons over time).
         uint aoCycleOff;
+        // [wcw rt] Outside darkness (the venue preset's outsideDarkness / outsideEdge; WcwLogic::outsideDarknessFactor):
+        // world surfaces beyond receiverRadius darken by up to outsideDarkness over outsideEdge units, wrestlers never.
+        // darkenMisses: ray misses (background, crowd sprites) darken too, on the first traced pass of a target per
+        // present only, so later passes over the same image don't darken it again.
+        float outsideDarkness;
+        float outsideEdge;
+        uint darkenMisses;
+        float outsidePadding;
     };
 
     struct WcwRtCompositeCB {

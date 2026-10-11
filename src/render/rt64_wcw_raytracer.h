@@ -231,6 +231,8 @@ namespace RT64 {
         // Forced preset: -2 none (detection), -1 "default", >= 0 a venue.
         int venueOverride = -2;
         bool presetsEdited = false;
+        // Outside darkness: per color target, which traced pass of the frame darkens the misses.
+        std::unordered_map<const RenderTarget *, WcwLogic::MissDarkeningPass> missDarkening;
         std::string editorMessage;
         char editorNewVenueName[64] = {};
         void applyPresetFile();

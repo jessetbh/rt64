@@ -29,7 +29,9 @@ namespace RT64::WcwLogic {
         FieldGlows = 1u << 9,
         FieldAnchor = 1u << 10,
         FieldShadow = 1u << 11,
-        FieldCharacterShadow = 1u << 12
+        FieldCharacterShadow = 1u << 12,
+        FieldOutsideDarkness = 1u << 13,
+        FieldOutsideEdge = 1u << 14
     };
 
     // One light preset: "default", "room" or a venue.
@@ -58,6 +60,11 @@ namespace RT64::WcwLogic {
         bool anchorScene = false;
         float shadow = 0.6f;
         float characterShadow = 0.35f;
+        // "outsideDarkness" (0..1): how much world geometry beyond the receiver radius (the arena, the crowd) and
+        // the background are darkened, so the ring sits in a pool of light; ramps up over "outsideEdge" world units
+        // past the radius. Wrestlers are never darkened. 0 = off (the arena stays as the game draws it).
+        float outsideDarkness = 0.0f;
+        float outsideEdge = 400.0f;
         // PresetField bits of the fields this preset sets itself (read from the file, or edited).
         uint32_t setFields = 0;
     };
@@ -106,6 +113,27 @@ namespace RT64::WcwLogic {
 
     // Match textures for a new venue made from the current scene: the stable world textures (hash, max triangles)
     // that no existing venue lists, largest first, at most maxCount.
+    // How much a world surface at receiverDistance (XZ distance from the lights' center) keeps of its brightness with
+    // outside darkness: 1 inside the radius, easing (smoothstep) to 1 - darkness at radius + edge and beyond.
+    // Characters (wrestlers) always keep 1. The trace shader (WcwRtTraceCS) mirrors this.
+    float outsideDarknessFactor(float receiverDistance, float radius, float edge, float darkness, bool character);
+
+    // Which traced pass of a frame darkens the ray misses (outside darkness), for one color target. AKI frames are
+    // several passes into one image; misses must darken once, on the arena pass (the one that traced the most
+    // meshes), after the crowd is drawn and before the wrestlers and HUD. Darkening on the first pass instead left
+    // the crowd lit (it is drawn by a later pass). The choice is last frame's arena pass: the structure is stable.
+    class MissDarkeningPass {
+    public:
+        // Called once per traced pass; true for the pass that darkens the misses this frame.
+        bool darkenThisPass(uint64_t presentId, uint32_t passIndex, size_t meshCount);
+
+    private:
+        uint64_t present = UINT64_MAX;
+        uint32_t chosenPass = UINT32_MAX;
+        uint32_t bestPass = UINT32_MAX;
+        size_t bestMeshes = 0;
+    };
+
     std::vector<uint64_t> newVenueMatch(const std::vector<std::pair<uint64_t, uint32_t>> &stableTextures,
         const std::vector<LightPreset> &venues, size_t maxCount = 15);
 };

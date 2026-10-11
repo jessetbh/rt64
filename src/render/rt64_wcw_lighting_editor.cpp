@@ -254,6 +254,12 @@ namespace RT64 {
                 changed |= edited(ImGui::DragFloat((std::string("Receiver radius") + fieldMark(p, WcwLogic::FieldRadius, isDefault)).c_str(), &p.radius, 10.0f, 0.0f, 20000.0f), p, WcwLogic::FieldRadius);
             }
 
+            if (!isRoom) {
+                ImGui::TextDisabled("Outside darkness: dims the arena and crowd beyond the receiver radius (wrestlers stay lit).");
+                changed |= edited(ImGui::SliderFloat((std::string("Outside darkness") + fieldMark(p, WcwLogic::FieldOutsideDarkness, isDefault)).c_str(), &p.outsideDarkness, 0.0f, 1.0f), p, WcwLogic::FieldOutsideDarkness);
+                changed |= edited(ImGui::DragFloat((std::string("Darkness edge") + fieldMark(p, WcwLogic::FieldOutsideEdge, isDefault)).c_str(), &p.outsideEdge, 10.0f, 0.0f, 5000.0f), p, WcwLogic::FieldOutsideEdge);
+            }
+
             changed |= edited(ImGui::DragFloat((std::string("Clearance") + fieldMark(p, WcwLogic::FieldClearance, isDefault)).c_str(), &p.clearance, 1.0f, 0.0f, 1000.0f), p, WcwLogic::FieldClearance);
             changed |= edited(ImGui::DragFloat((std::string("Falloff") + fieldMark(p, WcwLogic::FieldFalloff, isDefault)).c_str(), &p.falloff, 5.0f, 0.0f, 10000.0f), p, WcwLogic::FieldFalloff);
             if (!isRoom) {

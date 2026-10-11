@@ -19,7 +19,7 @@ namespace RT64::WcwLogic {
             { "center", FieldCenter }, { "spread", FieldSpread }, { "fills", FieldFills }, { "keyWeight", FieldKeyWeight },
             { "lights", FieldLights }, { "size", FieldSize }, { "radius", FieldRadius }, { "clearance", FieldClearance },
             { "falloff", FieldFalloff }, { "glows", FieldGlows }, { "anchor", FieldAnchor }, { "shadow", FieldShadow },
-            { "characterShadow", FieldCharacterShadow }
+            { "characterShadow", FieldCharacterShadow }, { "outsideDarkness", FieldOutsideDarkness }, { "outsideEdge", FieldOutsideEdge }
         };
 
         uint32_t fields = 0;
@@ -64,6 +64,8 @@ namespace RT64::WcwLogic {
 
         p.shadow = j.value("shadow", p.shadow);
         p.characterShadow = j.value("characterShadow", p.characterShadow);
+        p.outsideDarkness = std::clamp(j.value("outsideDarkness", p.outsideDarkness), 0.0f, 1.0f);
+        p.outsideEdge = std::max(j.value("outsideEdge", p.outsideEdge), 0.0f);
         p.anchorScene = (j.value("anchor", std::string(p.anchorScene ? "scene" : "world")) == "scene");
         if (j.contains("lights")) {
             p.lights.clear();
@@ -175,6 +177,8 @@ namespace RT64::WcwLogic {
         field("characterShadow", FieldCharacterShadow, p.characterShadow, base.characterShadow);
         field("clearance", FieldClearance, p.clearance, base.clearance);
         field("falloff", FieldFalloff, p.falloff, base.falloff);
+        field("outsideDarkness", FieldOutsideDarkness, p.outsideDarkness, base.outsideDarkness);
+        field("outsideEdge", FieldOutsideEdge, p.outsideEdge, base.outsideEdge);
         if (wanted(FieldGlows, p.glows != base.glows)) {
             Json g = Json::array();
             for (const auto &glow : p.glows) {
@@ -233,6 +237,8 @@ namespace RT64::WcwLogic {
         if (!(s & FieldAnchor)) { p.anchorScene = d.anchorScene; }
         if (!(s & FieldShadow)) { p.shadow = d.shadow; }
         if (!(s & FieldCharacterShadow)) { p.characterShadow = d.characterShadow; }
+        if (!(s & FieldOutsideDarkness)) { p.outsideDarkness = d.outsideDarkness; }
+        if (!(s & FieldOutsideEdge)) { p.outsideEdge = d.outsideEdge; }
     }
 
     void inheritDefault(LightPresetFile &file) {
@@ -292,6 +298,36 @@ namespace RT64::WcwLogic {
         }
 
         return best;
+    }
+
+    float outsideDarknessFactor(float receiverDistance, float radius, float edge, float darkness, bool character) {
+        if (character || (darkness <= 0.0f) || (receiverDistance <= radius)) {
+            return 1.0f;
+        }
+
+        float t = 1.0f;
+        if (edge > 0.0f) {
+            t = std::clamp((receiverDistance - radius) / edge, 0.0f, 1.0f);
+            t = t * t * (3.0f - 2.0f * t);
+        }
+
+        return 1.0f - std::min(darkness, 1.0f) * t;
+    }
+
+    bool MissDarkeningPass::darkenThisPass(uint64_t presentId, uint32_t passIndex, size_t meshCount) {
+        if (presentId != present) {
+            chosenPass = bestPass;
+            present = presentId;
+            bestPass = UINT32_MAX;
+            bestMeshes = 0;
+        }
+
+        if ((bestPass == UINT32_MAX) || (meshCount > bestMeshes)) {
+            bestPass = passIndex;
+            bestMeshes = meshCount;
+        }
+
+        return passIndex == chosenPass;
     }
 
     std::vector<uint64_t> newVenueMatch(const std::vector<std::pair<uint64_t, uint32_t>> &stableTextures,

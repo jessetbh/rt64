@@ -903,9 +903,29 @@ namespace RT64 {
         }
         params.traceScale = float(traceWidth) / float(outputWidth);
 
+        // [wcw rt] Outside darkness (the preset's outsideDarkness; WCW_RT_DARKNESS overrides): the arena and crowd
+        // beyond the receiver radius fall into shadow. Misses (the crowd and background, never in the traced scene)
+        // darken once per frame, on the arena pass (WcwLogic::MissDarkeningPass).
+        const float outsideDarkness = std::clamp(envFloat(getenv("WCW_RT_DARKNESS"), preset.outsideDarkness), 0.0f, 1.0f);
+        params.outsideDarkness = outsideDarkness;
+        params.outsideEdge = std::max(envFloat(getenv("WCW_RT_DARKNESS_EDGE"), preset.outsideEdge), 0.0f);
+        params.outsidePadding = 0.0f;
+        const bool darkenMisses = missDarkening[colorTarget].darkenThisPass(lastPresentId, workloadInFrame, meshes.size());
+        params.darkenMisses = ((outsideDarkness > 0.0f) && darkenMisses) ? 1u : 0u;
+
+        {
+            static const bool darknessLog = getenv("WCW_RT_DARKNESS_LOG") != nullptr;
+            static uint32_t darknessLogCount = 0;
+            if (darknessLog && ((darknessLogCount++ % 97) < 6)) {
+                fprintf(stderr, "[wcw rt darkness] present %llu workload %u target %p %ux%u darkness %.2f misses %u meshes %zu preset %s\n",
+                    (unsigned long long)lastPresentId, workloadInFrame, (void *)colorTarget, colorTarget->width, colorTarget->height,
+                    outsideDarkness, params.darkenMisses, meshes.size(), preset.name.c_str());
+            }
+        }
+
         // Trace only this workload's screen footprint (plus a margin for the bilinear upsample
-        // and the resolve's 3x3 neighborhood).
-        if (boundsFullScreen) {
+        // and the resolve's 3x3 neighborhood); the whole screen with outside darkness.
+        if (boundsFullScreen || (outsideDarkness > 0.0f)) {
             traceRect[0] = traceRect[1] = 0;
             traceRect[2] = traceWidth;
             traceRect[3] = traceHeight;

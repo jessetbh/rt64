@@ -24,8 +24,10 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
 
     const float2 current = gCurrent[pixel];
     if (current.y <= 0.0f) {
+        // No hit: the trace's factor for the background (1, or outside darkness), stored at half scale.
         gHistoryOut[pixel] = 1.0f;
-        gOutput[pixel] = float4(0.5f, 0.5f, 0.5f, 0.0f);
+        const float missFactor = 0.5f * current.x;
+        gOutput[pixel] = float4(missFactor, missFactor, missFactor, 0.0f);
         return;
     }
 

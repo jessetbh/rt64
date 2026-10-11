@@ -112,7 +112,9 @@ bool resolvedMode() {
 
 void writeNoHit(uint2 pixel) {
     if (resolvedMode()) {
-        gCurrent[pixel] = float2(1.0f, 0.0f);
+        // Background: darkened with outside darkness (first traced pass only; see darkenMisses).
+        const float missFactor = (gParams.darkenMisses != 0) ? (1.0f - saturate(gParams.outsideDarkness)) : 1.0f;
+        gCurrent[pixel] = float2(missFactor, 0.0f);
     }
     else {
         gOutput[pixel] = float4(1.0f, 1.0f, 1.0f, 0.0f);
@@ -333,7 +335,17 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
     if (resolvedMode() && (gParams.receiverRadius > 0.0f)) {
         const float receiverDist = length(hitPos.xz - gParams.lightPosition.xz);
         if (receiverDist >= gParams.receiverRadius) {
-            gCurrent[pixel] = float2(1.0f + glowLight(hitPos, normal), hitT);
+            // Outside darkness (mirrors WcwLogic::outsideDarknessFactor): the arena and crowd fall into shadow,
+            // wrestlers don't; glows still brighten what they reach.
+            float outside = 1.0f;
+            const bool outsideCharacter = (gMeshIndexStarts[primary.CommittedGeometryIndex()] & WCW_RT_MESH_CHARACTER) != 0;
+            if (!outsideCharacter && (gParams.outsideDarkness > 0.0f)) {
+                float t = (gParams.outsideEdge > 0.0f) ? saturate((receiverDist - gParams.receiverRadius) / gParams.outsideEdge) : 1.0f;
+                t = t * t * (3.0f - 2.0f * t);
+                outside = 1.0f - saturate(gParams.outsideDarkness) * t;
+            }
+
+            gCurrent[pixel] = float2(outside * (1.0f + glowLight(hitPos, normal)), hitT);
             return;
         }
 
