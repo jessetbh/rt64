@@ -107,6 +107,24 @@ namespace RT64::WcwLogic {
 
     DenoiseSettings denoiseSettings();
 
+    // Wrestler sheen: highlights and backlight
+
+    // TV wrestling is lit for sheen: skin, oil and leather catch the arena lights, and the lights rim the edges of
+    // the wrestlers that face them, outlining them against the dark crowd. The ray tracer adds both to wrestlers (character draws) from the same
+    // lights and shadow rays as the shadows, so a blocked light gives no highlight. Values brighten the shadow
+    // factor (which goes up to 2): specular is the peak highlight of a fully lit pixel, rim the peak outline.
+    struct SheenSettings {
+        float specular = 0.0f;
+        // Blinn-Phong exponent: higher is a tighter, glossier highlight.
+        float shininess = 1.0f;
+        float rim = 0.0f;
+        // How quickly the outline fades from the silhouette inward (higher is thinner).
+        float rimPower = 1.0f;
+    };
+
+    // The same at every quality level (no extra rays); RT off has no sheen.
+    SheenSettings sheenSettings();
+
     // Colored light
 
     // A preset light's RGB scaled to unit luminance (Rec. 709 weights), so a color tints the light without changing

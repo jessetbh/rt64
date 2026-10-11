@@ -408,6 +408,7 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
     const uint lightCount = min(gParams.lightListCount, WCW_RT_MAX_LIGHTS);
     float lightWeights[WCW_RT_MAX_LIGHTS];
     float weightSum = 0.0f;
+    float weightMax = 0.0f;
     for (uint w = 0; w < lightCount; w++) {
         float lw = gParams.lights[w].w;
         if (gParams.lightFalloff > 0.0f) {
@@ -417,6 +418,7 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
 
         lightWeights[w] = lw;
         weightSum += lw;
+        weightMax = max(weightMax, lw);
     }
 
     // Smooth shadows on lit draws (wrestlers): facing from the smooth normal, rays from the lifted hit point.
@@ -426,6 +428,13 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
 
     // Light reaching the pixel, in the lights' colors (white lights: the visible fraction of the total weight).
     float3 lit = float3(0.0f, 0.0f, 0.0f);
+    // Wrestler sheen: highlights and backlight from the lights that reach the pixel (no extra rays).
+    const bool characterReceiver = (gMeshIndexStarts[primary.CommittedGeometryIndex()] & WCW_RT_MESH_CHARACTER) != 0;
+    const bool sheenOn = characterReceiver && ((gParams.sheenSpecular > 0.0f) || (gParams.sheenRim > 0.0f)) &&
+        !((gParams.sheenSplit != 0) && (pixel.x < (gParams.resolution.x / 2)));
+    const float3 viewDir = -ray.Direction;
+    const float rimEdge = pow(1.0f - saturate(dot(shadeNormal, viewDir)), max(gParams.sheenRimPower, 1.0f));
+    float3 sheen = float3(0.0f, 0.0f, 0.0f);
     int occluderId = -1;
     // Heavier lights cast proportionally darker shadows, so their sampling noise shows more:
     // each light gets samples in proportion to its preset weight (key light 2 -> twice the rays).
@@ -452,6 +461,21 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
         // Just past the terminator the vertex lighting is already dark too: the shadow fades in over terminatorFade.
         const float shadowShare = smoothShadow ? smoothstep(0.0f, max(gParams.terminatorFade, 1e-4f), facing) : 1.0f;
 
+        // This sample's highlight and backlight, added below in proportion to how much of it gets through.
+        float3 sampleSheen = float3(0.0f, 0.0f, 0.0f);
+        if (sheenOn) {
+            const float3 toLightDir = toLight / max(lightDist, 1e-6f);
+            const float3 halfway = normalize(toLightDir + viewDir);
+            const float highlight = pow(saturate(dot(shadeNormal, halfway)), max(gParams.sheenShininess, 1.0f)) * facing;
+            // The outline facing a light: overhead TV lights rim the shoulders and heads as seen from the hard cam.
+            const float backlight = rimEdge * facing;
+            // Each light's sheen at its own strength relative to the strongest light (not its share of the total):
+            // a highlight from one light isn't dimmer because other lights exist.
+            const float3 sheenColor = whiteLight(pixel) ? float3(1.0f, 1.0f, 1.0f) : gParams.lightColors[l].rgb;
+            const float sheenWeight = lightWeights[l] / max(weightMax, 1e-6f) / float(samples);
+            sampleSheen = sheenColor * sheenWeight * (gParams.sheenSpecular * highlight + gParams.sheenRim * backlight);
+        }
+
         RayDesc shadowRay;
         shadowRay.Origin = shadowStart + normal * 0.5f;
         shadowRay.Direction = toLight / lightDist;
@@ -459,6 +483,7 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
         shadowRay.TMax = lightDist - gParams.lightClearance;
         if (shadowRay.TMax <= shadowRay.TMin) {
             lit += weight;
+            sheen += sampleSheen;
             continue;
         }
 
@@ -473,9 +498,11 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
         if (shadow.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
             occluderId = int(shadow.CommittedGeometryIndex());
             lit += weight * (1.0f - shadowShare);
+            sheen += sampleSheen * (1.0f - shadowShare);
         }
         else {
             lit += weight;
+            sheen += sampleSheen;
         }
     }
 
@@ -490,10 +517,15 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
         return;
     }
 
-    const bool characterReceiver = (gMeshIndexStarts[primary.CommittedGeometryIndex()] & WCW_RT_MESH_CHARACTER) != 0;
     const float strength = characterReceiver ? gParams.characterShadowStrength : gParams.shadowStrength;
     // Unlit share (1 - strength) plus the light that arrives, so white lights give 1 - strength * (1 - visible).
     float3 factor = (1.0f - strength) + strength * lit;
+    if (gParams.mode == WCW_RT_MODE_SHEEN_RAW) {
+        gOutput[pixel] = float4(sheen, 1.0f);
+        return;
+    }
+
+    factor += sheen;
     if (gParams.mode == WCW_RT_MODE_SHADOW_RAW) {
         gOutput[pixel] = float4(factor, 1.0f);
         return;
