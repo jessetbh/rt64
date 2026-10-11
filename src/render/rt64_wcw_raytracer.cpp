@@ -667,6 +667,7 @@ namespace RT64 {
 
         slot.valid = true;
         slot.builtWorkload = workloadCounter;
+        slot.builtFrame = frameCounter;
         slot.meshCount = uint32_t(meshes.size());
         for (uint32_t i = 0; i < 3; i++) {
             slot.boundsMin[i] = worldMin[i];
@@ -688,12 +689,12 @@ namespace RT64 {
 
         // Top level: this workload's geometry (mask 0x1: primary and shadow rays) plus the other
         // scenes built recently (mask 0x2: shadow rays only). Scenes the game stopped drawing
-        // age out after a few workloads.
+        // age out after a few game frames.
         instances.clear();
         instances.emplace_back(RenderBufferReference(slot.blasBuffer.get()), 0, 0x1, 0, true, RenderAffineTransform());
         for (uint32_t s = 0; s < MaxSlots; s++) {
             const Slot &other = slots[s];
-            if ((s != currentSlot) && other.valid && ((workloadCounter - other.builtWorkload) <= StaleWorkloads)) {
+            if ((s != currentSlot) && other.valid && ((frameCounter - other.builtFrame) <= StaleFrames)) {
                 instances.emplace_back(RenderBufferReference(other.blasBuffer.get()), s + 1, 0x2, 0, true, RenderAffineTransform());
             }
         }
