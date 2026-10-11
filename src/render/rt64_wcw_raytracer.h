@@ -80,10 +80,7 @@ namespace RT64 {
         // bounds), not the workload's position within the present: the game's workload cycle
         // drifts against presents, so positions would swap scenes from frame to frame.
         static const uint32_t MaxSlots = 8;
-        // Other scenes stay shadow casters for this many game frames after their last build. Counted in game
-        // frames, not workloads: frame interpolation renders every workload once per displayed frame (4 times
-        // per game frame at 120 Hz), which aged the wrestlers' scene out before the floor's pass used it.
-        static const uint64_t StaleFrames = 2;
+        // How long other scenes stay shadow casters: WcwLogic::shadowCasterFresh (common/rt64_wcw_logic.h).
         struct Slot {
             std::unique_ptr<RenderBuffer> blasBuffer;
             std::unique_ptr<RenderAccelerationStructure> blas;

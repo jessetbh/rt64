@@ -4,6 +4,8 @@
 
 #include "rt64_wcw_raytracer.h"
 
+#include "common/rt64_wcw_logic.h"
+
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
@@ -694,7 +696,7 @@ namespace RT64 {
         instances.emplace_back(RenderBufferReference(slot.blasBuffer.get()), 0, 0x1, 0, true, RenderAffineTransform());
         for (uint32_t s = 0; s < MaxSlots; s++) {
             const Slot &other = slots[s];
-            if ((s != currentSlot) && other.valid && ((frameCounter - other.builtFrame) <= StaleFrames)) {
+            if ((s != currentSlot) && other.valid && WcwLogic::shadowCasterFresh(frameCounter, other.builtFrame)) {
                 instances.emplace_back(RenderBufferReference(other.blasBuffer.get()), s + 1, 0x2, 0, true, RenderAffineTransform());
             }
         }

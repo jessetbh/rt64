@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <mutex>
 
+#include "common/rt64_wcw_logic.h"
 #include "rt64_descriptor_sets.h"
 #include "rt64_hdr_output.h"
 #include "rt64_render_worker.h"
@@ -97,7 +98,7 @@ namespace RT64 {
     static const char *BeamSimulatorPreset = "aki-beam";
 
     // The simulated CRT refreshes at the N64's 60 Hz.
-    static const double BeamCrtRate = 60.0;
+    static const double BeamCrtRate = WcwLogic::BeamCrtRate;
 
     // Swap chain textures don't record their VkFormat (plume only sets it for textures it allocates).
     static VkFormat vulkanImageFormat(const VulkanTexture *texture) {
@@ -509,25 +510,16 @@ namespace RT64 {
 
         // Display refreshes per simulated CRT refresh, or 0 when the display can't run the beam simulator.
         double computeBeamRatio() {
+            // [wcw hfr] The rules (CRT rate with frame interpolation, minimum refresh rate) are in WcwLogic::decideBeam.
+            const WcwLogic::BeamDecision decision = WcwLogic::decideBeam(displayRefreshRate, displayVsync, displayInterpolating, displayContentRate);
+            const double crtRate = decision.crtRate;
+            const double ratio = decision.ratio;
             std::string reason;
-            // [wcw hfr] With frame interpolation above 60 fps (e.g. 120), the simulated CRT refreshes at that
-            // rate when the display has at least two refreshes per frame, so every interpolated frame gets a
-            // scan of its own. Otherwise it stays at 60 Hz and each scan shows the latest frame.
-            double crtRate = BeamCrtRate;
-            if (displayInterpolating && (double(displayContentRate) > BeamCrtRate) && ((double(displayRefreshRate) / double(displayContentRate)) >= 1.95)) {
-                crtRate = double(displayContentRate);
-            }
-
-            double ratio = double(displayRefreshRate) / crtRate;
-            if (!displayVsync) {
+            if (decision.unavailable == WcwLogic::BeamUnavailable::NeedsVSync) {
                 reason = "it needs V-Sync";
             }
-            else if (ratio < 1.95) {
+            else if (decision.unavailable == WcwLogic::BeamUnavailable::RefreshRateTooLow) {
                 reason = "the display refresh rate (" + std::to_string(displayRefreshRate) + " Hz) must be 120 Hz or higher";
-            }
-
-            if (!reason.empty()) {
-                ratio = 0.0;
             }
 
             if (!beamStateLogged || (reason != beamUnavailableReason) || (crtRate != beamCrtRate)) {
