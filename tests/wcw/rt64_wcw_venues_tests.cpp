@@ -162,18 +162,17 @@ TEST_CASE("venues: the best venue needs half its unique textures, later venues w
 }
 
 TEST_CASE("outside darkness: none inside the radius, eases over the edge, full beyond it") {
-    CHECK_NEAR(outsideDarknessFactor(800.0f, 900.0f, 400.0f, 0.8f, false), 1.0f, 1e-6f);
-    CHECK_NEAR(outsideDarknessFactor(900.0f, 900.0f, 400.0f, 0.8f, false), 1.0f, 1e-6f);
-    CHECK_NEAR(outsideDarknessFactor(1100.0f, 900.0f, 400.0f, 0.8f, false), 0.6f, 1e-6f);
-    CHECK_NEAR(outsideDarknessFactor(1300.0f, 900.0f, 400.0f, 0.8f, false), 0.2f, 1e-6f);
-    CHECK_NEAR(outsideDarknessFactor(5000.0f, 900.0f, 400.0f, 0.8f, false), 0.2f, 1e-6f);
+    CHECK_NEAR(outsideDarknessFactor(800.0f, 900.0f, 400.0f, 0.8f), 1.0f, 1e-6f);
+    CHECK_NEAR(outsideDarknessFactor(900.0f, 900.0f, 400.0f, 0.8f), 1.0f, 1e-6f);
+    CHECK_NEAR(outsideDarknessFactor(1100.0f, 900.0f, 400.0f, 0.8f), 0.6f, 1e-6f);
+    CHECK_NEAR(outsideDarknessFactor(1300.0f, 900.0f, 400.0f, 0.8f), 0.2f, 1e-6f);
+    CHECK_NEAR(outsideDarknessFactor(5000.0f, 900.0f, 400.0f, 0.8f), 0.2f, 1e-6f);
     // No edge: a hard cut at the radius.
-    CHECK_NEAR(outsideDarknessFactor(901.0f, 900.0f, 0.0f, 0.5f, false), 0.5f, 1e-6f);
+    CHECK_NEAR(outsideDarknessFactor(901.0f, 900.0f, 0.0f, 0.5f), 0.5f, 1e-6f);
 }
 
-TEST_CASE("outside darkness: wrestlers outside the ring are never darkened, and 0 is off") {
-    CHECK_NEAR(outsideDarknessFactor(3000.0f, 900.0f, 400.0f, 1.0f, true), 1.0f, 1e-6f);
-    CHECK_NEAR(outsideDarknessFactor(3000.0f, 900.0f, 400.0f, 0.0f, false), 1.0f, 1e-6f);
+TEST_CASE("outside darkness: 0 is off") {
+    CHECK_NEAR(outsideDarknessFactor(3000.0f, 900.0f, 400.0f, 0.0f), 1.0f, 1e-6f);
 }
 
 TEST_CASE("outside darkness: set per venue, inherited from default otherwise, and round-trips") {
@@ -197,12 +196,12 @@ TEST_CASE("outside darkness: a miss over the ring mat stays lit, a miss towards 
     // Looking down at the ring center: lands at the center.
     const float atRing[3] = { 0.0f, -0.371391f, 0.928477f };
     CHECK_NEAR(missFloorDistance(eye, atRing, 0.0f, 0.0f, 0.0f), 0.0f, 1.0f);
-    CHECK_NEAR(outsideDarknessFactor(missFloorDistance(eye, atRing, 0.0f, 0.0f, 0.0f), 650.0f, 500.0f, 0.55f, false), 1.0f, 1e-6f);
+    CHECK_NEAR(outsideDarknessFactor(missFloorDistance(eye, atRing, 0.0f, 0.0f, 0.0f), 650.0f, 500.0f, 0.55f), 1.0f, 1e-6f);
     // Level or upward rays (the stands across the arena) never reach the floor: fully dark.
     const float level[3] = { 0.0f, 0.0f, 1.0f };
     const float up[3] = { 0.0f, 0.3f, 0.95f };
-    CHECK_NEAR(outsideDarknessFactor(missFloorDistance(eye, level, 0.0f, 0.0f, 0.0f), 650.0f, 500.0f, 0.55f, false), 0.45f, 1e-6f);
-    CHECK_NEAR(outsideDarknessFactor(missFloorDistance(eye, up, 0.0f, 0.0f, 0.0f), 650.0f, 500.0f, 0.55f, false), 0.45f, 1e-6f);
+    CHECK_NEAR(outsideDarknessFactor(missFloorDistance(eye, level, 0.0f, 0.0f, 0.0f), 650.0f, 500.0f, 0.55f), 0.45f, 1e-6f);
+    CHECK_NEAR(outsideDarknessFactor(missFloorDistance(eye, up, 0.0f, 0.0f, 0.0f), 650.0f, 500.0f, 0.55f), 0.45f, 1e-6f);
     // A shallow downward ray landing beyond the ring and the edge: fully dark.
     const float shallow[3] = { 0.0f, -0.1f, 0.995f };
     CHECK(missFloorDistance(eye, shallow, 0.0f, 0.0f, 0.0f) > 1150.0f);
@@ -412,20 +411,19 @@ TEST_CASE("colored light: adding lights and glows pads the color lists (no own c
 
 // Lit areas: the entrance set keeps its own lighting under outside darkness.
 
-TEST_CASE("lit areas: no darkness inside a lit area, the ring rule elsewhere, wrestlers never darkened") {
+TEST_CASE("lit areas: no darkness inside a lit area, the ring rule elsewhere") {
     const std::vector<std::array<float, 4>> areas = { { 0.0f, 2700.0f, 600.0f, 400.0f } };
     // The entrance set (far from the ring, inside the lit area) keeps its brightness.
-    CHECK_NEAR(outsideDarknessAt(0.0f, 2700.0f, 0.0f, 0.0f, 650.0f, 500.0f, 0.55f, areas, false), 1.0f, 1e-6f);
+    CHECK_NEAR(outsideDarknessAt(0.0f, 2700.0f, 0.0f, 0.0f, 650.0f, 500.0f, 0.55f, areas), 1.0f, 1e-6f);
     // Halfway through the lit area's edge: half way (smoothstep 0.5) into the darkness.
-    CHECK_NEAR(outsideDarknessAt(0.0f, 2700.0f - 800.0f, 0.0f, 0.0f, 650.0f, 500.0f, 0.55f, areas, false), 1.0f - 0.55f * 0.5f, 1e-5f);
+    CHECK_NEAR(outsideDarknessAt(0.0f, 2700.0f - 800.0f, 0.0f, 0.0f, 650.0f, 500.0f, 0.55f, areas), 1.0f - 0.55f * 0.5f, 1e-5f);
     // The stands at the side: full darkness, as without lit areas.
-    CHECK_NEAR(outsideDarknessAt(1800.0f, 0.0f, 0.0f, 0.0f, 650.0f, 500.0f, 0.55f, areas, false), 0.45f, 1e-6f);
-    CHECK_NEAR(outsideDarknessAt(1800.0f, 0.0f, 0.0f, 0.0f, 650.0f, 500.0f, 0.55f, areas, true), 1.0f, 1e-6f);
+    CHECK_NEAR(outsideDarknessAt(1800.0f, 0.0f, 0.0f, 0.0f, 650.0f, 500.0f, 0.55f, areas), 0.45f, 1e-6f);
 }
 
 TEST_CASE("lit areas: without any, the darkness matches outsideDarknessFactor") {
     for (float d = 0.0f; d < 2000.0f; d += 37.0f) {
-        CHECK_NEAR(outsideDarknessAt(d, 0.0f, 0.0f, 0.0f, 650.0f, 500.0f, 0.6f, {}, false), outsideDarknessFactor(d, 650.0f, 500.0f, 0.6f, false), 1e-6f);
+        CHECK_NEAR(outsideDarknessAt(d, 0.0f, 0.0f, 0.0f, 650.0f, 500.0f, 0.6f, {}), outsideDarknessFactor(d, 650.0f, 500.0f, 0.6f), 1e-6f);
     }
 }
 

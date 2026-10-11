@@ -450,10 +450,9 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
     if (resolvedMode() && (gParams.receiverRadius > 0.0f)) {
         const float receiverDist = length(hitPos.xz - gParams.lightPosition.xz);
         if (receiverDist >= gParams.receiverRadius) {
-            // Outside darkness (mirrors WcwLogic::outsideDarknessFactor): the arena and crowd fall into shadow,
-            // wrestlers don't; glows still brighten what they reach.
-            const bool outsideCharacter = (gMeshIndexStarts[primary.CommittedGeometryIndex()] & WCW_RT_MESH_CHARACTER) != 0;
-            const float outside = outsideCharacter ? 1.0f : outsideFactorAt(hitPos.xz);
+            // Outside darkness (mirrors WcwLogic::outsideDarknessAt): the arena, the crowd and wrestlers out there fall into
+            // shadow; glows still brighten what they reach.
+            const float outside = outsideFactorAt(hitPos.xz);
 
             gCurrent[pixel] = float4(outside * (1.0f + glowLight(hitPos, normal, pixel)), hitT);
             gCurrentAo[pixel] = 1.0f;

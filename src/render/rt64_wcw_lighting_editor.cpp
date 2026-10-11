@@ -296,7 +296,7 @@ namespace RT64 {
             }
 
             if (!isRoom) {
-                ImGui::TextDisabled("Outside darkness: dims the arena and crowd beyond the receiver radius (wrestlers stay lit).");
+                ImGui::TextDisabled("Outside darkness: dims everything beyond the receiver radius, wrestlers included.");
                 changed |= edited(ImGui::SliderFloat((std::string("Outside darkness") + fieldMark(p, WcwLogic::FieldOutsideDarkness, isDefault)).c_str(), &p.outsideDarkness, 0.0f, 1.0f), p, WcwLogic::FieldOutsideDarkness);
                 changed |= edited(ImGui::DragFloat((std::string("Darkness edge") + fieldMark(p, WcwLogic::FieldOutsideEdge, isDefault)).c_str(), &p.outsideEdge, 10.0f, 0.0f, 5000.0f), p, WcwLogic::FieldOutsideEdge);
                 ImGui::TextDisabled("Lit areas%s: places with their own lighting (the entrance set) stay out of the darkness.", fieldMark(p, WcwLogic::FieldLitAreas, isDefault));

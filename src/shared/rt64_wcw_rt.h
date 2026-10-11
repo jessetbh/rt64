@@ -152,7 +152,7 @@ namespace interop {
         // WCW_RT_COLOR_SPLIT=1: white lights and glows on the left half of the screen (same-moment comparisons).
         uint colorSplit;
         // [wcw rt] Outside darkness (the venue preset's outsideDarkness / outsideEdge; WcwLogic::outsideDarknessFactor):
-        // world surfaces beyond receiverRadius darken by up to outsideDarkness over outsideEdge units, wrestlers never.
+        // surfaces beyond receiverRadius (wrestlers too) darken by up to outsideDarkness over outsideEdge units.
         // darkenMisses: ray misses (background, crowd sprites) darken too, on the arena pass of a target only
         // (WcwLogic::MissDarkening), so other passes over the same image don't darken it again.
         float outsideDarkness;

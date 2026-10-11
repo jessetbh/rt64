@@ -400,8 +400,8 @@ namespace RT64::WcwLogic {
         return best;
     }
 
-    float outsideDarknessFactor(float receiverDistance, float radius, float edge, float darkness, bool character) {
-        if (character || (darkness <= 0.0f) || (receiverDistance <= radius)) {
+    float outsideDarknessFactor(float receiverDistance, float radius, float edge, float darkness) {
+        if ((darkness <= 0.0f) || (receiverDistance <= radius)) {
             return 1.0f;
         }
 
@@ -428,9 +428,9 @@ namespace RT64::WcwLogic {
     }
 
     float outsideDarknessAt(float x, float z, float centerX, float centerZ, float radius, float edge, float darkness,
-        const std::vector<std::array<float, 4>> &litAreas, bool character)
+        const std::vector<std::array<float, 4>> &litAreas)
     {
-        if (character || (darkness <= 0.0f)) {
+        if (darkness <= 0.0f) {
             return 1.0f;
         }
 

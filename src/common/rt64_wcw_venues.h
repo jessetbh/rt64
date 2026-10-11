@@ -87,7 +87,8 @@ namespace RT64::WcwLogic {
         float characterShadow = 0.35f;
         // "outsideDarkness" (0..1): how much world geometry beyond the receiver radius (the arena, the crowd) and
         // the background are darkened, so the ring sits in a pool of light; ramps up over "outsideEdge" world units
-        // past the radius. Wrestlers are never darkened. 0 = off (the arena stays as the game draws it).
+        // past the radius. Wrestlers darken too (an exemption for them made them look spotlit in dim
+        // rooms, so the owner had it removed, 2026-10-11). 0 = off (the arena stays as the game draws it).
         float outsideDarkness = 0.0f;
         float outsideEdge = 400.0f;
         // "litAreas": [[x, z, radius, edge], ...] (offsets from the anchor like lights, at most MaxLitAreas): places with
@@ -155,8 +156,8 @@ namespace RT64::WcwLogic {
     // that no existing venue lists, largest first, at most maxCount.
     // How much a world surface at receiverDistance (XZ distance from the lights' center) keeps of its brightness with
     // outside darkness: 1 inside the radius, easing (smoothstep) to 1 - darkness at radius + edge and beyond.
-    // Characters (wrestlers) always keep 1. The trace shader (WcwRtTraceCS) mirrors this.
-    float outsideDarknessFactor(float receiverDistance, float radius, float edge, float darkness, bool character);
+    // Wrestlers included. The trace shader (WcwRtTraceCS) mirrors this.
+    float outsideDarknessFactor(float receiverDistance, float radius, float edge, float darkness);
 
     // How much of the outside darkness applies at a distance from a lit region: 0 within radius, easing (smoothstep)
     // to 1 at radius + edge and beyond.
@@ -165,7 +166,7 @@ namespace RT64::WcwLogic {
     // outsideDarknessFactor at a point on the floor plane (x, z), with lit areas: the darkness ramp is the smallest of
     // the ring's (distance from center, radius, edge) and each lit area's, so the ring and the lit areas are all lit.
     float outsideDarknessAt(float x, float z, float centerX, float centerZ, float radius, float edge, float darkness,
-        const std::vector<std::array<float, 4>> &litAreas, bool character);
+        const std::vector<std::array<float, 4>> &litAreas);
 
     // Outside darkness for a ray miss: misses carry no position, so the ray is projected onto the arena floor plane
     // (y = floorY) and judged by the XZ distance from the center (centerX, centerZ) where it lands. A miss over the
