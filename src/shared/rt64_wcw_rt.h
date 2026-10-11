@@ -122,7 +122,8 @@ namespace interop {
         float outsideDarkness;
         float outsideEdge;
         uint darkenMisses;
-        float outsidePadding;
+        // Misses are judged where their ray lands on the arena floor plane at this height (WcwLogic::missFloorDistance).
+        float missFloorY;
     };
 
     struct WcwRtCompositeCB {

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 
@@ -312,6 +313,21 @@ namespace RT64::WcwLogic {
         }
 
         return 1.0f - std::min(darkness, 1.0f) * t;
+    }
+
+    float missFloorDistance(const float origin[3], const float direction[3], float floorY, float centerX, float centerZ) {
+        if (direction[1] >= -1e-4f) {
+            return 1e9f;
+        }
+
+        const float t = (floorY - origin[1]) / direction[1];
+        if (t <= 0.0f) {
+            return 1e9f;
+        }
+
+        const float dx = origin[0] + direction[0] * t - centerX;
+        const float dz = origin[2] + direction[2] * t - centerZ;
+        return std::sqrt(dx * dx + dz * dz);
     }
 
     bool MissDarkeningPass::darkenThisPass(uint64_t presentId, uint32_t passIndex, size_t meshCount) {

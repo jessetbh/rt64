@@ -124,6 +124,19 @@ namespace RT64 {
         }
 
         const std::lock_guard<std::recursive_mutex> lock(presetsMutex);
+
+        // WCW_RT_EDITOR_SAVE_AT=<seconds> (test hook): presses Save once, that long after the editor first drew, so
+        // scripted runs can check the save round-trip (file written, .bak kept, no reload, venue still detected).
+        {
+            static const double saveAt = getenv("WCW_RT_EDITOR_SAVE_AT") ? atof(getenv("WCW_RT_EDITOR_SAVE_AT")) : -1.0;
+            static const auto firstDraw = std::chrono::steady_clock::now();
+            static bool saved = false;
+            if ((saveAt >= 0.0) && !saved && (std::chrono::duration<double>(std::chrono::steady_clock::now() - firstDraw).count() >= saveAt)) {
+                saved = true;
+                fprintf(stderr, "[wcw rt] lighting editor: test save (WCW_RT_EDITOR_SAVE_AT): %s\n", savePresets() ? "ok" : editorMessage.c_str());
+            }
+        }
+
         if (!active() || !supported) {
             ImGui::TextWrapped("Ray tracing is %s. Turn on Graphics > Ray Tracing (needs D3D12 and DirectX Raytracing) to see the lights.",
                 supported ? "off" : "not supported here");

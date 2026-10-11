@@ -909,7 +909,8 @@ namespace RT64 {
         const float outsideDarkness = std::clamp(envFloat(getenv("WCW_RT_DARKNESS"), preset.outsideDarkness), 0.0f, 1.0f);
         params.outsideDarkness = outsideDarkness;
         params.outsideEdge = std::max(envFloat(getenv("WCW_RT_DARKNESS_EDGE"), preset.outsideEdge), 0.0f);
-        params.outsidePadding = 0.0f;
+        // Misses land on the arena floor: the lowest point of the scene's world geometry.
+        params.missFloorY = sceneBoundsValid ? sceneMin[1] : 0.0f;
         const bool darkenMisses = missDarkening[colorTarget].darkenThisPass(lastPresentId, workloadInFrame, meshes.size());
         params.darkenMisses = ((outsideDarkness > 0.0f) && darkenMisses) ? 1u : 0u;
 

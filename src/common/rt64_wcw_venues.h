@@ -118,6 +118,13 @@ namespace RT64::WcwLogic {
     // Characters (wrestlers) always keep 1. The trace shader (WcwRtTraceCS) mirrors this.
     float outsideDarknessFactor(float receiverDistance, float radius, float edge, float darkness, bool character);
 
+    // Outside darkness for a ray miss: misses carry no position, so the ray is projected onto the arena floor plane
+    // (y = floorY) and judged by the XZ distance from the center (centerX, centerZ) where it lands. A miss over the
+    // ring mat (drawn by another pass, so not in this pass's scene) lands inside the radius and stays lit; a ray
+    // that points up or lands far out (the stands, the crowd) counts as infinitely far. Before this, every miss
+    // darkened and the mat went grey.
+    float missFloorDistance(const float origin[3], const float direction[3], float floorY, float centerX, float centerZ);
+
     // Which traced pass of a frame darkens the ray misses (outside darkness), for one color target. AKI frames are
     // several passes into one image; misses must darken once, on the arena pass (the one that traced the most
     // meshes), after the crowd is drawn and before the wrestlers and HUD. Darkening on the first pass instead left

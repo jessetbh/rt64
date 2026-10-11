@@ -140,6 +140,77 @@ TEST_CASE("venues: the best venue needs half its unique textures, later venues w
     CHECK_EQ(bestVenue(file.venues, [&](uint64_t h) { return both.count(h) > 0; }), 1);
 }
 
+TEST_CASE("outside darkness: none inside the radius, eases over the edge, full beyond it") {
+    CHECK_NEAR(outsideDarknessFactor(800.0f, 900.0f, 400.0f, 0.8f, false), 1.0f, 1e-6f);
+    CHECK_NEAR(outsideDarknessFactor(900.0f, 900.0f, 400.0f, 0.8f, false), 1.0f, 1e-6f);
+    CHECK_NEAR(outsideDarknessFactor(1100.0f, 900.0f, 400.0f, 0.8f, false), 0.6f, 1e-6f);
+    CHECK_NEAR(outsideDarknessFactor(1300.0f, 900.0f, 400.0f, 0.8f, false), 0.2f, 1e-6f);
+    CHECK_NEAR(outsideDarknessFactor(5000.0f, 900.0f, 400.0f, 0.8f, false), 0.2f, 1e-6f);
+    // No edge: a hard cut at the radius.
+    CHECK_NEAR(outsideDarknessFactor(901.0f, 900.0f, 0.0f, 0.5f, false), 0.5f, 1e-6f);
+}
+
+TEST_CASE("outside darkness: wrestlers outside the ring are never darkened, and 0 is off") {
+    CHECK_NEAR(outsideDarknessFactor(3000.0f, 900.0f, 400.0f, 1.0f, true), 1.0f, 1e-6f);
+    CHECK_NEAR(outsideDarknessFactor(3000.0f, 900.0f, 400.0f, 0.0f, false), 1.0f, 1e-6f);
+}
+
+TEST_CASE("outside darkness: set per venue, inherited from default otherwise, and round-trips") {
+    LightPresetFile file = parseLightPresets(SampleFile);
+    CHECK_NEAR(file.venues[1].outsideDarkness, 0.0f, 1e-6f);
+    file.defaultPreset.outsideDarkness = 0.7f;
+    file.defaultPreset.setFields |= FieldOutsideDarkness;
+    file.venues[0].outsideDarkness = 0.3f;
+    file.venues[0].setFields |= FieldOutsideDarkness;
+    inheritDefault(file);
+    CHECK_NEAR(file.venues[1].outsideDarkness, 0.7f, 1e-6f);
+    const LightPresetFile again = parseLightPresets(writeLightPresets(file));
+    CHECK_NEAR(again.venues[0].outsideDarkness, 0.3f, 1e-6f);
+    CHECK_NEAR(again.venues[1].outsideDarkness, 0.7f, 1e-6f);
+    CHECK_NEAR(again.venues[1].outsideEdge, 400.0f, 1e-6f);
+}
+
+TEST_CASE("outside darkness: a miss over the ring mat stays lit, a miss towards the stands darkens (mat went grey)") {
+    // Camera 600 up, 1500 back from the ring center, floor at 0.
+    const float eye[3] = { 0.0f, 600.0f, -1500.0f };
+    // Looking down at the ring center: lands at the center.
+    const float atRing[3] = { 0.0f, -0.371391f, 0.928477f };
+    CHECK_NEAR(missFloorDistance(eye, atRing, 0.0f, 0.0f, 0.0f), 0.0f, 1.0f);
+    CHECK_NEAR(outsideDarknessFactor(missFloorDistance(eye, atRing, 0.0f, 0.0f, 0.0f), 650.0f, 500.0f, 0.55f, false), 1.0f, 1e-6f);
+    // Level or upward rays (the stands across the arena) never reach the floor: fully dark.
+    const float level[3] = { 0.0f, 0.0f, 1.0f };
+    const float up[3] = { 0.0f, 0.3f, 0.95f };
+    CHECK_NEAR(outsideDarknessFactor(missFloorDistance(eye, level, 0.0f, 0.0f, 0.0f), 650.0f, 500.0f, 0.55f, false), 0.45f, 1e-6f);
+    CHECK_NEAR(outsideDarknessFactor(missFloorDistance(eye, up, 0.0f, 0.0f, 0.0f), 650.0f, 500.0f, 0.55f, false), 0.45f, 1e-6f);
+    // A shallow downward ray landing beyond the ring and the edge: fully dark.
+    const float shallow[3] = { 0.0f, -0.1f, 0.995f };
+    CHECK(missFloorDistance(eye, shallow, 0.0f, 0.0f, 0.0f) > 1150.0f);
+}
+
+TEST_CASE("outside darkness: misses darken on last frame's arena pass, not the first pass (crowd stayed lit)") {
+    MissDarkeningPass passes;
+    // Frame 1 (No Mercy shape): passes 0..4 with 4, 8, 9, 76, 3 meshes. No choice yet.
+    const size_t meshes[] = { 4, 8, 9, 76, 3 };
+    for (uint32_t i = 0; i < 5; i++) {
+        CHECK(!passes.darkenThisPass(100, i, meshes[i]));
+    }
+
+    // Frame 2: only the arena pass (3) darkens.
+    for (uint32_t i = 0; i < 5; i++) {
+        CHECK_EQ(passes.darkenThisPass(101, i, meshes[i]), i == 3);
+    }
+}
+
+TEST_CASE("outside darkness: the arena pass follows the scene when it changes") {
+    MissDarkeningPass passes;
+    passes.darkenThisPass(1, 0, 50);
+    passes.darkenThisPass(1, 1, 10);
+    CHECK(passes.darkenThisPass(2, 0, 5));
+    passes.darkenThisPass(2, 1, 60);
+    CHECK(!passes.darkenThisPass(3, 0, 5));
+    CHECK(passes.darkenThisPass(3, 1, 60));
+}
+
 TEST_CASE("venues: a new venue from the scene uses its largest textures no venue lists") {
     const LightPresetFile file = parseLightPresets(SampleFile);
     const std::vector<std::pair<uint64_t, uint32_t>> stable = {
