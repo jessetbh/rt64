@@ -43,12 +43,10 @@ namespace RT64 {
 
     static std::atomic<bool> wcwRtUserEnabled = false;
     static std::atomic<uint32_t> wcwRtUserQuality = 1;
-    static std::atomic<uint32_t> wcwRtUserAo = uint32_t(WcwLogic::AoLevel::Subtle);
 
-    void WcwRaytracer::setUserSettings(bool enabled, uint32_t quality, uint32_t aoLevel) {
+    void WcwRaytracer::setUserSettings(bool enabled, uint32_t quality) {
         wcwRtUserEnabled = enabled;
-        wcwRtUserQuality = std::min(quality, 2u);
-        wcwRtUserAo = std::min(aoLevel, uint32_t(WcwLogic::AoLevel::Strong));
+        wcwRtUserQuality = std::min(quality, uint32_t(WcwLogic::RtQuality::Ultra));
     }
 
     bool WcwRaytracer::active() {
@@ -796,17 +794,12 @@ namespace RT64 {
         // Output texture at the color target's resolution.
         // Quality preset (or env overrides) for this frame.
         const uint32_t quality = userQuality();
-        // Soft, temporally resolved shadows don't need the full internal resolution: the presets
-        // also cap the trace height (Performance 720 lines, Balanced 1080), so 4K+ targets don't
-        // multiply the ray count. WCW_RT_MAX_LINES overrides the cap, WCW_RT_SCALE the whole scale.
-        const float presetLines = envFloat(getenv("WCW_RT_MAX_LINES"), (quality == 0) ? 720.0f : ((quality == 1) ? 1080.0f : 0.0f));
-        float presetScale = (quality >= 2) ? 1.0f : 0.5f;
-        if ((presetLines > 0.0f) && (colorTarget->height > 0)) {
-            presetScale = std::min(presetScale, presetLines / float(colorTarget->height));
-        }
-
-        const float frameScale = std::clamp(envFloat(getenv("WCW_RT_SCALE"), presetScale), 0.1f, 1.0f);
-        const uint32_t presetSamples = (quality == 0) ? 1u : 2u;
+        // The level's trace resolution and ray counts (WcwLogic::rtPreset). WCW_RT_MAX_LINES overrides the line cap,
+        // WCW_RT_SCALE the whole scale.
+        WcwLogic::RtPreset qualityPreset = WcwLogic::rtPreset(quality);
+        qualityPreset.maxLines = envFloat(getenv("WCW_RT_MAX_LINES"), qualityPreset.maxLines);
+        const float frameScale = std::clamp(envFloat(getenv("WCW_RT_SCALE"), WcwLogic::rtTraceScale(qualityPreset, colorTarget->height)), 0.1f, 1.0f);
+        const uint32_t presetSamples = qualityPreset.samplesPerLight;
 
         // Re-enabled after being off: the histories are stale.
         if (!wasActive) {
@@ -941,8 +934,8 @@ namespace RT64 {
         params.prevViewProj = slot.prevViewProj;
         params.historyValid = slot.historyValid ? 1 : 0;
         params.samplesPerLight = std::max(uint32_t(envFloat(getenv("WCW_RT_SAMPLES"), float(presetSamples))), 1u);
-        // Ambient occlusion: the menu level's settings (WcwLogic::aoSettings), each overridable from the environment.
-        const WcwLogic::AoSettings ao = WcwLogic::aoSettings(wcwRtUserAo.load(), quality);
+        // Ambient occlusion: the quality level's look and rays (WcwLogic::aoSettings), each overridable from the environment.
+        const WcwLogic::AoSettings ao = WcwLogic::aoSettings(quality);
         params.aoSamples = uint32_t(envFloat(getenv("WCW_RT_AO_SAMPLES"), float(ao.samples)));
         params.aoRadius = envFloat(getenv("WCW_RT_AO_RADIUS"), ao.radius);
         params.aoStrength = envFloat(getenv("WCW_RT_AO"), ao.strength);
