@@ -21,6 +21,11 @@
 #define WCW_RT_MODE_LIGHT_MAP 8
 // Raw ambient occlusion of this frame in grey, not filtered or composited (tuning the AO's look and noise).
 #define WCW_RT_MODE_AO_RAW 9
+// Raw shadow term before AO and filtering, grey (white = lit).
+#define WCW_RT_MODE_SHADOW_RAW 10
+
+// Side of the blue noise tile the trace shader samples (WcwLogic::BlueNoiseSize; a power of two).
+#define WCW_RT_BLUE_NOISE_SIZE 64
 
 #define WCW_RT_MAX_LIGHTS 8
 #define WCW_RT_MAX_GLOWS 4
@@ -115,10 +120,34 @@ namespace interop {
         float aoCharacterGain;
         // 1 while WCW_RT_AO_CYCLE has AO switched off (full-screen on/off comparisons over time).
         uint aoCycleOff;
+        // Random samples (shadow jitter, AO directions): 1 = blue noise from the WCW_RT_BLUE_NOISE_SIZE tile, 0 = the
+        // old interleaved gradient noise (WCW_RT_NOISE=0).
+        uint noiseMode;
+        // WCW_RT_NOISE_SPLIT=1: the old noise on the left half of the screen (same-moment comparisons).
+        uint noiseSplit;
+        // Shadows on lit (smooth-shaded) draws, i.e. wrestlers: 1 = which side faces a light comes from the interpolated
+        // vertex normals and shadow rays start from the hit lifted onto the vertices' tangent planes, so the edge where
+        // light turns to shadow follows the smooth surface instead of the facets (WCW_RT_SHADOW_SMOOTH=0 turns it off).
+        uint shadowSmooth;
+        // WCW_RT_SHADOW_SMOOTH_SPLIT=1: flat shadows on the left half of the screen (same-moment comparisons).
+        uint shadowSmoothSplit;
+        // With shadowSmooth: a light's ray-traced shadow fades in over this much of the facing cosine past the
+        // terminator, where the game's vertex lighting already darkens the surface (WCW_RT_TERMINATOR_FADE).
+        float terminatorFade;
+        // Resolve: shadow and AO are filtered and accumulated separately (WcwLogic::denoiseSettings): tent filter
+        // radii in trace pixels and the weight of this frame against the history, per term.
+        uint shadowFilterRadius;
+        uint aoFilterRadius;
+        float shadowTemporalAlpha;
+        float aoTemporalAlpha;
+        // WCW_RT_DENOISE_SPLIT=1: the old combined cleanup (shadow * AO, filterRadius, temporalAlpha) on the left half.
+        uint denoiseSplit;
+        // End of the traced rect (exclusive, trace pixels): the resolve filter doesn't read past it.
+        uint2 traceEnd;
         // [wcw rt] Outside darkness (the venue preset's outsideDarkness / outsideEdge; WcwLogic::outsideDarknessFactor):
         // world surfaces beyond receiverRadius darken by up to outsideDarkness over outsideEdge units, wrestlers never.
-        // darkenMisses: ray misses (background, crowd sprites) darken too, on the first traced pass of a target per
-        // present only, so later passes over the same image don't darken it again.
+        // darkenMisses: ray misses (background, crowd sprites) darken too, on the arena pass of a target only
+        // (WcwLogic::MissDarkening), so other passes over the same image don't darken it again.
         float outsideDarkness;
         float outsideEdge;
         uint darkenMisses;

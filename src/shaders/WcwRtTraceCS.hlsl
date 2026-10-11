@@ -18,14 +18,17 @@ StructuredBuffer<float4> gWorldPos : register(t2);
 StructuredBuffer<uint> gFaceIndices : register(t3);
 StructuredBuffer<uint> gMeshIndexStarts : register(t4);
 RWTexture2D<float4> gOutput : register(u5);
-// Shadow mode: (shadow factor, primary hit distance; 0 = no hit) for the resolve pass.
-RWTexture2D<float2> gCurrent : register(u6);
+// Shadow mode: (shadow factor, primary hit distance (0 = no hit), AO factor, unused) for the resolve pass, which
+// filters the shadow and AO terms separately. The shadow factor includes the glows (up to 2).
+RWTexture2D<float4> gCurrent : register(u6);
 StructuredBuffer<RDPTile> gRDPTiles : register(t7);
 StructuredBuffer<GPUTile> gGPUTiles : register(t8);
 StructuredBuffer<float2> gTexCoords : register(t9);
 StructuredBuffer<uint> gMeshTiles : register(t10);
 // World-space vertex normals (zero for vertices without one); only meaningful on lit meshes (WCW_RT_MESH_LIT).
 StructuredBuffer<float4> gWorldNorm : register(t11);
+// Blue noise tile, WCW_RT_BLUE_NOISE_SIZE squared values in [0, 1), row-major.
+StructuredBuffer<float> gBlueNoise : register(t12);
 // The framebuffer renderer's bindless RGBA texture cache.
 Texture2D<float4> gTextures[8192] : register(t0, space1);
 
@@ -106,6 +109,22 @@ float noise(uint2 pixel, uint seed) {
     return frac(52.9829189f * frac(0.06711056f * p.x + 0.00583715f * p.y));
 }
 
+// Random sample `dim` of a pixel this frame, in [0, 1). Blue noise: every dimension reads the tile at its own
+// toroidal offset (R2 sequence), so dimensions are uncorrelated, and each frame rotates all values by the golden
+// ratio, so the temporal resolve averages well-spread values. The old interleaved gradient noise stays available
+// (WCW_RT_NOISE=0, or the left half with WCW_RT_NOISE_SPLIT=1); igOffset decorrelates its uses.
+float sampleNoise(uint2 pixel, uint dim, uint2 igOffset) {
+    const bool oldNoise = (gParams.noiseMode == 0) || ((gParams.noiseSplit != 0) && (pixel.x < (gParams.resolution.x / 2)));
+    if (oldNoise) {
+        return noise(pixel + igOffset, gParams.frameIndex * 64 + dim);
+    }
+
+    const uint size = WCW_RT_BLUE_NOISE_SIZE;
+    const uint2 shift = uint2(frac(float(dim) * 0.7548776662f) * float(size), frac(float(dim) * 0.5698402910f) * float(size));
+    const uint2 p = (pixel + shift) & (size - 1);
+    return frac(gBlueNoise[p.y * size + p.x] + float(gParams.frameIndex & 1023u) * 0.6180339887f);
+}
+
 bool resolvedMode() {
     return (gParams.mode == WCW_RT_MODE_SHADOW) || (gParams.mode == WCW_RT_MODE_AO);
 }
@@ -138,7 +157,7 @@ void writeNoHit(uint2 pixel, RayDesc ray) {
             missFactor = outsideFactor(dist);
         }
 
-        gCurrent[pixel] = float2(missFactor, 0.0f);
+        gCurrent[pixel] = float4(missFactor, 0.0f, 1.0f, 0.0f);
     }
     else {
         gOutput[pixel] = float4(1.0f, 1.0f, 1.0f, 0.0f);
@@ -164,12 +183,13 @@ float3 triangleNormal(uint geometryIndex, uint primitiveIndex) {
     return (len > 1e-8f) ? (n / len) : float3(0.0f, 1.0f, 0.0f);
 }
 
-// The AO hemisphere's normal: on lit draws the vertex normals interpolated at the hit, so low-poly models
-// (wrestlers) get smooth occlusion instead of one value per facet; otherwise the face normal. faceNormal faces
-// the viewer; a smooth normal seen from behind is flipped to match.
-float3 aoNormal(uint geometryIndex, uint primitiveIndex, float2 barycentrics, float3 faceNormal) {
+// The smooth normal at a hit on a lit draw: its vertex normals interpolated with the hit barycentrics, so low-poly
+// models (wrestlers) shade as the surface the normals describe instead of one value per facet. Other draws, and
+// degenerate normals, get the face normal. faceNormal faces the viewer; a smooth normal seen from behind is flipped
+// to match.
+float3 smoothNormal(uint geometryIndex, uint primitiveIndex, float2 barycentrics, float3 faceNormal) {
     const uint meshStart = gMeshIndexStarts[geometryIndex];
-    if ((gParams.aoSmoothNormals == 0) || ((meshStart & WCW_RT_MESH_LIT) == 0)) {
+    if ((meshStart & WCW_RT_MESH_LIT) == 0) {
         return faceNormal;
     }
 
@@ -183,8 +203,43 @@ float3 aoNormal(uint geometryIndex, uint primitiveIndex, float2 barycentrics, fl
         return faceNormal;
     }
 
-    const float3 smoothNormal = n / len;
-    return (dot(smoothNormal, faceNormal) < 0.0f) ? -smoothNormal : smoothNormal;
+    const float3 smoothN = n / len;
+    return (dot(smoothN, faceNormal) < 0.0f) ? -smoothN : smoothN;
+}
+
+// The AO hemisphere's normal: the smooth normal unless WCW_RT_AO_SMOOTH=0.
+float3 aoNormal(uint geometryIndex, uint primitiveIndex, float2 barycentrics, float3 faceNormal) {
+    return (gParams.aoSmoothNormals != 0) ? smoothNormal(geometryIndex, primitiveIndex, barycentrics, faceNormal) : faceNormal;
+}
+
+// Where shadow rays start on a lit draw: the hit point lifted onto the tangent plane of each vertex it lies below,
+// blended by the barycentrics (Hanika 2021, "Hacking the shadow terminator"). A flat triangle of a low-poly model
+// sits inside the smooth surface its normals describe, so near the terminator rays from the flat hit clip the
+// neighbouring facets and the shadow edge follows the facets. Flat parts of a mesh (all normals equal) don't move.
+float3 shadowOrigin(uint geometryIndex, uint primitiveIndex, float2 barycentrics, float3 hitPos, float3 faceNormal) {
+    const uint meshStart = gMeshIndexStarts[geometryIndex];
+    if ((meshStart & WCW_RT_MESH_LIT) == 0) {
+        return hitPos;
+    }
+
+    const uint base = (meshStart & ~WCW_RT_MESH_FLAGS) + primitiveIndex * 3;
+    const float3 weights = float3(1.0f - barycentrics.x - barycentrics.y, barycentrics.x, barycentrics.y);
+    float3 lifted = hitPos;
+    [unroll]
+    for (uint k = 0; k < 3; k++) {
+        const uint index = gFaceIndices[base + k];
+        float3 n = gWorldNorm[index].xyz;
+        const float len = length(n);
+        if (len < 1e-3f) {
+            continue;
+        }
+
+        n = (dot(n, faceNormal) < 0.0f) ? (-n / len) : (n / len);
+        const float below = min(dot(hitPos - gWorldPos[index].xyz, n), 0.0f);
+        lifted -= weights[k] * below * n;
+    }
+
+    return lifted;
 }
 
 // Brightening from the preset's glows at a hit point (0 = none).
@@ -370,7 +425,7 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
             const bool outsideCharacter = (gMeshIndexStarts[primary.CommittedGeometryIndex()] & WCW_RT_MESH_CHARACTER) != 0;
             const float outside = outsideCharacter ? 1.0f : outsideFactor(receiverDist);
 
-            gCurrent[pixel] = float2(outside * (1.0f + glowLight(hitPos, normal)), hitT);
+            gCurrent[pixel] = float4(outside * (1.0f + glowLight(hitPos, normal)), hitT, 1.0f, 0.0f);
             return;
         }
 
@@ -391,6 +446,11 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
         weightSum += lw;
     }
 
+    // Smooth shadows on lit draws (wrestlers): facing from the smooth normal, rays from the lifted hit point.
+    const bool smoothShadow = (gParams.shadowSmooth != 0) && !((gParams.shadowSmoothSplit != 0) && (pixel.x < (gParams.resolution.x / 2)));
+    const float3 shadeNormal = smoothShadow ? smoothNormal(primary.CommittedGeometryIndex(), primary.CommittedPrimitiveIndex(), primary.CommittedTriangleBarycentrics(), normal) : normal;
+    const float3 shadowStart = smoothShadow ? shadowOrigin(primary.CommittedGeometryIndex(), primary.CommittedPrimitiveIndex(), primary.CommittedTriangleBarycentrics(), hitPos, normal) : hitPos;
+
     float lit = 0.0f;
     int occluderId = -1;
     // Heavier lights cast proportionally darker shadows, so their sampling noise shows more:
@@ -400,23 +460,26 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
     for (uint s = 0, samples = max(gParams.samplesPerLight, 1) * uint(clamp(round(gParams.lights[l].w), 1.0f, 4.0f)); s < samples; s++, i++) {
         // Area light: jittered samples on the light's panel (soft penumbrae, refined over
         // frames by the resolve pass).
-        const uint seed = gParams.frameIndex * 64 + i * 2;
-        const float2 jitter = float2(noise(pixel, seed), noise(pixel + uint2(37, 113), seed + 1)) - 0.5f;
+        const float2 jitter = float2(sampleNoise(pixel, i * 2, uint2(0, 0)), sampleNoise(pixel, i * 2 + 1, uint2(37, 113))) - 0.5f;
         const float2 offset = jitter * gParams.lightSize;
         const float weight = lightWeights[l] / max(weightSum, 1e-6f) / float(samples);
         const float3 lightPos = gParams.lights[l].xyz + float3(offset.x, 0.0f, offset.y);
-        const float3 toLight = lightPos - hitPos;
+        const float3 toLight = lightPos - shadowStart;
         const float lightDist = length(toLight);
 
         // Surfaces facing away from a light are already dark from N64 vertex lighting:
         // only light-facing surfaces receive its shadow (no double darkening).
-        if (dot(normal, toLight) <= 0.0f) {
+        const float facing = dot(shadeNormal, toLight) / max(lightDist, 1e-6f);
+        if (facing <= 0.0f) {
             lit += weight;
             continue;
         }
 
+        // Just past the terminator the vertex lighting is already dark too: the shadow fades in over terminatorFade.
+        const float shadowShare = smoothShadow ? smoothstep(0.0f, max(gParams.terminatorFade, 1e-4f), facing) : 1.0f;
+
         RayDesc shadowRay;
-        shadowRay.Origin = hitPos + normal * 0.5f;
+        shadowRay.Origin = shadowStart + normal * 0.5f;
         shadowRay.Direction = toLight / lightDist;
         shadowRay.TMin = 0.5f;
         shadowRay.TMax = lightDist - gParams.lightClearance;
@@ -435,6 +498,7 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
 
         if (shadow.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
             occluderId = int(shadow.CommittedGeometryIndex());
+            lit += weight * (1.0f - shadowShare);
         }
         else {
             lit += weight;
@@ -455,10 +519,16 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
     const bool characterReceiver = (gMeshIndexStarts[primary.CommittedGeometryIndex()] & WCW_RT_MESH_CHARACTER) != 0;
     const float strength = characterReceiver ? gParams.characterShadowStrength : gParams.shadowStrength;
     float factor = 1.0f - strength * (1.0f - lit);
+    if (gParams.mode == WCW_RT_MODE_SHADOW_RAW) {
+        gOutput[pixel] = float4(factor, factor, factor, 1.0f);
+        return;
+    }
+
 
     // Ambient occlusion: cosine-weighted hemisphere rays against all workloads' geometry, around the smooth
     // normal on lit draws. Directions that dip below the flat triangle are mirrored back above it (no self-hits
     // from the smoothing); a hit at distance t occludes by 1 - (t / radius)^2, so far hits fade in softly.
+    float ao = 1.0f;
     const bool aoSplitOff = (gParams.aoSplit != 0) && (pixel.x < (gParams.resolution.x / 2));
     if ((gParams.aoSamples > 0) && !aoSplitOff && (gParams.aoCycleOff == 0)) {
         const float3 hemisphere = aoNormal(primary.CommittedGeometryIndex(), primary.CommittedPrimitiveIndex(), primary.CommittedTriangleBarycentrics(), normal);
@@ -468,9 +538,8 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
         const float aoRadius = characterReceiver ? gParams.aoCharacterRadius : gParams.aoRadius;
         float occluded = 0.0f;
         for (uint a = 0; a < gParams.aoSamples; a++) {
-            const uint seed = gParams.frameIndex * 64 + 40 + a * 2;
-            const float u = noise(pixel + uint2(71, 29), seed);
-            const float v = noise(pixel + uint2(13, 97), seed + 1);
+            const float u = sampleNoise(pixel, 40 + a * 2, uint2(71, 29));
+            const float v = sampleNoise(pixel, 41 + a * 2, uint2(13, 97));
             const float r = sqrt(u);
             const float phi = 6.2831853f * v;
             float3 dir = normalize(tangent * (r * cos(phi)) + bitangent * (r * sin(phi)) + hemisphere * sqrt(max(1.0f - u, 0.0f)));
@@ -505,14 +574,20 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
             gOutput[pixel] = float4(aoFactor, aoFactor, aoFactor, 1.0f);
             return;
         }
-        factor = (gParams.mode == WCW_RT_MODE_AO) ? aoFactor : factor * aoFactor;
+        ao = aoFactor;
+    }
+
+    // AO-only view: the shadow term stays open.
+    if (gParams.mode == WCW_RT_MODE_AO) {
+        factor = 1.0f;
     }
 
     factor = lerp(factor, 1.0f, receiverFade);
+    ao = lerp(ao, 1.0f, receiverFade);
 
     if (resolvedMode() && (gParams.mode == WCW_RT_MODE_SHADOW)) {
         factor *= 1.0f + glowLight(hitPos, normal);
     }
 
-    gCurrent[pixel] = float2(factor, hitT);
+    gCurrent[pixel] = float4(factor, hitT, ao, 0.0f);
 }

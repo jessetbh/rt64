@@ -40,31 +40,43 @@ TEST_CASE("shadow casters survive every render of a game frame at 120 fps (shado
 // Ray-traced ambient occlusion
 
 TEST_CASE("ao: Off traces no occlusion rays") {
-    for (uint32_t quality = 0; quality <= 2; quality++) {
-        const AoSettings off = aoSettings(uint32_t(AoLevel::Off), quality);
+    for (uint32_t samples : { 0u, 2u, 8u }) {
+        const AoSettings off = aoLookSettings(AoLevel::Off, samples);
         CHECK_EQ(off.samples, 0u);
         CHECK_EQ(off.strength, 0.0f);
         CHECK_EQ(off.characterStrength, 0.0f);
     }
+
+    CHECK_EQ(aoLookSettings(AoLevel::Subtle, 0).samples, 0u);
 }
 
-TEST_CASE("ao: Strong is stronger, reaches further and samples more than Subtle") {
-    for (uint32_t quality = 0; quality <= 2; quality++) {
-        const AoSettings subtle = aoSettings(uint32_t(AoLevel::Subtle), quality);
-        const AoSettings strong = aoSettings(uint32_t(AoLevel::Strong), quality);
-        CHECK(subtle.samples > 0);
-        CHECK(strong.samples > subtle.samples);
-        CHECK(strong.strength > subtle.strength);
-        CHECK(strong.characterStrength > subtle.characterStrength);
-        CHECK(strong.radius > subtle.radius);
-        CHECK(strong.characterRadius >= subtle.characterRadius);
-        CHECK((strong.strength <= 1.0f) && (strong.characterStrength <= 1.0f));
+TEST_CASE("ao: Strong is stronger and reaches further than Subtle") {
+    const AoSettings subtle = aoLookSettings(AoLevel::Subtle, 2);
+    const AoSettings strong = aoLookSettings(AoLevel::Strong, 2);
+    CHECK(strong.strength > subtle.strength);
+    CHECK(strong.characterStrength > subtle.characterStrength);
+    CHECK(strong.radius > subtle.radius);
+    CHECK(strong.characterRadius >= subtle.characterRadius);
+    CHECK(strong.gain > subtle.gain);
+    CHECK((strong.strength <= 1.0f) && (strong.characterStrength <= 1.0f));
+}
+
+TEST_CASE("ao: the ray count doesn't change the look") {
+    for (AoLevel level : { AoLevel::Subtle, AoLevel::Strong }) {
+        const AoSettings few = aoLookSettings(level, 1);
+        const AoSettings many = aoLookSettings(level, 8);
+        CHECK_EQ(few.samples, 1u);
+        CHECK_EQ(many.samples, 8u);
+        CHECK_EQ(few.strength, many.strength);
+        CHECK_EQ(few.radius, many.radius);
+        CHECK_EQ(few.characterRadius, many.characterRadius);
+        CHECK_EQ(few.gain, many.gain);
     }
 }
 
 TEST_CASE("ao: wrestlers aren't halved any more (the old 0.5x left their AO invisible)") {
-    for (uint32_t level = 1; level <= 2; level++) {
-        const AoSettings settings = aoSettings(level, 1);
+    for (AoLevel level : { AoLevel::Subtle, AoLevel::Strong }) {
+        const AoSettings settings = aoLookSettings(level, 2);
         CHECK(settings.characterStrength >= 0.8f * settings.strength);
         CHECK(settings.characterRadius > 0.0f);
         CHECK(settings.characterRadius <= settings.radius);
@@ -74,30 +86,24 @@ TEST_CASE("ao: wrestlers aren't halved any more (the old 0.5x left their AO invi
 TEST_CASE("ao: reach suits the AKI world scale and contrast stays below the blotchy range") {
     // A 25-40 unit reach only caught surfaces that almost touch (rings are several hundred units across);
     // a gain of 3 turned sampling noise into dark blotches on the wrestlers.
-    for (uint32_t level = 1; level <= 2; level++) {
-        const AoSettings settings = aoSettings(level, 1);
+    for (AoLevel level : { AoLevel::Subtle, AoLevel::Strong }) {
+        const AoSettings settings = aoLookSettings(level, 2);
         CHECK(settings.radius >= 40.0f);
         CHECK((settings.gain >= 1.0f) && (settings.gain <= 2.5f));
     }
-
-    CHECK(aoSettings(uint32_t(AoLevel::Strong), 1).gain > aoSettings(uint32_t(AoLevel::Subtle), 1).gain);
 }
 
 TEST_CASE("ao: wrestlers stay below the muddy range at the normal camera distance") {
     // Owner review of a CPU match: wrestler strength 0.85 with gain 2.5 and a 45-unit reach darkened whole bodies
     // instead of creases, and an 80-unit world reach left grime along the ring edges. Keep the AO in creases and
     // contacts: moderate strength and gain, short reach.
-    for (uint32_t level = 1; level <= 2; level++) {
-        const AoSettings settings = aoSettings(level, 1);
+    for (AoLevel level : { AoLevel::Subtle, AoLevel::Strong }) {
+        const AoSettings settings = aoLookSettings(level, 2);
         CHECK(settings.characterStrength <= 0.65f);
         CHECK(settings.characterGain <= 2.0f);
         CHECK(settings.characterRadius <= 35.0f);
         CHECK(settings.radius <= 65.0f);
     }
-
-    const AoSettings subtle = aoSettings(uint32_t(AoLevel::Subtle), 1);
-    const AoSettings strong = aoSettings(uint32_t(AoLevel::Strong), 1);
-    CHECK(subtle.characterGain < strong.characterGain);
 }
 
 TEST_CASE("ao cycle: alternates every period on wall-clock boundaries, on first") {
@@ -109,19 +115,161 @@ TEST_CASE("ao cycle: alternates every period on wall-clock boundaries, on first"
     CHECK(aoCycleOn(123456789, 0));
 }
 
-TEST_CASE("ao: quality only changes the sample count") {
-    for (uint32_t level = 1; level <= 2; level++) {
-        const AoSettings performance = aoSettings(level, 0);
-        const AoSettings quality = aoSettings(level, 2);
-        CHECK(quality.samples >= performance.samples);
-        CHECK_EQ(quality.strength, performance.strength);
-        CHECK_EQ(quality.radius, performance.radius);
-        CHECK_EQ(quality.characterRadius, performance.characterRadius);
+// Ray tracing quality presets (the AO menu was folded into them)
+
+TEST_CASE("quality: AO comes with the level (none on Performance, Subtle on Balanced, Strong on Quality and Ultra)") {
+    CHECK_EQ(aoSettings(uint32_t(RtQuality::Performance)).samples, 0u);
+    const AoSettings balanced = aoSettings(uint32_t(RtQuality::Balanced));
+    const AoSettings quality = aoSettings(uint32_t(RtQuality::Quality));
+    const AoSettings ultra = aoSettings(uint32_t(RtQuality::Ultra));
+    CHECK(balanced.samples > 0);
+    CHECK_EQ(balanced.strength, aoLookSettings(AoLevel::Subtle, 2).strength);
+    CHECK_EQ(quality.strength, aoLookSettings(AoLevel::Strong, 2).strength);
+    CHECK_EQ(ultra.strength, quality.strength);
+}
+
+TEST_CASE("quality: Strong AO always gets at least 4 rays (at 2 it mottles)") {
+    for (uint32_t q = 0; q <= uint32_t(RtQuality::Ultra); q++) {
+        if (rtPreset(q).ao == AoLevel::Strong) {
+            CHECK(rtPreset(q).aoSamples >= 4);
+        }
     }
 }
 
-TEST_CASE("ao: out-of-range levels clamp to Strong") {
-    CHECK_EQ(aoSettings(7, 1).samples, aoSettings(uint32_t(AoLevel::Strong), 1).samples);
+TEST_CASE("quality: each level traces at least as many rays as the one below") {
+    for (uint32_t q = 1; q <= uint32_t(RtQuality::Ultra); q++) {
+        const RtPreset lower = rtPreset(q - 1);
+        const RtPreset higher = rtPreset(q);
+        CHECK(higher.samplesPerLight >= lower.samplesPerLight);
+        CHECK(higher.aoSamples >= lower.aoSamples);
+        CHECK(rtTraceScale(higher, 2160) >= rtTraceScale(lower, 2160));
+    }
+}
+
+TEST_CASE("quality: Ultra traces every pixel with more rays than Quality") {
+    const RtPreset quality = rtPreset(uint32_t(RtQuality::Quality));
+    const RtPreset ultra = rtPreset(uint32_t(RtQuality::Ultra));
+    CHECK_EQ(rtTraceScale(ultra, 2160), 1.0f);
+    CHECK(ultra.samplesPerLight > quality.samplesPerLight);
+    CHECK(ultra.aoSamples > quality.aoSamples);
+}
+
+TEST_CASE("quality: trace resolution at 1080p and 4K") {
+    // Performance caps at 720 lines and Balanced at 1080, both at most half resolution; Quality and Ultra are full.
+    CHECK_NEAR(rtTraceScale(rtPreset(0), 1080), 0.5f, 1e-6f);
+    CHECK_NEAR(rtTraceScale(rtPreset(1), 1080), 0.5f, 1e-6f);
+    CHECK_NEAR(rtTraceScale(rtPreset(0), 2160), 720.0f / 2160.0f, 1e-6f);
+    CHECK_NEAR(rtTraceScale(rtPreset(1), 2160), 0.5f, 1e-6f);
+    CHECK_EQ(rtTraceScale(rtPreset(2), 2160), 1.0f);
+}
+
+TEST_CASE("quality: out-of-range levels clamp to Ultra") {
+    CHECK_EQ(rtPreset(9).samplesPerLight, rtPreset(uint32_t(RtQuality::Ultra)).samplesPerLight);
+    CHECK_EQ(aoSettings(9).samples, aoSettings(uint32_t(RtQuality::Ultra)).samples);
+}
+
+// Resolve: separate shadow and AO cleanup
+
+TEST_CASE("denoise: shadows get a tighter filter than AO (crisp shadow edges, smooth AO)") {
+    const DenoiseSettings d = denoiseSettings();
+    CHECK(d.shadowRadius < d.aoRadius);
+    CHECK(d.shadowRadius >= 1);
+    CHECK(d.aoRadius <= DenoiseMaxRadius);
+}
+
+TEST_CASE("denoise: AO accumulates longer than shadows, and both keep some history") {
+    const DenoiseSettings d = denoiseSettings();
+    CHECK(d.aoAlpha <= d.shadowAlpha);
+    CHECK(d.aoAlpha > 0.0f && d.shadowAlpha < 1.0f);
+}
+
+// Blue noise (ray tracer sample jitter)
+
+static const std::vector<float> &blueTile() {
+    static const std::vector<float> tile = blueNoiseTile(BlueNoiseSize);
+    return tile;
+}
+
+TEST_CASE("blue noise: every rank appears exactly once") {
+    const std::vector<float> &tile = blueTile();
+    const uint32_t count = BlueNoiseSize * BlueNoiseSize;
+    CHECK_EQ(tile.size(), size_t(count));
+    std::vector<int> seen(count, 0);
+    for (float v : tile) {
+        CHECK(v > 0.0f && v < 1.0f);
+        const int rank = int(std::lround(v * float(count) - 0.5f));
+        CHECK(rank >= 0 && rank < int(count));
+        if (rank >= 0 && rank < int(count)) {
+            seen[rank]++;
+        }
+    }
+
+    CHECK(std::all_of(seen.begin(), seen.end(), [](int n) { return n == 1; }));
+}
+
+TEST_CASE("blue noise: the same size always gives the same tile") {
+    CHECK(blueNoiseTile(BlueNoiseSize) == blueTile());
+}
+
+TEST_CASE("blue noise: sizes that aren't powers of two give an all-zero tile") {
+    const std::vector<float> tile = blueNoiseTile(48);
+    CHECK_EQ(tile.size(), size_t(48 * 48));
+    CHECK(std::all_of(tile.begin(), tile.end(), [](float v) { return v == 0.0f; }));
+}
+
+TEST_CASE("blue noise: 4x4 neighbourhoods average close to 0.5 (no low-frequency blotches)") {
+    // White noise: the mean of 16 uniform values has a standard deviation of about 0.072. Blotchy noise is what
+    // the old interleaved gradient noise turned into after filtering; blue noise keeps every block near 0.5.
+    const std::vector<float> &tile = blueTile();
+    double sumSq = 0.0, worst = 0.0;
+    int blocks = 0;
+    for (uint32_t by = 0; by < BlueNoiseSize; by += 4) {
+        for (uint32_t bx = 0; bx < BlueNoiseSize; bx += 4) {
+            double mean = 0.0;
+            for (uint32_t y = 0; y < 4; y++) {
+                for (uint32_t x = 0; x < 4; x++) {
+                    mean += tile[(by + y) * BlueNoiseSize + bx + x];
+                }
+            }
+
+            mean /= 16.0;
+            sumSq += (mean - 0.5) * (mean - 0.5);
+            worst = std::max(worst, std::abs(mean - 0.5));
+            blocks++;
+        }
+    }
+
+    CHECK(std::sqrt(sumSq / blocks) < 0.04);
+    CHECK(worst < 0.15);
+}
+
+TEST_CASE("blue noise: the lowest 10% of values never sit next to each other") {
+    // Any threshold of a blue noise tile is an evenly spread point set: at 10% density no two points touch,
+    // diagonals included, even across the tile's wrap-around edges.
+    const std::vector<float> &tile = blueTile();
+    const int n = int(BlueNoiseSize);
+    std::vector<std::pair<int, int>> points;
+    for (int y = 0; y < n; y++) {
+        for (int x = 0; x < n; x++) {
+            if (tile[y * n + x] < 0.1f) {
+                points.emplace_back(x, y);
+            }
+        }
+    }
+
+    int touching = 0;
+    for (size_t i = 0; i < points.size(); i++) {
+        for (size_t j = i + 1; j < points.size(); j++) {
+            int dx = std::abs(points[i].first - points[j].first), dy = std::abs(points[i].second - points[j].second);
+            dx = std::min(dx, n - dx);
+            dy = std::min(dy, n - dy);
+            if ((dx <= 1) && (dy <= 1)) {
+                touching++;
+            }
+        }
+    }
+
+    CHECK_EQ(touching, 0);
 }
 
 // CRT beam simulator

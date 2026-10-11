@@ -44,12 +44,10 @@ namespace RT64 {
 
     static std::atomic<bool> wcwRtUserEnabled = false;
     static std::atomic<uint32_t> wcwRtUserQuality = 1;
-    static std::atomic<uint32_t> wcwRtUserAo = uint32_t(WcwLogic::AoLevel::Subtle);
 
-    void WcwRaytracer::setUserSettings(bool enabled, uint32_t quality, uint32_t aoLevel) {
+    void WcwRaytracer::setUserSettings(bool enabled, uint32_t quality) {
         wcwRtUserEnabled = enabled;
-        wcwRtUserQuality = std::min(quality, 2u);
-        wcwRtUserAo = std::min(aoLevel, uint32_t(WcwLogic::AoLevel::Strong));
+        wcwRtUserQuality = std::min(quality, uint32_t(WcwLogic::RtQuality::Ultra));
     }
 
     bool WcwRaytracer::active() {
@@ -100,6 +98,7 @@ namespace RT64 {
         traceBuilder.addStructuredBuffer(9);
         traceBuilder.addStructuredBuffer(10);
         traceBuilder.addStructuredBuffer(11);
+        traceBuilder.addStructuredBuffer(12);
         traceBuilder.end();
         traceSet = traceBuilder.create(device);
 
@@ -155,6 +154,13 @@ namespace RT64 {
         }
 
         paramsBuffer = device->createBuffer(RenderBufferDesc::UploadBuffer(alignUp(sizeof(interop::WcwRtParams), 256), RenderBufferFlag::CONSTANT));
+
+        static_assert(WcwLogic::BlueNoiseSize == WCW_RT_BLUE_NOISE_SIZE, "the trace shader's blue noise tile size");
+        const std::vector<float> blueNoise = WcwLogic::blueNoiseTile(WcwLogic::BlueNoiseSize);
+        blueNoiseBuffer = device->createBuffer(RenderBufferDesc::UploadBuffer(blueNoise.size() * sizeof(float), RenderBufferFlag::STORAGE));
+        void *blueNoiseBytes = blueNoiseBuffer->map();
+        memcpy(blueNoiseBytes, blueNoise.data(), blueNoise.size() * sizeof(float));
+        blueNoiseBuffer->unmap();
     }
 
     void WcwRaytracer::beginWorkload(uint64_t presentId) {
@@ -739,17 +745,12 @@ namespace RT64 {
         // Output texture at the color target's resolution.
         // Quality preset (or env overrides) for this frame.
         const uint32_t quality = userQuality();
-        // Soft, temporally resolved shadows don't need the full internal resolution: the presets
-        // also cap the trace height (Performance 720 lines, Balanced 1080), so 4K+ targets don't
-        // multiply the ray count. WCW_RT_MAX_LINES overrides the cap, WCW_RT_SCALE the whole scale.
-        const float presetLines = envFloat(getenv("WCW_RT_MAX_LINES"), (quality == 0) ? 720.0f : ((quality == 1) ? 1080.0f : 0.0f));
-        float presetScale = (quality >= 2) ? 1.0f : 0.5f;
-        if ((presetLines > 0.0f) && (colorTarget->height > 0)) {
-            presetScale = std::min(presetScale, presetLines / float(colorTarget->height));
-        }
-
-        const float frameScale = std::clamp(envFloat(getenv("WCW_RT_SCALE"), presetScale), 0.1f, 1.0f);
-        const uint32_t presetSamples = (quality == 0) ? 1u : 2u;
+        // The level's trace resolution and ray counts (WcwLogic::rtPreset). WCW_RT_MAX_LINES overrides the line cap,
+        // WCW_RT_SCALE the whole scale.
+        WcwLogic::RtPreset qualityPreset = WcwLogic::rtPreset(quality);
+        qualityPreset.maxLines = envFloat(getenv("WCW_RT_MAX_LINES"), qualityPreset.maxLines);
+        const float frameScale = std::clamp(envFloat(getenv("WCW_RT_SCALE"), WcwLogic::rtTraceScale(qualityPreset, colorTarget->height)), 0.1f, 1.0f);
+        const uint32_t presetSamples = qualityPreset.samplesPerLight;
 
         // Re-enabled after being off: the histories are stale.
         if (!wasActive) {
@@ -768,7 +769,7 @@ namespace RT64 {
             traceWidth = std::max(uint32_t(std::ceil(outputWidth * traceScale)), 1u);
             traceHeight = std::max(uint32_t(std::ceil(outputHeight * traceScale)), 1u);
             outputTexture = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16G16B16A16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
-            currentTexture = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R32G32_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
+            currentTexture = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R32G32B32A32_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
         }
 
         Slot &slot = slots[currentSlot];
@@ -776,7 +777,7 @@ namespace RT64 {
             slot.historyWidth = traceWidth;
             slot.historyHeight = traceHeight;
             for (auto &history : slot.history) {
-                history = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
+                history = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16G16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
             }
 
             slot.output = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16G16B16A16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
@@ -884,8 +885,8 @@ namespace RT64 {
         params.prevViewProj = slot.prevViewProj;
         params.historyValid = slot.historyValid ? 1 : 0;
         params.samplesPerLight = std::max(uint32_t(envFloat(getenv("WCW_RT_SAMPLES"), float(presetSamples))), 1u);
-        // Ambient occlusion: the menu level's settings (WcwLogic::aoSettings), each overridable from the environment.
-        const WcwLogic::AoSettings ao = WcwLogic::aoSettings(wcwRtUserAo.load(), quality);
+        // Ambient occlusion: the quality level's look and rays (WcwLogic::aoSettings), each overridable from the environment.
+        const WcwLogic::AoSettings ao = WcwLogic::aoSettings(quality);
         params.aoSamples = uint32_t(envFloat(getenv("WCW_RT_AO_SAMPLES"), float(ao.samples)));
         params.aoRadius = envFloat(getenv("WCW_RT_AO_RADIUS"), ao.radius);
         params.aoStrength = envFloat(getenv("WCW_RT_AO"), ao.strength);
@@ -895,7 +896,25 @@ namespace RT64 {
         params.aoGain = std::max(envFloat(getenv("WCW_RT_AO_GAIN"), ao.gain), 0.0f);
         params.aoSplit = (envFloat(getenv("WCW_RT_AO_SPLIT"), 0.0f) != 0.0f) ? 1u : 0u;
         params.filterRadius = uint32_t(std::clamp(envFloat(getenv("WCW_RT_FILTER_RADIUS"), 2.0f), 1.0f, 4.0f));
+        {
+            const WcwLogic::DenoiseSettings denoise = WcwLogic::denoiseSettings();
+            const float maxRadius = float(WcwLogic::DenoiseMaxRadius);
+            params.shadowFilterRadius = uint32_t(std::clamp(envFloat(getenv("WCW_RT_SHADOW_FILTER_RADIUS"), float(denoise.shadowRadius)), 1.0f, maxRadius));
+            params.aoFilterRadius = uint32_t(std::clamp(envFloat(getenv("WCW_RT_AO_FILTER_RADIUS"), float(denoise.aoRadius)), 1.0f, maxRadius));
+            params.shadowTemporalAlpha = std::clamp(envFloat(getenv("WCW_RT_SHADOW_ALPHA"), denoise.shadowAlpha), 0.01f, 1.0f);
+            params.aoTemporalAlpha = std::clamp(envFloat(getenv("WCW_RT_AO_ALPHA"), denoise.aoAlpha), 0.01f, 1.0f);
+            params.denoiseSplit = (envFloat(getenv("WCW_RT_DENOISE_SPLIT"), 0.0f) != 0.0f) ? 1u : 0u;
+        }
         params.aoCharacterGain = std::max(envFloat(getenv("WCW_RT_AO_GAIN_CHAR"), ao.characterGain), 0.0f);
+        params.noiseMode = (envFloat(getenv("WCW_RT_NOISE"), 1.0f) != 0.0f) ? 1u : 0u;
+        params.noiseSplit = (envFloat(getenv("WCW_RT_NOISE_SPLIT"), 0.0f) != 0.0f) ? 1u : 0u;
+        params.shadowSmooth = (envFloat(getenv("WCW_RT_SHADOW_SMOOTH"), 1.0f) != 0.0f) ? 1u : 0u;
+        // WCW_RT_SHADOW_SMOOTH_CYCLE=1: smooth shadows on odd presents only (consecutive-present comparisons).
+        if ((envFloat(getenv("WCW_RT_SHADOW_SMOOTH_CYCLE"), 0.0f) != 0.0f) && (lastPresentId != UINT64_MAX)) {
+            params.shadowSmooth = uint32_t(lastPresentId & 1);
+        }
+        params.shadowSmoothSplit = (envFloat(getenv("WCW_RT_SHADOW_SMOOTH_SPLIT"), 0.0f) != 0.0f) ? 1u : 0u;
+        params.terminatorFade = std::clamp(envFloat(getenv("WCW_RT_TERMINATOR_FADE"), 0.2f), 0.0f, 1.0f);
         {
             static const uint64_t aoCyclePeriodMs = uint64_t(std::max(envFloat(getenv("WCW_RT_AO_CYCLE"), 0.0f), 0.0f) * 1000.0f);
             const uint64_t unixMs = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
@@ -925,7 +944,8 @@ namespace RT64 {
         }
 
         // Trace only this workload's screen footprint (plus a margin for the bilinear upsample
-        // and the resolve's 3x3 neighborhood); the whole screen with outside darkness.
+        // and the resolve filters' neighborhoods); the whole screen with outside darkness.
+        const float margin = float(std::max({ 3u, params.shadowFilterRadius + 1, params.aoFilterRadius + 1, params.filterRadius + 1 }));
         if (boundsFullScreen || (outsideDarkness > 0.0f)) {
             traceRect[0] = traceRect[1] = 0;
             traceRect[2] = traceWidth;
@@ -933,10 +953,10 @@ namespace RT64 {
         }
         else {
             const float scale = params.traceScale;
-            traceRect[0] = uint32_t(std::clamp(std::floor(boundsMin[0] * scale) - 3.0f, 0.0f, float(traceWidth)));
-            traceRect[1] = uint32_t(std::clamp(std::floor(boundsMin[1] * scale) - 3.0f, 0.0f, float(traceHeight)));
-            traceRect[2] = uint32_t(std::clamp(std::ceil(boundsMax[0] * scale) + 3.0f, 0.0f, float(traceWidth)));
-            traceRect[3] = uint32_t(std::clamp(std::ceil(boundsMax[1] * scale) + 3.0f, 0.0f, float(traceHeight)));
+            traceRect[0] = uint32_t(std::clamp(std::floor(boundsMin[0] * scale) - margin, 0.0f, float(traceWidth)));
+            traceRect[1] = uint32_t(std::clamp(std::floor(boundsMin[1] * scale) - margin, 0.0f, float(traceHeight)));
+            traceRect[2] = uint32_t(std::clamp(std::ceil(boundsMax[0] * scale) + margin, 0.0f, float(traceWidth)));
+            traceRect[3] = uint32_t(std::clamp(std::ceil(boundsMax[1] * scale) + margin, 0.0f, float(traceHeight)));
         }
 
         traceRectEmpty = (traceRect[2] <= traceRect[0]) || (traceRect[3] <= traceRect[1]);
@@ -960,6 +980,7 @@ namespace RT64 {
         slot.tracedMeshes = uint32_t(meshes.size());
 
         params.traceOffset = { traceRect[0], traceRect[1] };
+        params.traceEnd = { traceRect[2], traceRect[3] };
         params.receiverRadius = receiverRadius;
         void *paramsBytes = paramsBuffer->map();
         memcpy(paramsBytes, &params, sizeof(params));
@@ -982,6 +1003,8 @@ namespace RT64 {
         traceSet->setBuffer(9, (texCoordBuffer != nullptr) ? texCoordBuffer : meshTilesBuffer.get(), 0, &float2View);
         traceSet->setBuffer(10, meshTilesBuffer.get(), meshTilesBufferSize, &uintView);
         traceSet->setBuffer(11, (worldNormBuffer != nullptr) ? worldNormBuffer : worldPosBuffer, (worldNormBuffer != nullptr) ? worldNormSize : worldPosSize, &float4View);
+        const RenderBufferStructuredView floatView(sizeof(float));
+        traceSet->setBuffer(12, blueNoiseBuffer.get(), WcwLogic::BlueNoiseSize * WcwLogic::BlueNoiseSize * sizeof(float), &floatView);
         compositeSet->setTexture(0, slot.output.get(), RenderTextureLayout::SHADER_READ);
 
         // Trace.
