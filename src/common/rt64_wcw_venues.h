@@ -133,9 +133,8 @@ namespace RT64::WcwLogic {
     // A glow's flicker amount (0 when it has none).
     float presetGlowFlicker(const LightPreset &preset, size_t glowIndex);
 
-    // A failing fluorescent tube's brightness (0..1) at timeSeconds, deterministic per seed: steady at 1 most of the
-    // time, then a burst of rapid irregular dropouts (50 ms steps) in some 1.5 s windows. Seeds give each tube its own
-    // rhythm.
+    // A failing fluorescent tube's brightness (0 or 1) at timeSeconds, deterministic per seed: on almost all the time,
+    // blinking off one to three times (70 ms each) every few seconds. Seeds give each tube its own rhythm.
     float glowFlicker(double timeSeconds, uint32_t seed);
 
     // A glow's intensity scale with flicker amount: 1 - amount * (1 - glowFlicker(time, seed)).

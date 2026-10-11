@@ -459,8 +459,8 @@ TEST_CASE("flicker: deterministic, within 0..1, mostly on, with dropouts") {
         off += (v == 0.0f) ? 1 : 0;
     }
 
-    // A failing tube, not a strobe: on most of the time, but it does drop out within a minute.
-    CHECK(on > total * 7 / 10);
+    // Mostly on (the owner's ask), blinking off occasionally within a minute.
+    CHECK(on > total * 9 / 10);
     CHECK(off > 0u);
 }
 

@@ -72,24 +72,28 @@ namespace RT64::WcwLogic {
             timeSeconds = 0.0;
         }
 
-        // 1.5 s windows; about a third of them hold a burst, which covers part of the window.
-        const uint32_t window = uint32_t(timeSeconds / 1.5);
+        // 2 s windows; about a third hold an event: one to three quick blinks off (70 ms each, 80 ms apart). The
+        // tube is on the rest of the time (the owner wanted mostly on, flickering off occasionally).
+        const uint32_t window = uint32_t(timeSeconds / 2.0);
         const uint32_t windowHash = flickerHash(seed, window);
-        if ((windowHash % 100u) >= 35u) {
+        if ((windowHash % 100u) >= 33u) {
             return 1.0f;
         }
 
-        const double inWindow = timeSeconds - double(window) * 1.5;
-        const double burstStart = double((windowHash >> 8) % 100u) / 100.0 * 0.9;
-        const double burstLength = 0.25 + double((windowHash >> 16) % 100u) / 100.0 * 0.35;
-        if ((inWindow < burstStart) || (inWindow > burstStart + burstLength)) {
+        const double start = double((windowHash >> 8) % 100u) / 100.0 * 1.5;
+        const uint32_t blinks = 1u + ((windowHash >> 16) % 3u);
+        const double offset = timeSeconds - double(window) * 2.0 - start;
+        if (offset < 0.0) {
             return 1.0f;
         }
 
-        // Inside the burst: 50 ms steps, each off, dim or on.
-        const uint32_t step = uint32_t(timeSeconds * 20.0);
-        const uint32_t stepHash = flickerHash(seed ^ 0xA5A5A5A5u, step) % 100u;
-        return (stepHash < 45u) ? 0.0f : ((stepHash < 65u) ? 0.35f : 1.0f);
+        const double period = 0.15;
+        const uint32_t blink = uint32_t(offset / period);
+        if (blink >= blinks) {
+            return 1.0f;
+        }
+
+        return ((offset - double(blink) * period) < 0.07) ? 0.0f : 1.0f;
     }
 
     float glowFlickerScale(double timeSeconds, uint32_t seed, float amount) {
