@@ -29,18 +29,19 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
         return;
     }
 
-    // Neighborhood range of this frame's samples (hit pixels only) and a depth-aware 3x3 tent
-    // filter of them: neighbors on the same surface (similar hit distance) are averaged, so a
-    // single jittered sample per light doesn't speckle penumbrae, while object edges stay sharp.
+    // Neighborhood range of this frame's samples (hit pixels only) and a depth-aware tent filter of
+    // them (filterRadius, 2 = 5x5): neighbors on the same surface (similar hit distance) are averaged,
+    // so a few jittered shadow and AO rays per pixel don't speckle, while object edges stay sharp.
+    const int radius = int(clamp(gParams.filterRadius, 1u, 4u));
     float filteredSum = 0.0f;
     float filteredSqSum = 0.0f;
     float weightSum = 0.0f;
-    for (int y = -1; y <= 1; y++) {
-        for (int x = -1; x <= 1; x++) {
+    for (int y = -radius; y <= radius; y++) {
+        for (int x = -radius; x <= radius; x++) {
             const int2 neighbor = clamp(int2(pixel) + int2(x, y), int2(0, 0), int2(gParams.resolution) - 1);
             const float2 sample = gCurrent[neighbor];
             if (sample.y > 0.0f) {
-                const float spatial = ((x == 0) ? 2.0f : 1.0f) * ((y == 0) ? 2.0f : 1.0f);
+                const float spatial = float(radius + 1 - abs(x)) * float(radius + 1 - abs(y));
                 const float depth = exp(-abs(sample.y - current.y) / max(current.y * 0.01f, 0.5f));
                 filteredSum += sample.x * spatial * depth;
                 filteredSqSum += sample.x * sample.x * spatial * depth;

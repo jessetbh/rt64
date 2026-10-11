@@ -37,6 +37,93 @@ TEST_CASE("shadow casters survive every render of a game frame at 120 fps (shado
     }
 }
 
+// Ray-traced ambient occlusion
+
+TEST_CASE("ao: Off traces no occlusion rays") {
+    for (uint32_t quality = 0; quality <= 2; quality++) {
+        const AoSettings off = aoSettings(uint32_t(AoLevel::Off), quality);
+        CHECK_EQ(off.samples, 0u);
+        CHECK_EQ(off.strength, 0.0f);
+        CHECK_EQ(off.characterStrength, 0.0f);
+    }
+}
+
+TEST_CASE("ao: Strong is stronger, reaches further and samples more than Subtle") {
+    for (uint32_t quality = 0; quality <= 2; quality++) {
+        const AoSettings subtle = aoSettings(uint32_t(AoLevel::Subtle), quality);
+        const AoSettings strong = aoSettings(uint32_t(AoLevel::Strong), quality);
+        CHECK(subtle.samples > 0);
+        CHECK(strong.samples > subtle.samples);
+        CHECK(strong.strength > subtle.strength);
+        CHECK(strong.characterStrength > subtle.characterStrength);
+        CHECK(strong.radius > subtle.radius);
+        CHECK(strong.characterRadius >= subtle.characterRadius);
+        CHECK((strong.strength <= 1.0f) && (strong.characterStrength <= 1.0f));
+    }
+}
+
+TEST_CASE("ao: wrestlers aren't halved any more (the old 0.5x left their AO invisible)") {
+    for (uint32_t level = 1; level <= 2; level++) {
+        const AoSettings settings = aoSettings(level, 1);
+        CHECK(settings.characterStrength >= 0.8f * settings.strength);
+        CHECK(settings.characterRadius > 0.0f);
+        CHECK(settings.characterRadius <= settings.radius);
+    }
+}
+
+TEST_CASE("ao: reach suits the AKI world scale and contrast stays below the blotchy range") {
+    // A 25-40 unit reach only caught surfaces that almost touch (rings are several hundred units across);
+    // a gain of 3 turned sampling noise into dark blotches on the wrestlers.
+    for (uint32_t level = 1; level <= 2; level++) {
+        const AoSettings settings = aoSettings(level, 1);
+        CHECK(settings.radius >= 40.0f);
+        CHECK((settings.gain >= 1.0f) && (settings.gain <= 2.5f));
+    }
+
+    CHECK(aoSettings(uint32_t(AoLevel::Strong), 1).gain > aoSettings(uint32_t(AoLevel::Subtle), 1).gain);
+}
+
+TEST_CASE("ao: wrestlers stay below the muddy range at the normal camera distance") {
+    // Owner review of a CPU match: wrestler strength 0.85 with gain 2.5 and a 45-unit reach darkened whole bodies
+    // instead of creases, and an 80-unit world reach left grime along the ring edges. Keep the AO in creases and
+    // contacts: moderate strength and gain, short reach.
+    for (uint32_t level = 1; level <= 2; level++) {
+        const AoSettings settings = aoSettings(level, 1);
+        CHECK(settings.characterStrength <= 0.65f);
+        CHECK(settings.characterGain <= 2.0f);
+        CHECK(settings.characterRadius <= 35.0f);
+        CHECK(settings.radius <= 65.0f);
+    }
+
+    const AoSettings subtle = aoSettings(uint32_t(AoLevel::Subtle), 1);
+    const AoSettings strong = aoSettings(uint32_t(AoLevel::Strong), 1);
+    CHECK(subtle.characterGain < strong.characterGain);
+}
+
+TEST_CASE("ao cycle: alternates every period on wall-clock boundaries, on first") {
+    CHECK(aoCycleOn(0, 2000));
+    CHECK(aoCycleOn(1999, 2000));
+    CHECK(!aoCycleOn(2000, 2000));
+    CHECK(!aoCycleOn(3999, 2000));
+    CHECK(aoCycleOn(4000, 2000));
+    CHECK(aoCycleOn(123456789, 0));
+}
+
+TEST_CASE("ao: quality only changes the sample count") {
+    for (uint32_t level = 1; level <= 2; level++) {
+        const AoSettings performance = aoSettings(level, 0);
+        const AoSettings quality = aoSettings(level, 2);
+        CHECK(quality.samples >= performance.samples);
+        CHECK_EQ(quality.strength, performance.strength);
+        CHECK_EQ(quality.radius, performance.radius);
+        CHECK_EQ(quality.characterRadius, performance.characterRadius);
+    }
+}
+
+TEST_CASE("ao: out-of-range levels clamp to Strong") {
+    CHECK_EQ(aoSettings(7, 1).samples, aoSettings(uint32_t(AoLevel::Strong), 1).samples);
+}
+
 // CRT beam simulator
 
 TEST_CASE("beam: 120 fps on a 280 Hz display simulates a 120 Hz CRT") {

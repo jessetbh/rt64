@@ -1675,7 +1675,8 @@ namespace RT64 {
                 const RenderViewport wcwViewport = convertViewportRect(drawData.rspViewports[proj.transformsIndex].rect(unitClipRatios), p.resolutionScale, p.fbWidth,
                     projInvRatioScale, extOriginPercentage, 0.0f, viewportOrigin, viewportOrigin);
                 wcwRaytracer->beginScene(wcwView, wcwProj, wcwViewport,
-                    worldPosRes, outputBuffers.worldPosBuffer.allocatedSize, indexRes, uint64_t(indexCount) * IndexStride,
+                    worldPosRes, outputBuffers.worldPosBuffer.allocatedSize, outputBuffers.worldNormBuffer.buffer.get(), outputBuffers.worldNormBuffer.allocatedSize,
+                    indexRes, uint64_t(indexCount) * IndexStride,
                     drawBuffers.rdpTilesBuffer.get(), drawBuffers.gpuTilesBuffer.get(), tcRes);
             }
 
@@ -1910,8 +1911,9 @@ namespace RT64 {
                                 wcwTextureHash = wcwTile.tileCopyUsed ? 0 : wcwTile.tmemHashOrID;
                             }
 
+                            const bool wcwLit = (call.callDesc.geometryMode & G_LIGHTING) != 0;
                             wcwRaytracer->addMesh(call.meshDesc.faceIndicesStart, call.callDesc.triangleCount, std::min(wcwMaxVertex + 1, vertexCount), call.shaderDesc.flags.culling, wcwCharacter,
-                                wcwAlphaTest, call.callDesc.tileIndex, wcwUvCorrection, wcwTextureHash);
+                                wcwLit, wcwAlphaTest, call.callDesc.tileIndex, wcwUvCorrection, wcwTextureHash);
 
                             // WCW_RT_RAYTEST=<present>: CPU copy of the gathered triangles for a reference ray test.
                             static const int wcwRayTestAt = getenv("WCW_RT_RAYTEST") ? atoi(getenv("WCW_RT_RAYTEST")) : -1;

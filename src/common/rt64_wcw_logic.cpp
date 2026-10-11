@@ -11,6 +11,43 @@ namespace RT64::WcwLogic {
         return (frameCounter >= builtFrame) && ((frameCounter - builtFrame) <= ShadowCasterStaleFrames);
     }
 
+    AoSettings aoSettings(uint32_t level, uint32_t quality) {
+        AoSettings settings;
+        const uint32_t baseSamples = (quality == 0) ? 1u : 2u;
+        switch (AoLevel(std::min(level, uint32_t(AoLevel::Strong)))) {
+        // Radii are in AKI world units (a ring is several hundred across, a wrestler about 150 tall). Wrestlers
+        // are mostly convex, so their occlusion lives in creases and contacts: the gain brings those out, and
+        // a shorter character radius keeps a limb from darkening the whole torso next to it.
+        case AoLevel::Subtle:
+            settings.samples = baseSamples;
+            settings.strength = 0.45f;
+            settings.characterStrength = 0.4f;
+            settings.radius = 45.0f;
+            settings.characterRadius = 25.0f;
+            settings.gain = 1.5f;
+            settings.characterGain = 1.5f;
+            break;
+        case AoLevel::Strong:
+            settings.samples = baseSamples * 2;
+            settings.strength = 0.6f;
+            settings.characterStrength = 0.6f;
+            settings.radius = 60.0f;
+            settings.characterRadius = 30.0f;
+            settings.gain = 1.75f;
+            settings.characterGain = 1.75f;
+            break;
+        case AoLevel::Off:
+        default:
+            break;
+        }
+
+        return settings;
+    }
+
+    bool aoCycleOn(uint64_t unixMs, uint64_t periodMs) {
+        return (periodMs == 0) || (((unixMs / periodMs) % 2) == 0);
+    }
+
     BeamDecision decideBeam(uint32_t displayRefreshRate, bool vsync, bool interpolating, uint32_t contentRate) {
         BeamDecision decision;
         if (interpolating && (double(contentRate) > BeamCrtRate) && ((double(displayRefreshRate) / double(contentRate)) >= 1.95)) {

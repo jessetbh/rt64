@@ -43,10 +43,12 @@ namespace RT64 {
 
     static std::atomic<bool> wcwRtUserEnabled = false;
     static std::atomic<uint32_t> wcwRtUserQuality = 1;
+    static std::atomic<uint32_t> wcwRtUserAo = uint32_t(WcwLogic::AoLevel::Subtle);
 
-    void WcwRaytracer::setUserSettings(bool enabled, uint32_t quality) {
+    void WcwRaytracer::setUserSettings(bool enabled, uint32_t quality, uint32_t aoLevel) {
         wcwRtUserEnabled = enabled;
         wcwRtUserQuality = std::min(quality, 2u);
+        wcwRtUserAo = std::min(aoLevel, uint32_t(WcwLogic::AoLevel::Strong));
     }
 
     bool WcwRaytracer::active() {
@@ -81,7 +83,8 @@ namespace RT64 {
         }
 
 #   ifdef _WIN32
-        // Trace pass: b0 params, t1 scene, t2 world positions, t3 face indices, t4 mesh index starts, u5 output.
+        // Trace pass: b0 params, t1 scene, t2 world positions, t3 face indices, t4 mesh index starts, u5 output,
+        // u6 current factors, t7-t10 tiles/texcoords/mesh tiles, t11 world normals.
         RenderDescriptorSetBuilder traceBuilder;
         traceBuilder.begin();
         traceBuilder.addConstantBuffer(0);
@@ -95,6 +98,7 @@ namespace RT64 {
         traceBuilder.addStructuredBuffer(8);
         traceBuilder.addStructuredBuffer(9);
         traceBuilder.addStructuredBuffer(10);
+        traceBuilder.addStructuredBuffer(11);
         traceBuilder.end();
         traceSet = traceBuilder.create(device);
 
@@ -521,7 +525,8 @@ namespace RT64 {
     }
 
     void WcwRaytracer::beginScene(const hlslpp::float4x4 &view, const hlslpp::float4x4 &proj, const RenderViewport &viewport,
-        const RenderBuffer *worldPosBuffer, uint64_t worldPosSize, const RenderBuffer *faceIndicesBuffer, uint64_t faceIndicesSize,
+        const RenderBuffer *worldPosBuffer, uint64_t worldPosSize, const RenderBuffer *worldNormBuffer, uint64_t worldNormSize,
+        const RenderBuffer *faceIndicesBuffer, uint64_t faceIndicesSize,
         const RenderBuffer *rdpTilesBuffer, const RenderBuffer *gpuTilesBuffer, const RenderBuffer *texCoordBuffer)
     {
         boundsViewProj = hlslpp::mul(view, proj);
@@ -552,11 +557,13 @@ namespace RT64 {
         this->viewport = viewport;
         this->worldPosBuffer = worldPosBuffer;
         this->worldPosSize = worldPosSize;
+        this->worldNormBuffer = worldNormBuffer;
+        this->worldNormSize = worldNormSize;
         this->faceIndicesBuffer = faceIndicesBuffer;
         this->faceIndicesSize = faceIndicesSize;
     }
 
-    void WcwRaytracer::addMesh(uint32_t faceIndicesStart, uint32_t triangleCount, uint32_t vertexCount, bool culled, bool character,
+    void WcwRaytracer::addMesh(uint32_t faceIndicesStart, uint32_t triangleCount, uint32_t vertexCount, bool culled, bool character, bool lit,
         bool alphaTest, uint32_t tileIndex, bool uvCorrection, uint64_t textureHash)
     {
         if ((textureHash != 0) && !character) {
@@ -572,7 +579,8 @@ namespace RT64 {
 
         // Culled draws are non-opaque so the trace shader sees their candidates; the top bits
         // carry the culled/character flags.
-        meshIndexStarts.emplace_back(faceIndicesStart | (culled ? WCW_RT_MESH_CULLED : 0u) | (character ? WCW_RT_MESH_CHARACTER : 0u));
+        meshIndexStarts.emplace_back(faceIndicesStart | (culled ? WCW_RT_MESH_CULLED : 0u) | (character ? WCW_RT_MESH_CHARACTER : 0u) |
+            ((lit && (worldNormBuffer != nullptr)) ? WCW_RT_MESH_LIT : 0u));
         meshTiles.emplace_back((tileIndex & WCW_RT_TILE_INDEX_MASK) | (alphaTest ? WCW_RT_TILE_ALPHA_TEST : 0u) | (uvCorrection ? WCW_RT_TILE_UV_CORRECTION : 0u));
     }
 
@@ -925,9 +933,23 @@ namespace RT64 {
         params.prevViewProj = slot.prevViewProj;
         params.historyValid = slot.historyValid ? 1 : 0;
         params.samplesPerLight = std::max(uint32_t(envFloat(getenv("WCW_RT_SAMPLES"), float(presetSamples))), 1u);
-        params.aoSamples = uint32_t(envFloat(getenv("WCW_RT_AO_SAMPLES"), float(presetSamples)));
-        params.aoRadius = envFloat(getenv("WCW_RT_AO_RADIUS"), 25.0f);
-        params.aoStrength = envFloat(getenv("WCW_RT_AO"), 0.5f);
+        // Ambient occlusion: the menu level's settings (WcwLogic::aoSettings), each overridable from the environment.
+        const WcwLogic::AoSettings ao = WcwLogic::aoSettings(wcwRtUserAo.load(), quality);
+        params.aoSamples = uint32_t(envFloat(getenv("WCW_RT_AO_SAMPLES"), float(ao.samples)));
+        params.aoRadius = envFloat(getenv("WCW_RT_AO_RADIUS"), ao.radius);
+        params.aoStrength = envFloat(getenv("WCW_RT_AO"), ao.strength);
+        params.aoCharacterRadius = envFloat(getenv("WCW_RT_AO_RADIUS_CHAR"), ao.characterRadius);
+        params.aoCharacterStrength = envFloat(getenv("WCW_RT_AO_CHAR"), ao.characterStrength);
+        params.aoSmoothNormals = (envFloat(getenv("WCW_RT_AO_SMOOTH"), 1.0f) != 0.0f) ? 1u : 0u;
+        params.aoGain = std::max(envFloat(getenv("WCW_RT_AO_GAIN"), ao.gain), 0.0f);
+        params.aoSplit = (envFloat(getenv("WCW_RT_AO_SPLIT"), 0.0f) != 0.0f) ? 1u : 0u;
+        params.filterRadius = uint32_t(std::clamp(envFloat(getenv("WCW_RT_FILTER_RADIUS"), 2.0f), 1.0f, 4.0f));
+        params.aoCharacterGain = std::max(envFloat(getenv("WCW_RT_AO_GAIN_CHAR"), ao.characterGain), 0.0f);
+        {
+            static const uint64_t aoCyclePeriodMs = uint64_t(std::max(envFloat(getenv("WCW_RT_AO_CYCLE"), 0.0f), 0.0f) * 1000.0f);
+            const uint64_t unixMs = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+            params.aoCycleOff = WcwLogic::aoCycleOn(unixMs, aoCyclePeriodMs) ? 0u : 1u;
+        }
         params.traceScale = float(traceWidth) / float(outputWidth);
 
         // Trace only this workload's screen footprint (plus a margin for the bilinear upsample
@@ -987,6 +1009,7 @@ namespace RT64 {
         traceSet->setBuffer(8, (gpuTilesBuffer != nullptr) ? gpuTilesBuffer : meshTilesBuffer.get(), 0, &gpuTileView);
         traceSet->setBuffer(9, (texCoordBuffer != nullptr) ? texCoordBuffer : meshTilesBuffer.get(), 0, &float2View);
         traceSet->setBuffer(10, meshTilesBuffer.get(), meshTilesBufferSize, &uintView);
+        traceSet->setBuffer(11, (worldNormBuffer != nullptr) ? worldNormBuffer : worldPosBuffer, (worldNormBuffer != nullptr) ? worldNormSize : worldPosSize, &float4View);
         compositeSet->setTexture(0, slot.output.get(), RenderTextureLayout::SHADER_READ);
 
         // Trace.

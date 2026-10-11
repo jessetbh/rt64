@@ -19,6 +19,8 @@
 // Light placement view: red dots under the lights, a 100-unit world grid, and the lights'
 // center lines (X red, Z blue) on every surface. Also set by "debugMode": 8 in the presets file.
 #define WCW_RT_MODE_LIGHT_MAP 8
+// Raw ambient occlusion of this frame in grey, not filtered or composited (tuning the AO's look and noise).
+#define WCW_RT_MODE_AO_RAW 9
 
 #define WCW_RT_MAX_LIGHTS 8
 #define WCW_RT_MAX_GLOWS 4
@@ -27,7 +29,9 @@
 #define WCW_RT_MESH_CULLED 0x80000000u
 // Bit 30: a character draw (AKI scales wrestler models, world geometry has unit scale).
 #define WCW_RT_MESH_CHARACTER 0x40000000u
-#define WCW_RT_MESH_FLAGS (WCW_RT_MESH_CULLED | WCW_RT_MESH_CHARACTER)
+// Bit 29: a lit draw (G_LIGHTING): its vertices carry real normals, which the AO interpolates.
+#define WCW_RT_MESH_LIT 0x20000000u
+#define WCW_RT_MESH_FLAGS (WCW_RT_MESH_CULLED | WCW_RT_MESH_CHARACTER | WCW_RT_MESH_LIT)
 
 // Per-mesh tile word: RDP/GPU tile index in the low bits, plus whether the draw alpha tests
 // (rays skip its transparent texels) and whether its UVs get the non-perspective correction.
@@ -65,8 +69,9 @@ namespace interop {
         uint historyValid;
         // Jittered shadow rays per light per pixel per frame.
         uint samplesPerLight;
-        // Contact shadows: aoSamples short cosine-weighted rays of length aoRadius per pixel
-        // per frame; occluded fraction darkens by aoStrength (halved on characters).
+        // Ambient occlusion: aoSamples cosine-weighted rays of length aoRadius per pixel per frame; a hit at
+        // distance t occludes by 1 - (t / radius)^2 and the occluded fraction darkens by aoStrength. Characters
+        // use aoCharacterStrength / aoCharacterRadius (below).
         uint aoSamples;
         float aoRadius;
         float aoStrength;
@@ -93,6 +98,23 @@ namespace interop {
         float glowPadding2;
         float4 glows[WCW_RT_MAX_GLOWS];
         float4 glowIntensity;
+        float aoCharacterStrength;
+        float aoCharacterRadius;
+        // 1: lit draws use their interpolated vertex normals for the AO hemisphere (WCW_RT_AO_SMOOTH=0 turns it off).
+        uint aoSmoothNormals;
+        // Contrast: the occluded fraction is scaled by this (then clamped to 1) before darkening, so creases
+        // that block part of the hemisphere read clearly. Wrestlers are mostly convex: without it, AO only shows
+        // in the tightest corners.
+        float aoGain;
+        // WCW_RT_AO_SPLIT=1: no AO on the left half of the screen (same-moment before/after comparisons).
+        uint aoSplit;
+        // Resolve: radius of the depth-aware tent filter (2 = 5x5). Wider smooths AO and soft shadow grain;
+        // the depth weights keep object edges sharp. WCW_RT_FILTER_RADIUS overrides.
+        uint filterRadius;
+        // Contrast gain on characters (aoGain is the world's): wrestlers carry the AO the owner wants to see.
+        float aoCharacterGain;
+        // 1 while WCW_RT_AO_CYCLE has AO switched off (full-screen on/off comparisons over time).
+        uint aoCycleOff;
     };
 
     struct WcwRtCompositeCB {
