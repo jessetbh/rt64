@@ -634,6 +634,14 @@ namespace RT64 {
 #endif
 
     bool Application::sdlEventFilter(SDL_Event *event) {
+        static const bool inspectorLog = getenv("WCW_INSPECTOR_LOG") != nullptr;
+        static int loggedMouse = 0;
+        if (inspectorLog && ((event->type == SDL_MOUSEBUTTONDOWN) || (event->type == SDL_MOUSEMOTION)) && (loggedMouse < 6)) {
+            loggedMouse++;
+            fprintf(stderr, "[wcw][inspector] SDL mouse event %u, developer %d, inspector %p\n", event->type, int(userConfig.developerMode),
+                (presentQueue != nullptr) ? (void *)presentQueue->inspector.get() : nullptr);
+        }
+
         if (userConfig.developerMode && (presentQueue != nullptr) && (state != nullptr) && !FileDialog::isOpen) {
             const std::lock_guard lock(presentQueue->inspectorMutex);
             if ((presentQueue->inspector != nullptr) && presentQueue->inspector->handleSdlEvent(event)) {

@@ -65,9 +65,29 @@ namespace RT64 {
         if ((sdlWindow == nullptr) && SDL_WasInit(SDL_INIT_VIDEO)) {
             // We'd normally install the event filter here, but Mupen does not set its own event filter
             // until much later. Instead, we delegate this to the first time a screen update is sent.
+#       ifdef _WIN32
+            // [wcw fix] The SDL window RT64 renders into (matched by its HWND), not simply the first one: ImGui's SDL
+            // backend drops mouse button events from any other window ID, so the inspector saw the cursor but never a click.
+            for (Uint32 id = 1; (id <= 64) && (sdlWindow == nullptr); id++) {
+                SDL_Window *candidate = SDL_GetWindowFromID(id);
+                SDL_SysWMinfo wmInfo;
+                SDL_VERSION(&wmInfo.version);
+                if ((candidate != nullptr) && SDL_GetWindowWMInfo(candidate, &wmInfo) && (wmInfo.info.win.window == window)) {
+                    sdlWindow = candidate;
+                }
+            }
+#       endif
+
             // FIXME: We attempt to get the first window created by SDL2. This can be improved later
             // by actually passing the SDL_Window handle through as a parameter.
-            sdlWindow = SDL_GetWindowFromID(1);
+            if (sdlWindow == nullptr) {
+                sdlWindow = SDL_GetWindowFromID(1);
+            }
+        }
+
+        if (getenv("WCW_INSPECTOR_LOG") != nullptr) {
+            fprintf(stderr, "[wcw][inspector] window setup: sdl video %d, sdl window %p (id %u), filter now %d\n", int(SDL_WasInit(SDL_INIT_VIDEO) != 0), (void *)sdlWindow,
+                (sdlWindow != nullptr) ? SDL_GetWindowID(sdlWindow) : 0u, int(listener->usesWindowMessageFilter()));
         }
 
         if (listener->usesWindowMessageFilter()) {
@@ -400,6 +420,9 @@ namespace RT64 {
 
             SDL_SetEventFilter(&ApplicationWindow::sdlEventFilter, this);
             sdlEventFilterInstalled = true;
+            if (getenv("WCW_INSPECTOR_LOG") != nullptr) {
+                fprintf(stderr, "[wcw][inspector] SDL event filter installed (previous filter %p)\n", (void *)sdlEventFilterStored);
+            }
         }
     }
 

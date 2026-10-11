@@ -10,6 +10,7 @@
 #include "rt64_wcw_raytracer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -103,9 +104,23 @@ namespace RT64 {
     }
 
     void WcwRaytracer::drawLightingEditor() {
+        // The inspector doesn't scale with the display: at 4K its text was unreadably small. 1080 lines = 1x.
+        ImGuiIO &io = ImGui::GetIO();
+        io.FontGlobalScale = std::max(1.0f, std::floor(io.DisplaySize.y / 1080.0f * 4.0f + 0.5f) / 4.0f);
+        ImGui::SetNextWindowPos(ImVec2(16.0f, 16.0f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(480.0f * io.FontGlobalScale, io.DisplaySize.y * 0.8f), ImGuiCond_FirstUseEver);
         if (!ImGui::Begin("Lighting")) {
             ImGui::End();
             return;
+        }
+
+        {
+            static const bool inspectorLog = getenv("WCW_INSPECTOR_LOG") != nullptr;
+            static uint32_t logFrame = 0;
+            if (inspectorLog && (((logFrame++ % 15) == 0) || io.MouseDown[0])) {
+                fprintf(stderr, "[wcw][inspector] imgui mouse (%.0f, %.0f) down %d hovered %d display %.0fx%.0f\n", io.MousePos.x, io.MousePos.y,
+                    int(io.MouseDown[0]), int(ImGui::IsWindowHovered()), io.DisplaySize.x, io.DisplaySize.y);
+            }
         }
 
         const std::lock_guard<std::recursive_mutex> lock(presetsMutex);
