@@ -320,6 +320,7 @@ set (SOURCES
     "${PROJECT_SOURCE_DIR}/src/common/rt64_user_configuration.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_user_paths.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_logic.cpp"
+    "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_venues.cpp"
 
     "${PROJECT_SOURCE_DIR}/src/gbi/rt64_gbi.cpp"
     "${PROJECT_SOURCE_DIR}/src/gbi/rt64_gbi_f3d.cpp"
@@ -452,7 +453,9 @@ option(RT64_WCW_TESTS "Build and run the wcw unit tests with rt64" ON)
 if (RT64_WCW_TESTS AND NOT CMAKE_CROSSCOMPILING)
     add_executable(rt64_wcw_tests
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_logic_tests.cpp"
+        "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_venues_tests.cpp"
         "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_logic.cpp"
+        "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_venues.cpp"
     )
     target_include_directories(rt64_wcw_tests PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/tests/wcw")
     set(RT64_WCW_TESTS_STAMP "${CMAKE_CURRENT_BINARY_DIR}/rt64_wcw_tests.passed")
