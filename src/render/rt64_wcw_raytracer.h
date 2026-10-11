@@ -46,6 +46,8 @@ namespace RT64 {
         std::vector<RenderBottomLevelASMesh> meshes;
         std::vector<uint32_t> meshIndexStarts;
         const RenderBuffer *worldPosBuffer = nullptr;
+        const RenderBuffer *worldNormBuffer = nullptr;
+        uint64_t worldNormSize = 0;
         const RenderBuffer *rdpTilesBuffer = nullptr;
         const RenderBuffer *gpuTilesBuffer = nullptr;
         const RenderBuffer *texCoordBuffer = nullptr;
@@ -244,7 +246,8 @@ namespace RT64 {
         // Runtime settings from the frontend's graphics menu. Quality: 0 Performance (half-res,
         // 1 sample per light, 1 AO ray), 1 Balanced (half-res, 2/2), 2 Quality (full-res, 2/2).
         // WCW_RT forces it on; WCW_RT_SCALE / WCW_RT_SAMPLES / WCW_RT_AO_SAMPLES override quality.
-        static void setUserSettings(bool enabled, uint32_t quality);
+        // aoLevel: the Ambient Occlusion option (WcwLogic::AoLevel: 0 Off, 1 Subtle, 2 Strong).
+        static void setUserSettings(bool enabled, uint32_t quality, uint32_t aoLevel = 1);
         // True when ray tracing should run this frame (WCW_RT or the menu option). The camera
         // hand-off in rt64_rsp.cpp follows it, so Off keeps the original rendering.
         static bool active();
@@ -261,13 +264,15 @@ namespace RT64 {
         // WCW_RT_SPLIT: ray tracing only on the right half of the screen (before/after comparisons).
         static bool splitScreen();
         void beginScene(const hlslpp::float4x4 &view, const hlslpp::float4x4 &proj, const RenderViewport &viewport,
-            const RenderBuffer *worldPosBuffer, uint64_t worldPosSize, const RenderBuffer *faceIndicesBuffer, uint64_t faceIndicesSize,
+            const RenderBuffer *worldPosBuffer, uint64_t worldPosSize, const RenderBuffer *worldNormBuffer, uint64_t worldNormSize,
+            const RenderBuffer *faceIndicesBuffer, uint64_t faceIndicesSize,
             const RenderBuffer *rdpTilesBuffer, const RenderBuffer *gpuTilesBuffer, const RenderBuffer *texCoordBuffer);
         // culled: the draw has N64 face culling on, so primary rays skip its back faces.
         // character: a wrestler draw, shadowed with the weaker character strength.
+        // lit: the draw uses N64 lighting (G_LIGHTING), so its vertices carry normals the AO can interpolate.
         // alphaTest: rays skip the draw's transparent texels (tileIndex, uvCorrection: its texture).
         // textureHash: the draw's first texture (0 if none), a venue fingerprint for the light presets.
-        void addMesh(uint32_t faceIndicesStart, uint32_t triangleCount, uint32_t vertexCount, bool culled, bool character,
+        void addMesh(uint32_t faceIndicesStart, uint32_t triangleCount, uint32_t vertexCount, bool culled, bool character, bool lit,
             bool alphaTest, uint32_t tileIndex, bool uvCorrection, uint64_t textureHash);
         // Grows the screen bounds with a world-space triangle (3 xyz positions) of a gathered draw.
         // character: a wrestler triangle (left out of the scene bounds the light anchor uses).

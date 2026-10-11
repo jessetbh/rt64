@@ -37,6 +37,54 @@ TEST_CASE("shadow casters survive every render of a game frame at 120 fps (shado
     }
 }
 
+// Ray-traced ambient occlusion
+
+TEST_CASE("ao: Off traces no occlusion rays") {
+    for (uint32_t quality = 0; quality <= 2; quality++) {
+        const AoSettings off = aoSettings(uint32_t(AoLevel::Off), quality);
+        CHECK_EQ(off.samples, 0u);
+        CHECK_EQ(off.strength, 0.0f);
+        CHECK_EQ(off.characterStrength, 0.0f);
+    }
+}
+
+TEST_CASE("ao: Strong is stronger, reaches further and samples more than Subtle") {
+    for (uint32_t quality = 0; quality <= 2; quality++) {
+        const AoSettings subtle = aoSettings(uint32_t(AoLevel::Subtle), quality);
+        const AoSettings strong = aoSettings(uint32_t(AoLevel::Strong), quality);
+        CHECK(subtle.samples > 0);
+        CHECK(strong.samples > subtle.samples);
+        CHECK(strong.strength > subtle.strength);
+        CHECK(strong.characterStrength > subtle.characterStrength);
+        CHECK(strong.radius > subtle.radius);
+        CHECK(strong.characterRadius >= subtle.characterRadius);
+        CHECK((strong.strength <= 1.0f) && (strong.characterStrength <= 1.0f));
+    }
+}
+
+TEST_CASE("ao: wrestlers get the full strength (it used to be halved on characters)") {
+    for (uint32_t level = 1; level <= 2; level++) {
+        const AoSettings settings = aoSettings(level, 1);
+        CHECK(settings.characterStrength >= settings.strength);
+        CHECK(settings.characterRadius > 0.0f);
+    }
+}
+
+TEST_CASE("ao: quality only changes the sample count") {
+    for (uint32_t level = 1; level <= 2; level++) {
+        const AoSettings performance = aoSettings(level, 0);
+        const AoSettings quality = aoSettings(level, 2);
+        CHECK(quality.samples >= performance.samples);
+        CHECK_EQ(quality.strength, performance.strength);
+        CHECK_EQ(quality.radius, performance.radius);
+        CHECK_EQ(quality.characterRadius, performance.characterRadius);
+    }
+}
+
+TEST_CASE("ao: out-of-range levels clamp to Strong") {
+    CHECK_EQ(aoSettings(7, 1).samples, aoSettings(uint32_t(AoLevel::Strong), 1).samples);
+}
+
 // CRT beam simulator
 
 TEST_CASE("beam: 120 fps on a 280 Hz display simulates a 120 Hz CRT") {

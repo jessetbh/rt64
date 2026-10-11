@@ -23,6 +23,30 @@ namespace RT64::WcwLogic {
     // Whether a scene last built on game frame builtFrame still casts shadows on game frame frameCounter.
     bool shadowCasterFresh(uint64_t frameCounter, uint64_t builtFrame);
 
+    // Ray-traced ambient occlusion
+
+    // The menu's Ambient Occlusion levels.
+    enum class AoLevel : uint32_t {
+        Off = 0,
+        Subtle = 1,
+        Strong = 2
+    };
+
+    struct AoSettings {
+        // Cosine-weighted occlusion rays per pixel per frame (0 = no AO).
+        uint32_t samples = 0;
+        // How much a fully occluded pixel darkens, on the world and on characters (wrestlers).
+        float strength = 0.0f;
+        float characterStrength = 0.0f;
+        // Ray length: occluders further away don't count, nearer ones count more (1 - (t / radius)^2).
+        float radius = 0.0f;
+        float characterRadius = 0.0f;
+    };
+
+    // The AO parameters for a menu level at a ray tracing quality (0 Performance, 1 Balanced, 2 Quality). Higher
+    // quality only adds samples; the look (strengths, radii) depends on the level alone.
+    AoSettings aoSettings(uint32_t level, uint32_t quality);
+
     // CRT beam simulator
 
     // The simulated CRT's refresh rate without frame interpolation.

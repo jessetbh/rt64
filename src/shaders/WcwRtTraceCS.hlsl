@@ -24,6 +24,8 @@ StructuredBuffer<RDPTile> gRDPTiles : register(t7);
 StructuredBuffer<GPUTile> gGPUTiles : register(t8);
 StructuredBuffer<float2> gTexCoords : register(t9);
 StructuredBuffer<uint> gMeshTiles : register(t10);
+// World-space vertex normals (zero for vertices without one); only meaningful on lit meshes (WCW_RT_MESH_LIT).
+StructuredBuffer<float4> gWorldNorm : register(t11);
 // The framebuffer renderer's bindless RGBA texture cache.
 Texture2D<float4> gTextures[8192] : register(t0, space1);
 
@@ -134,6 +136,29 @@ float3 triangleNormal(uint geometryIndex, uint primitiveIndex) {
     const float3 n = cross(v1 - v0, v2 - v0);
     const float len = length(n);
     return (len > 1e-8f) ? (n / len) : float3(0.0f, 1.0f, 0.0f);
+}
+
+// The AO hemisphere's normal: on lit draws the vertex normals interpolated at the hit, so low-poly models
+// (wrestlers) get smooth occlusion instead of one value per facet; otherwise the face normal. faceNormal faces
+// the viewer; a smooth normal seen from behind is flipped to match.
+float3 aoNormal(uint geometryIndex, uint primitiveIndex, float2 barycentrics, float3 faceNormal) {
+    const uint meshStart = gMeshIndexStarts[geometryIndex];
+    if ((gParams.aoSmoothNormals == 0) || ((meshStart & WCW_RT_MESH_LIT) == 0)) {
+        return faceNormal;
+    }
+
+    const uint base = (meshStart & ~WCW_RT_MESH_FLAGS) + primitiveIndex * 3;
+    const float3 n0 = gWorldNorm[gFaceIndices[base + 0]].xyz;
+    const float3 n1 = gWorldNorm[gFaceIndices[base + 1]].xyz;
+    const float3 n2 = gWorldNorm[gFaceIndices[base + 2]].xyz;
+    const float3 n = n0 * (1.0f - barycentrics.x - barycentrics.y) + n1 * barycentrics.x + n2 * barycentrics.y;
+    const float len = length(n);
+    if (len < 1e-3f) {
+        return faceNormal;
+    }
+
+    const float3 smoothNormal = n / len;
+    return (dot(smoothNormal, faceNormal) < 0.0f) ? -smoothNormal : smoothNormal;
 }
 
 // Brightening from the preset's glows at a hit point (0 = none).
@@ -394,11 +419,15 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
     const float strength = characterReceiver ? gParams.characterShadowStrength : gParams.shadowStrength;
     float factor = 1.0f - strength * (1.0f - lit);
 
-    // Contact shadows: short cosine-weighted hemisphere rays against all workloads' geometry.
+    // Ambient occlusion: cosine-weighted hemisphere rays against all workloads' geometry, around the smooth
+    // normal on lit draws. Directions that dip below the flat triangle are mirrored back above it (no self-hits
+    // from the smoothing); a hit at distance t occludes by 1 - (t / radius)^2, so far hits fade in softly.
     if (gParams.aoSamples > 0) {
-        const float3 helper = (abs(normal.y) < 0.99f) ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
-        const float3 tangent = normalize(cross(helper, normal));
-        const float3 bitangent = cross(normal, tangent);
+        const float3 hemisphere = aoNormal(primary.CommittedGeometryIndex(), primary.CommittedPrimitiveIndex(), primary.CommittedTriangleBarycentrics(), normal);
+        const float3 helper = (abs(hemisphere.y) < 0.99f) ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
+        const float3 tangent = normalize(cross(helper, hemisphere));
+        const float3 bitangent = cross(hemisphere, tangent);
+        const float aoRadius = characterReceiver ? gParams.aoCharacterRadius : gParams.aoRadius;
         float occluded = 0.0f;
         for (uint a = 0; a < gParams.aoSamples; a++) {
             const uint seed = gParams.frameIndex * 64 + 40 + a * 2;
@@ -406,13 +435,17 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
             const float v = noise(pixel + uint2(13, 97), seed + 1);
             const float r = sqrt(u);
             const float phi = 6.2831853f * v;
-            const float3 dir = normalize(tangent * (r * cos(phi)) + bitangent * (r * sin(phi)) + normal * sqrt(max(1.0f - u, 0.0f)));
+            float3 dir = normalize(tangent * (r * cos(phi)) + bitangent * (r * sin(phi)) + hemisphere * sqrt(max(1.0f - u, 0.0f)));
+            const float below = dot(dir, normal);
+            if (below < 0.0f) {
+                dir = normalize(dir - 2.0f * below * normal);
+            }
 
             RayDesc aoRay;
             aoRay.Origin = hitPos + normal * 0.5f;
             aoRay.Direction = dir;
             aoRay.TMin = 0.5f;
-            aoRay.TMax = gParams.aoRadius;
+            aoRay.TMax = aoRadius;
             RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> ao;
             ao.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, aoRay);
             while (ao.Proceed()) {
@@ -422,11 +455,12 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
             }
 
             if (ao.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
-                occluded += 1.0f;
+                const float reach = saturate(ao.CommittedRayT() / aoRadius);
+                occluded += 1.0f - reach * reach;
             }
         }
 
-        const float aoStrength = gParams.aoStrength * (characterReceiver ? 0.5f : 1.0f);
+        const float aoStrength = characterReceiver ? gParams.aoCharacterStrength : gParams.aoStrength;
         const float aoFactor = 1.0f - aoStrength * (occluded / float(gParams.aoSamples));
         factor = (gParams.mode == WCW_RT_MODE_AO) ? aoFactor : factor * aoFactor;
     }

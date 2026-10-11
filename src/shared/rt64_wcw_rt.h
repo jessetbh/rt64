@@ -27,7 +27,9 @@
 #define WCW_RT_MESH_CULLED 0x80000000u
 // Bit 30: a character draw (AKI scales wrestler models, world geometry has unit scale).
 #define WCW_RT_MESH_CHARACTER 0x40000000u
-#define WCW_RT_MESH_FLAGS (WCW_RT_MESH_CULLED | WCW_RT_MESH_CHARACTER)
+// Bit 29: a lit draw (G_LIGHTING): its vertices carry real normals, which the AO interpolates.
+#define WCW_RT_MESH_LIT 0x20000000u
+#define WCW_RT_MESH_FLAGS (WCW_RT_MESH_CULLED | WCW_RT_MESH_CHARACTER | WCW_RT_MESH_LIT)
 
 // Per-mesh tile word: RDP/GPU tile index in the low bits, plus whether the draw alpha tests
 // (rays skip its transparent texels) and whether its UVs get the non-perspective correction.
@@ -65,8 +67,9 @@ namespace interop {
         uint historyValid;
         // Jittered shadow rays per light per pixel per frame.
         uint samplesPerLight;
-        // Contact shadows: aoSamples short cosine-weighted rays of length aoRadius per pixel
-        // per frame; occluded fraction darkens by aoStrength (halved on characters).
+        // Ambient occlusion: aoSamples cosine-weighted rays of length aoRadius per pixel per frame; a hit at
+        // distance t occludes by 1 - (t / radius)^2 and the occluded fraction darkens by aoStrength. Characters
+        // use aoCharacterStrength / aoCharacterRadius (below).
         uint aoSamples;
         float aoRadius;
         float aoStrength;
@@ -93,6 +96,11 @@ namespace interop {
         float glowPadding2;
         float4 glows[WCW_RT_MAX_GLOWS];
         float4 glowIntensity;
+        float aoCharacterStrength;
+        float aoCharacterRadius;
+        // 1: lit draws use their interpolated vertex normals for the AO hemisphere (WCW_RT_AO_SMOOTH=0 turns it off).
+        uint aoSmoothNormals;
+        float aoPadding0;
     };
 
     struct WcwRtCompositeCB {

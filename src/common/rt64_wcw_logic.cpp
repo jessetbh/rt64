@@ -11,6 +11,32 @@ namespace RT64::WcwLogic {
         return (frameCounter >= builtFrame) && ((frameCounter - builtFrame) <= ShadowCasterStaleFrames);
     }
 
+    AoSettings aoSettings(uint32_t level, uint32_t quality) {
+        AoSettings settings;
+        const uint32_t baseSamples = (quality == 0) ? 1u : 2u;
+        switch (AoLevel(std::min(level, uint32_t(AoLevel::Strong)))) {
+        case AoLevel::Subtle:
+            settings.samples = baseSamples;
+            settings.strength = 0.5f;
+            settings.characterStrength = 0.5f;
+            settings.radius = 25.0f;
+            settings.characterRadius = 25.0f;
+            break;
+        case AoLevel::Strong:
+            settings.samples = baseSamples * 2;
+            settings.strength = 0.85f;
+            settings.characterStrength = 0.85f;
+            settings.radius = 40.0f;
+            settings.characterRadius = 30.0f;
+            break;
+        case AoLevel::Off:
+        default:
+            break;
+        }
+
+        return settings;
+    }
+
     BeamDecision decideBeam(uint32_t displayRefreshRate, bool vsync, bool interpolating, uint32_t contentRate) {
         BeamDecision decision;
         if (interpolating && (double(contentRate) > BeamCrtRate) && ((double(displayRefreshRate) / double(contentRate)) >= 1.95)) {
