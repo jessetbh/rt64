@@ -134,6 +134,16 @@ namespace interop {
         // With shadowSmooth: a light's ray-traced shadow fades in over this much of the facing cosine past the
         // terminator, where the game's vertex lighting already darkens the surface (WCW_RT_TERMINATOR_FADE).
         float terminatorFade;
+        // Resolve: shadow and AO are filtered and accumulated separately (WcwLogic::denoiseSettings): tent filter
+        // radii in trace pixels and the weight of this frame against the history, per term.
+        uint shadowFilterRadius;
+        uint aoFilterRadius;
+        float shadowTemporalAlpha;
+        float aoTemporalAlpha;
+        // WCW_RT_DENOISE_SPLIT=1: the old combined cleanup (shadow * AO, filterRadius, temporalAlpha) on the left half.
+        uint denoiseSplit;
+        // End of the traced rect (exclusive, trace pixels): the resolve filter doesn't read past it.
+        uint2 traceEnd;
     };
 
     struct WcwRtCompositeCB {

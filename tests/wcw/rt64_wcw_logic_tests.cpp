@@ -124,6 +124,21 @@ TEST_CASE("ao: out-of-range levels clamp to Strong") {
     CHECK_EQ(aoSettings(7, 1).samples, aoSettings(uint32_t(AoLevel::Strong), 1).samples);
 }
 
+// Resolve: separate shadow and AO cleanup
+
+TEST_CASE("denoise: shadows get a tighter filter than AO (crisp shadow edges, smooth AO)") {
+    const DenoiseSettings d = denoiseSettings();
+    CHECK(d.shadowRadius < d.aoRadius);
+    CHECK(d.shadowRadius >= 1);
+    CHECK(d.aoRadius <= DenoiseMaxRadius);
+}
+
+TEST_CASE("denoise: AO accumulates longer than shadows, and both keep some history") {
+    const DenoiseSettings d = denoiseSettings();
+    CHECK(d.aoAlpha <= d.shadowAlpha);
+    CHECK(d.aoAlpha > 0.0f && d.shadowAlpha < 1.0f);
+}
+
 // Blue noise (ray tracer sample jitter)
 
 static const std::vector<float> &blueTile() {

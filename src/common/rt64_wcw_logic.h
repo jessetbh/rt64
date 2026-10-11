@@ -55,6 +55,23 @@ namespace RT64::WcwLogic {
     // quality only adds samples; the look (strengths, radii) depends on the level alone.
     AoSettings aoSettings(uint32_t level, uint32_t quality);
 
+    // The resolve pass's cleanup of the traced shadow and AO terms, which it filters and accumulates separately.
+    // Shadows have real edges (a wrestler's outline on the mat), so they get a tight spatial filter and react
+    // quickly; AO is soft by nature and the noisier term (few rays in every direction), so it gets a wide filter
+    // and a longer history. Radii are in trace pixels (1 = 3x3); alpha is the weight of this frame's value
+    // against the reprojected history.
+    struct DenoiseSettings {
+        uint32_t shadowRadius = 1;
+        uint32_t aoRadius = 3;
+        float shadowAlpha = 0.1f;
+        float aoAlpha = 0.06f;
+    };
+
+    // The resolve filter reads up to this many pixels around each pixel; the trace rect's margin must cover it.
+    constexpr uint32_t DenoiseMaxRadius = 4;
+
+    DenoiseSettings denoiseSettings();
+
     // Blue noise for the ray tracer's random samples (soft shadow jitter, AO directions): a size x size tile
     // (size a power of two) built with void-and-cluster (Ulichney 1993) on a torus, so it tiles seamlessly.
     // Returns the values in [0, 1), row-major: each rank appears once, as (rank + 0.5) / (size * size). Unlike

@@ -18,8 +18,9 @@ StructuredBuffer<float4> gWorldPos : register(t2);
 StructuredBuffer<uint> gFaceIndices : register(t3);
 StructuredBuffer<uint> gMeshIndexStarts : register(t4);
 RWTexture2D<float4> gOutput : register(u5);
-// Shadow mode: (shadow factor, primary hit distance; 0 = no hit) for the resolve pass.
-RWTexture2D<float2> gCurrent : register(u6);
+// Shadow mode: (shadow factor, primary hit distance (0 = no hit), AO factor, unused) for the resolve pass, which
+// filters the shadow and AO terms separately. The shadow factor includes the glows (up to 2).
+RWTexture2D<float4> gCurrent : register(u6);
 StructuredBuffer<RDPTile> gRDPTiles : register(t7);
 StructuredBuffer<GPUTile> gGPUTiles : register(t8);
 StructuredBuffer<float2> gTexCoords : register(t9);
@@ -130,7 +131,7 @@ bool resolvedMode() {
 
 void writeNoHit(uint2 pixel) {
     if (resolvedMode()) {
-        gCurrent[pixel] = float2(1.0f, 0.0f);
+        gCurrent[pixel] = float4(1.0f, 0.0f, 1.0f, 0.0f);
     }
     else {
         gOutput[pixel] = float4(1.0f, 1.0f, 1.0f, 0.0f);
@@ -387,7 +388,7 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
     if (resolvedMode() && (gParams.receiverRadius > 0.0f)) {
         const float receiverDist = length(hitPos.xz - gParams.lightPosition.xz);
         if (receiverDist >= gParams.receiverRadius) {
-            gCurrent[pixel] = float2(1.0f + glowLight(hitPos, normal), hitT);
+            gCurrent[pixel] = float4(1.0f + glowLight(hitPos, normal), hitT, 1.0f, 0.0f);
             return;
         }
 
@@ -490,6 +491,7 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
     // Ambient occlusion: cosine-weighted hemisphere rays against all workloads' geometry, around the smooth
     // normal on lit draws. Directions that dip below the flat triangle are mirrored back above it (no self-hits
     // from the smoothing); a hit at distance t occludes by 1 - (t / radius)^2, so far hits fade in softly.
+    float ao = 1.0f;
     const bool aoSplitOff = (gParams.aoSplit != 0) && (pixel.x < (gParams.resolution.x / 2));
     if ((gParams.aoSamples > 0) && !aoSplitOff && (gParams.aoCycleOff == 0)) {
         const float3 hemisphere = aoNormal(primary.CommittedGeometryIndex(), primary.CommittedPrimitiveIndex(), primary.CommittedTriangleBarycentrics(), normal);
@@ -535,14 +537,20 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
             gOutput[pixel] = float4(aoFactor, aoFactor, aoFactor, 1.0f);
             return;
         }
-        factor = (gParams.mode == WCW_RT_MODE_AO) ? aoFactor : factor * aoFactor;
+        ao = aoFactor;
+    }
+
+    // AO-only view: the shadow term stays open.
+    if (gParams.mode == WCW_RT_MODE_AO) {
+        factor = 1.0f;
     }
 
     factor = lerp(factor, 1.0f, receiverFade);
+    ao = lerp(ao, 1.0f, receiverFade);
 
     if (resolvedMode() && (gParams.mode == WCW_RT_MODE_SHADOW)) {
         factor *= 1.0f + glowLight(hitPos, normal);
     }
 
-    gCurrent[pixel] = float2(factor, hitT);
+    gCurrent[pixel] = float4(factor, hitT, ao, 0.0f);
 }
