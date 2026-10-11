@@ -232,7 +232,7 @@ namespace RT64 {
         int venueOverride = -2;
         bool presetsEdited = false;
         // Outside darkness: per color target, which traced pass of the frame darkens the misses.
-        std::unordered_map<const RenderTarget *, WcwLogic::MissDarkeningPass> missDarkening;
+        WcwLogic::MissDarkening missDarkening;
         std::string editorMessage;
         char editorNewVenueName[64] = {};
         void applyPresetFile();

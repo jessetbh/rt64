@@ -905,13 +905,13 @@ namespace RT64 {
 
         // [wcw rt] Outside darkness (the preset's outsideDarkness; WCW_RT_DARKNESS overrides): the arena and crowd
         // beyond the receiver radius fall into shadow. Misses (the crowd and background, never in the traced scene)
-        // darken once per frame, on the arena pass (WcwLogic::MissDarkeningPass).
+        // darken once per frame, on the arena pass (WcwLogic::MissDarkening).
         const float outsideDarkness = std::clamp(envFloat(getenv("WCW_RT_DARKNESS"), preset.outsideDarkness), 0.0f, 1.0f);
         params.outsideDarkness = outsideDarkness;
         params.outsideEdge = std::max(envFloat(getenv("WCW_RT_DARKNESS_EDGE"), preset.outsideEdge), 0.0f);
         // Misses land on the arena floor: the lowest point of the scene's world geometry.
         params.missFloorY = sceneBoundsValid ? sceneMin[1] : 0.0f;
-        const bool darkenMisses = missDarkening[colorTarget].darkenThisPass(lastPresentId, workloadInFrame, meshes.size());
+        const bool darkenMisses = missDarkening.darkenThisPass(colorTarget, lastPresentId, meshes.size());
         params.darkenMisses = ((outsideDarkness > 0.0f) && darkenMisses) ? 1u : 0u;
 
         {

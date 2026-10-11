@@ -9,6 +9,7 @@
 #include <functional>
 #include <string>
 #include <utility>
+#include <unordered_map>
 #include <vector>
 
 // [wcw rt] Venue light presets (assets/rt_lights.json): the file's data model, parsing and writing, and venue matching.
@@ -126,19 +127,50 @@ namespace RT64::WcwLogic {
     float missFloorDistance(const float origin[3], const float direction[3], float floorY, float centerX, float centerZ);
 
     // Which traced pass of a frame darkens the ray misses (outside darkness), for one color target. AKI frames are
-    // several passes into one image; misses must darken once, on the arena pass (the one that traced the most
+    // several passes into one image; misses must darken once, on the arena pass (the one that traces the most
     // meshes), after the crowd is drawn and before the wrestlers and HUD. Darkening on the first pass instead left
-    // the crowd lit (it is drawn by a later pass). The choice is last frame's arena pass: the structure is stable.
+    // the crowd lit (it is drawn by a later pass). The choice sticks: it only moves to another pass that has had
+    // clearly more meshes (SwitchRatio) for SwitchFrames frames in a row, or when the chosen pass disappears.
+    // Following the frame's busiest pass directly flickered the background: two passes with 44 and 45 meshes
+    // traded places from frame to frame.
     class MissDarkeningPass {
     public:
+        static constexpr float SwitchRatio = 1.25f;
+        static constexpr uint32_t SwitchFrames = 15;
+
         // Called once per traced pass; true for the pass that darkens the misses this frame.
         bool darkenThisPass(uint64_t presentId, uint32_t passIndex, size_t meshCount);
 
     private:
+        void finishFrame();
+
         uint64_t present = UINT64_MAX;
         uint32_t chosenPass = UINT32_MAX;
+        // This frame: the busiest pass and the chosen pass's mesh count (0 = it didn't run).
         uint32_t bestPass = UINT32_MAX;
         size_t bestMeshes = 0;
+        size_t chosenMeshes = 0;
+        uint32_t switchStreak = 0;
+        uint32_t streakPass = UINT32_MAX;
+    };
+
+    // MissDarkeningPass for every color target, with each target's passes numbered on their own (0, 1, 2... per
+    // target per present). Numbering passes across the whole present flickered the background: when one present
+    // carried both swap targets' frames, the second target's arena pass moved from pass 3 to pass 8, so that frame
+    // and the next had no darkening pass.
+    class MissDarkening {
+    public:
+        // Called once per traced pass, in order; true for the pass that darkens the misses on this target.
+        bool darkenThisPass(const void *target, uint64_t presentId, size_t meshCount);
+
+    private:
+        struct Target {
+            uint64_t present = UINT64_MAX;
+            uint32_t nextPass = 0;
+            MissDarkeningPass pass;
+        };
+
+        std::unordered_map<const void *, Target> targets;
     };
 
     std::vector<uint64_t> newVenueMatch(const std::vector<std::pair<uint64_t, uint32_t>> &stableTextures,

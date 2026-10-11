@@ -330,17 +330,63 @@ namespace RT64::WcwLogic {
         return std::sqrt(dx * dx + dz * dz);
     }
 
+    void MissDarkeningPass::finishFrame() {
+        if (bestPass == UINT32_MAX) {
+            return;
+        }
+
+        if ((chosenPass == UINT32_MAX) || (chosenMeshes == 0)) {
+            // Nothing chosen yet, or the chosen pass didn't run: take the busiest one.
+            chosenPass = bestPass;
+            switchStreak = 0;
+            streakPass = UINT32_MAX;
+            return;
+        }
+
+        if ((bestPass != chosenPass) && (float(bestMeshes) >= float(chosenMeshes) * SwitchRatio)) {
+            switchStreak = (streakPass == bestPass) ? (switchStreak + 1) : 1;
+            streakPass = bestPass;
+            if (switchStreak >= SwitchFrames) {
+                chosenPass = bestPass;
+                switchStreak = 0;
+                streakPass = UINT32_MAX;
+            }
+        }
+        else {
+            switchStreak = 0;
+            streakPass = UINT32_MAX;
+        }
+    }
+
+    bool MissDarkening::darkenThisPass(const void *target, uint64_t presentId, size_t meshCount) {
+        Target &t = targets[target];
+        if (presentId != t.present) {
+            t.present = presentId;
+            t.nextPass = 0;
+        }
+
+        return t.pass.darkenThisPass(presentId, t.nextPass++, meshCount);
+    }
+
     bool MissDarkeningPass::darkenThisPass(uint64_t presentId, uint32_t passIndex, size_t meshCount) {
         if (presentId != present) {
-            chosenPass = bestPass;
+            if (present != UINT64_MAX) {
+                finishFrame();
+            }
+
             present = presentId;
             bestPass = UINT32_MAX;
             bestMeshes = 0;
+            chosenMeshes = 0;
         }
 
         if ((bestPass == UINT32_MAX) || (meshCount > bestMeshes)) {
             bestPass = passIndex;
             bestMeshes = meshCount;
+        }
+
+        if (passIndex == chosenPass) {
+            chosenMeshes = meshCount;
         }
 
         return passIndex == chosenPass;

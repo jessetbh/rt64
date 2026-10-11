@@ -201,14 +201,49 @@ TEST_CASE("outside darkness: misses darken on last frame's arena pass, not the f
     }
 }
 
-TEST_CASE("outside darkness: the arena pass follows the scene when it changes") {
+TEST_CASE("outside darkness: two near-equal passes don't trade the darkening frame to frame (background flickered)") {
+    MissDarkeningPass passes;
+    uint32_t switches = 0;
+    bool lastFirst = false;
+    for (uint64_t frame = 0; frame < 120; frame++) {
+        // Pass 1 and pass 3 alternate between 44 and 45 meshes.
+        const size_t a = (frame % 2) ? 44 : 45;
+        const size_t b = (frame % 2) ? 45 : 44;
+        const bool first = passes.darkenThisPass(frame, 1, a);
+        const bool second = passes.darkenThisPass(frame, 3, b);
+        CHECK(!(first && second));
+        if ((frame > 1) && (first != lastFirst)) {
+            switches++;
+        }
+
+        lastFirst = first;
+    }
+
+    CHECK_EQ(switches, 0u);
+}
+
+TEST_CASE("outside darkness: the arena pass follows a real scene change after a short delay") {
     MissDarkeningPass passes;
     passes.darkenThisPass(1, 0, 50);
     passes.darkenThisPass(1, 1, 10);
-    CHECK(passes.darkenThisPass(2, 0, 5));
-    passes.darkenThisPass(2, 1, 60);
-    CHECK(!passes.darkenThisPass(3, 0, 5));
-    CHECK(passes.darkenThisPass(3, 1, 60));
+    CHECK(passes.darkenThisPass(2, 0, 50));
+    // The scene changes: pass 1 becomes the arena pass. The choice holds for SwitchFrames frames, then moves.
+    uint64_t frame = 3;
+    for (uint32_t i = 0; i < MissDarkeningPass::SwitchFrames; i++, frame++) {
+        passes.darkenThisPass(frame, 0, 5);
+        passes.darkenThisPass(frame, 1, 60);
+    }
+
+    CHECK(!passes.darkenThisPass(frame, 0, 5));
+    CHECK(passes.darkenThisPass(frame, 1, 60));
+}
+
+TEST_CASE("outside darkness: when the chosen pass stops running, the busiest pass takes over next frame") {
+    MissDarkeningPass passes;
+    passes.darkenThisPass(1, 2, 80);
+    CHECK(passes.darkenThisPass(2, 2, 80));
+    passes.darkenThisPass(3, 0, 30);
+    CHECK(passes.darkenThisPass(4, 0, 30));
 }
 
 TEST_CASE("venues: a new venue from the scene uses its largest textures no venue lists") {
@@ -221,4 +256,30 @@ TEST_CASE("venues: a new venue from the scene uses its largest textures no venue
     CHECK_EQ(match.size(), size_t(2));
     CHECK_EQ(match[0], 0x2ull);
     CHECK_EQ(match[1], 0x3ull);
+}
+
+TEST_CASE("outside darkness: a present carrying both swap targets' frames keeps each target's arena pass (background flickered)") {
+    // Raw's pattern: each frame is 94, 17, 9, 130, 2 meshes, on targets A and B in turn. Usually one frame per
+    // present, but sometimes a present carries two frames (the second target's passes are then its 6th..10th).
+    MissDarkening darkening;
+    const int targets[2] = { 0, 0 };
+    const size_t frame[] = { 94, 17, 9, 130, 2 };
+    uint32_t gameFrame = 0;
+    uint32_t framesWithoutDarkening = 0;
+    for (uint64_t present = 0; present < 200; present++) {
+        const int frames = ((present % 7) == 3) ? 2 : 1;
+        for (int f = 0; f < frames; f++, gameFrame++) {
+            uint32_t darkened = 0;
+            for (size_t meshes : frame) {
+                darkened += darkening.darkenThisPass(&targets[gameFrame % 2], present, meshes) ? 1 : 0;
+            }
+
+            CHECK(darkened <= 1u);
+            if ((gameFrame > 4) && (darkened == 0)) {
+                framesWithoutDarkening++;
+            }
+        }
+    }
+
+    CHECK_EQ(framesWithoutDarkening, 0u);
 }
