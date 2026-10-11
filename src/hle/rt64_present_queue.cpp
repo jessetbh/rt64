@@ -804,7 +804,12 @@ namespace RT64 {
 
             if (presentFrame && swapChainValid) {
                 // Wait until the approximate time the next present should be at the current intended rate.
-                if ((presentTimestamp != Timestamp()) && (targetRate > 0) && (targetRate > viOriginalRate)) {
+                // [wcw crt] Not with the beam simulator: its frames are paced to their even targets before the
+                // acquire, and the vblank wait below lands each on a refresh. Sleeping a full frame period past
+                // the previous present first rounded every interval up to the next refresh (3 refreshes per
+                // 120 fps frame at 280 Hz instead of 2.33), so the presents fell behind and whole game frames
+                // were dropped (about 92 presents/s instead of 120).
+                if ((presentTimestamp != Timestamp()) && (targetRate > 0) && (targetRate > viOriginalRate) && !crtFilter->beamActive()) {
                     Timer::preciseSleepUntil(presentTimestamp + std::chrono::nanoseconds(1'000'000'000 / targetRate));
                 }
 
