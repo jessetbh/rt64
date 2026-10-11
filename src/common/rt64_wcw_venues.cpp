@@ -20,7 +20,8 @@ namespace RT64::WcwLogic {
             { "center", FieldCenter }, { "spread", FieldSpread }, { "fills", FieldFills }, { "keyWeight", FieldKeyWeight },
             { "lights", FieldLights }, { "size", FieldSize }, { "radius", FieldRadius }, { "clearance", FieldClearance },
             { "falloff", FieldFalloff }, { "glows", FieldGlows }, { "anchor", FieldAnchor }, { "shadow", FieldShadow },
-            { "characterShadow", FieldCharacterShadow }, { "outsideDarkness", FieldOutsideDarkness }, { "outsideEdge", FieldOutsideEdge }
+            { "characterShadow", FieldCharacterShadow }, { "outsideDarkness", FieldOutsideDarkness }, { "outsideEdge", FieldOutsideEdge },
+            { "color", FieldColor }, { "keyColor", FieldKeyColor }, { "fillColor", FieldFillColor }
         };
 
         uint32_t fields = 0;
@@ -29,6 +30,33 @@ namespace RT64::WcwLogic {
         }
 
         return fields;
+    }
+
+    static bool readColor(const Json &j, const char *key, LightColor &color) {
+        if (!j.contains(key) || !j[key].is_array() || (j[key].size() < 3)) {
+            return false;
+        }
+
+        color = { j[key][0].get<float>(), j[key][1].get<float>(), j[key][2].get<float>() };
+        return true;
+    }
+
+    LightColor presetLightColor(const LightPreset &preset, size_t lightIndex) {
+        if ((lightIndex < preset.lightOwnColor.size()) && (lightIndex < preset.lightColors.size()) && (preset.lightOwnColor[lightIndex] != 0)) {
+            return preset.lightColors[lightIndex];
+        }
+
+        return preset.color;
+    }
+
+    LightColor presetGlowColor(const LightPreset &preset, size_t glowIndex) {
+        return (glowIndex < preset.glowColors.size()) ? preset.glowColors[glowIndex] : WhiteLight;
+    }
+
+    void syncColorLists(LightPreset &preset) {
+        preset.lightColors.resize(preset.lights.size(), preset.color);
+        preset.lightOwnColor.resize(preset.lights.size(), 0);
+        preset.glowColors.resize(preset.glows.size(), WhiteLight);
     }
 
     static LightPreset parsePreset(const Json &j, const LightPreset &base) {
@@ -56,10 +84,22 @@ namespace RT64::WcwLogic {
         p.radius = j.value("radius", p.radius);
         p.clearance = j.value("clearance", p.clearance);
         p.falloff = j.value("falloff", p.falloff);
+        // Colors: keyColor / fillColor default to this preset's color when it sets one, else to the base's.
+        const bool ownColor = readColor(j, "color", p.color);
+        if (!readColor(j, "keyColor", p.keyColor) && ownColor) {
+            p.keyColor = p.color;
+        }
+
+        if (!readColor(j, "fillColor", p.fillColor) && ownColor) {
+            p.fillColor = p.color;
+        }
+
         if (j.contains("glows")) {
             p.glows.clear();
+            p.glowColors.clear();
             for (const auto &g : j["glows"]) {
                 p.glows.push_back({ g[0].get<float>(), g[1].get<float>(), g[2].get<float>(), g[3].get<float>(), g[4].get<float>() });
+                p.glowColors.push_back((g.size() >= 8) ? LightColor{ g[5].get<float>(), g[6].get<float>(), g[7].get<float>() } : WhiteLight);
             }
         }
 
@@ -70,11 +110,17 @@ namespace RT64::WcwLogic {
         p.anchorScene = (j.value("anchor", std::string(p.anchorScene ? "scene" : "world")) == "scene");
         if (j.contains("lights")) {
             p.lights.clear();
+            p.lightColors.clear();
+            p.lightOwnColor.clear();
             for (const auto &l : j["lights"]) {
                 p.lights.push_back({ l[0].get<float>(), l[1].get<float>(), l[2].get<float>(), (l.size() > 3) ? l[3].get<float>() : 1.0f });
+                const bool own = (l.size() >= 7);
+                p.lightColors.push_back(own ? LightColor{ l[4].get<float>(), l[5].get<float>(), l[6].get<float>() } : p.color);
+                p.lightOwnColor.push_back(own ? 1 : 0);
             }
         }
 
+        syncColorLists(p);
         return p;
     }
 
@@ -151,10 +197,28 @@ namespace RT64::WcwLogic {
             j["center"] = Json::array({ number(p.center[0]), number(p.center[1]), number(p.center[2]) });
         }
 
-        if (wanted(FieldLights, p.lights != base.lights)) {
+        auto color = [&](const char *key, uint32_t bit, const LightColor &value, const LightColor &baseValue) {
+            if (wanted(bit, value != baseValue)) {
+                j[key] = Json::array({ number(value[0]), number(value[1]), number(value[2]) });
+            }
+        };
+
+        color("color", FieldColor, p.color, base.color);
+        color("keyColor", FieldKeyColor, p.keyColor, base.keyColor);
+        color("fillColor", FieldFillColor, p.fillColor, base.fillColor);
+        if (wanted(FieldLights, (p.lights != base.lights) || (p.lightOwnColor != base.lightOwnColor) || (p.lightColors != base.lightColors))) {
             Json l = Json::array();
-            for (const auto &light : p.lights) {
-                l.push_back(Json::array({ number(light[0]), number(light[1]), number(light[2]), number(light[3]) }));
+            for (size_t i = 0; i < p.lights.size(); i++) {
+                const auto &light = p.lights[i];
+                Json entry = Json::array({ number(light[0]), number(light[1]), number(light[2]), number(light[3]) });
+                if ((i < p.lightOwnColor.size()) && (p.lightOwnColor[i] != 0)) {
+                    const LightColor c = presetLightColor(p, i);
+                    entry.push_back(number(c[0]));
+                    entry.push_back(number(c[1]));
+                    entry.push_back(number(c[2]));
+                }
+
+                l.push_back(entry);
             }
 
             j["lights"] = l;
@@ -180,10 +244,19 @@ namespace RT64::WcwLogic {
         field("falloff", FieldFalloff, p.falloff, base.falloff);
         field("outsideDarkness", FieldOutsideDarkness, p.outsideDarkness, base.outsideDarkness);
         field("outsideEdge", FieldOutsideEdge, p.outsideEdge, base.outsideEdge);
-        if (wanted(FieldGlows, p.glows != base.glows)) {
+        if (wanted(FieldGlows, (p.glows != base.glows) || (p.glowColors != base.glowColors))) {
             Json g = Json::array();
-            for (const auto &glow : p.glows) {
-                g.push_back(Json::array({ number(glow[0]), number(glow[1]), number(glow[2]), number(glow[3]), number(glow[4]) }));
+            for (size_t i = 0; i < p.glows.size(); i++) {
+                const auto &glow = p.glows[i];
+                Json entry = Json::array({ number(glow[0]), number(glow[1]), number(glow[2]), number(glow[3]), number(glow[4]) });
+                const LightColor c = presetGlowColor(p, i);
+                if (c != WhiteLight) {
+                    entry.push_back(number(c[0]));
+                    entry.push_back(number(c[1]));
+                    entry.push_back(number(c[2]));
+                }
+
+                g.push_back(entry);
             }
 
             j["glows"] = g;
@@ -229,20 +302,29 @@ namespace RT64::WcwLogic {
         if (!(s & FieldSpread)) { p.spread = d.spread; }
         if (!(s & FieldFills)) { p.fills = d.fills; }
         if (!(s & FieldKeyWeight)) { p.keyWeight = d.keyWeight; }
-        if (!(s & FieldLights)) { p.lights = d.lights; }
+        if (!(s & FieldColor)) { p.color = d.color; }
+        if (!(s & FieldKeyColor)) { p.keyColor = (s & FieldColor) ? p.color : d.keyColor; }
+        if (!(s & FieldFillColor)) { p.fillColor = (s & FieldColor) ? p.color : d.fillColor; }
+        if (!(s & FieldLights)) { p.lights = d.lights; p.lightColors = d.lightColors; p.lightOwnColor = d.lightOwnColor; }
         if (!(s & FieldSize)) { p.size = d.size; }
         if (!(s & FieldRadius)) { p.radius = d.radius; }
         if (!(s & FieldClearance)) { p.clearance = d.clearance; }
         if (!(s & FieldFalloff)) { p.falloff = d.falloff; }
-        if (!(s & FieldGlows)) { p.glows = d.glows; }
+        if (!(s & FieldGlows)) { p.glows = d.glows; p.glowColors = d.glowColors; }
         if (!(s & FieldAnchor)) { p.anchorScene = d.anchorScene; }
         if (!(s & FieldShadow)) { p.shadow = d.shadow; }
         if (!(s & FieldCharacterShadow)) { p.characterShadow = d.characterShadow; }
         if (!(s & FieldOutsideDarkness)) { p.outsideDarkness = d.outsideDarkness; }
         if (!(s & FieldOutsideEdge)) { p.outsideEdge = d.outsideEdge; }
+        syncColorLists(p);
     }
 
     void inheritDefault(LightPresetFile &file) {
+        // "default"'s own key / fill colors follow its color unless it sets them (an edited color reaches its rig).
+        LightPreset &d = file.defaultPreset;
+        if (!(d.setFields & FieldKeyColor)) { d.keyColor = d.color; }
+        if (!(d.setFields & FieldFillColor)) { d.fillColor = d.color; }
+        syncColorLists(d);
         inheritInto(file.roomPreset, file.defaultPreset);
         file.roomPreset.anchorScene = false;
         for (LightPreset &v : file.venues) {

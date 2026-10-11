@@ -18,9 +18,11 @@ StructuredBuffer<float4> gWorldPos : register(t2);
 StructuredBuffer<uint> gFaceIndices : register(t3);
 StructuredBuffer<uint> gMeshIndexStarts : register(t4);
 RWTexture2D<float4> gOutput : register(u5);
-// Shadow mode: (shadow factor, primary hit distance (0 = no hit), AO factor, unused) for the resolve pass, which
-// filters the shadow and AO terms separately. The shadow factor includes the glows (up to 2).
+// Shadow mode: (shadow factor RGB, primary hit distance (0 = no hit)) for the resolve pass, which filters the shadow
+// and AO terms separately. The shadow factor is colored by the lights and includes the glows (up to 2).
 RWTexture2D<float4> gCurrent : register(u6);
+// Shadow mode: the AO factor, beside gCurrent.
+RWTexture2D<float> gCurrentAo : register(u13);
 StructuredBuffer<RDPTile> gRDPTiles : register(t7);
 StructuredBuffer<GPUTile> gGPUTiles : register(t8);
 StructuredBuffer<float2> gTexCoords : register(t9);
@@ -157,7 +159,8 @@ void writeNoHit(uint2 pixel, RayDesc ray) {
             missFactor = outsideFactor(dist);
         }
 
-        gCurrent[pixel] = float4(missFactor, 0.0f, 1.0f, 0.0f);
+        gCurrent[pixel] = float4(missFactor, missFactor, missFactor, 0.0f);
+        gCurrentAo[pixel] = 1.0f;
     }
     else {
         gOutput[pixel] = float4(1.0f, 1.0f, 1.0f, 0.0f);
@@ -242,9 +245,14 @@ float3 shadowOrigin(uint geometryIndex, uint primitiveIndex, float2 barycentrics
     return lifted;
 }
 
-// Brightening from the preset's glows at a hit point (0 = none).
-float glowLight(float3 hitPos, float3 normal) {
-    float glow = 0.0f;
+// A light's or glow's color at this pixel: white on the left half with WCW_RT_COLOR_SPLIT.
+bool whiteLight(uint2 pixel) {
+    return (gParams.colorSplit != 0) && (pixel.x < (gParams.resolution.x / 2));
+}
+
+// Brightening from the preset's glows at a hit point (0 = none), in each glow's color.
+float3 glowLight(float3 hitPos, float3 normal, uint2 pixel) {
+    float3 glow = float3(0.0f, 0.0f, 0.0f);
     const uint count = min(gParams.glowCount, WCW_RT_MAX_GLOWS);
     for (uint g = 0; g < count; g++) {
         const float3 toGlow = gParams.glows[g].xyz - hitPos;
@@ -271,7 +279,8 @@ float glowLight(float3 hitPos, float3 normal) {
         }
 
         if (q.CommittedStatus() != COMMITTED_TRIANGLE_HIT) {
-            glow += gParams.glowIntensity[g] * atten * facing;
+            const float3 color = whiteLight(pixel) ? float3(1.0f, 1.0f, 1.0f) : gParams.glowColors[g].rgb;
+            glow += color * (gParams.glowIntensity[g] * atten * facing);
         }
     }
 
@@ -425,7 +434,8 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
             const bool outsideCharacter = (gMeshIndexStarts[primary.CommittedGeometryIndex()] & WCW_RT_MESH_CHARACTER) != 0;
             const float outside = outsideCharacter ? 1.0f : outsideFactor(receiverDist);
 
-            gCurrent[pixel] = float4(outside * (1.0f + glowLight(hitPos, normal)), hitT, 1.0f, 0.0f);
+            gCurrent[pixel] = float4(outside * (1.0f + glowLight(hitPos, normal, pixel)), hitT);
+            gCurrentAo[pixel] = 1.0f;
             return;
         }
 
@@ -451,7 +461,8 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
     const float3 shadeNormal = smoothShadow ? smoothNormal(primary.CommittedGeometryIndex(), primary.CommittedPrimitiveIndex(), primary.CommittedTriangleBarycentrics(), normal) : normal;
     const float3 shadowStart = smoothShadow ? shadowOrigin(primary.CommittedGeometryIndex(), primary.CommittedPrimitiveIndex(), primary.CommittedTriangleBarycentrics(), hitPos, normal) : hitPos;
 
-    float lit = 0.0f;
+    // Light reaching the pixel, in the lights' colors (white lights: the visible fraction of the total weight).
+    float3 lit = float3(0.0f, 0.0f, 0.0f);
     int occluderId = -1;
     // Heavier lights cast proportionally darker shadows, so their sampling noise shows more:
     // each light gets samples in proportion to its preset weight (key light 2 -> twice the rays).
@@ -462,7 +473,7 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
         // frames by the resolve pass).
         const float2 jitter = float2(sampleNoise(pixel, i * 2, uint2(0, 0)), sampleNoise(pixel, i * 2 + 1, uint2(37, 113))) - 0.5f;
         const float2 offset = jitter * gParams.lightSize;
-        const float weight = lightWeights[l] / max(weightSum, 1e-6f) / float(samples);
+        const float3 weight = (whiteLight(pixel) ? float3(1.0f, 1.0f, 1.0f) : gParams.lightColors[l].rgb) * (lightWeights[l] / max(weightSum, 1e-6f) / float(samples));
         const float3 lightPos = gParams.lights[l].xyz + float3(offset.x, 0.0f, offset.y);
         const float3 toLight = lightPos - shadowStart;
         const float lightDist = length(toLight);
@@ -518,9 +529,10 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
 
     const bool characterReceiver = (gMeshIndexStarts[primary.CommittedGeometryIndex()] & WCW_RT_MESH_CHARACTER) != 0;
     const float strength = characterReceiver ? gParams.characterShadowStrength : gParams.shadowStrength;
-    float factor = 1.0f - strength * (1.0f - lit);
+    // Unlit share (1 - strength) plus the light that arrives, so white lights give 1 - strength * (1 - visible).
+    float3 factor = (1.0f - strength) + strength * lit;
     if (gParams.mode == WCW_RT_MODE_SHADOW_RAW) {
-        gOutput[pixel] = float4(factor, factor, factor, 1.0f);
+        gOutput[pixel] = float4(factor, 1.0f);
         return;
     }
 
@@ -579,15 +591,16 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
 
     // AO-only view: the shadow term stays open.
     if (gParams.mode == WCW_RT_MODE_AO) {
-        factor = 1.0f;
+        factor = float3(1.0f, 1.0f, 1.0f);
     }
 
-    factor = lerp(factor, 1.0f, receiverFade);
+    factor = lerp(factor, float3(1.0f, 1.0f, 1.0f), receiverFade);
     ao = lerp(ao, 1.0f, receiverFade);
 
     if (resolvedMode() && (gParams.mode == WCW_RT_MODE_SHADOW)) {
-        factor *= 1.0f + glowLight(hitPos, normal);
+        factor *= 1.0f + glowLight(hitPos, normal, pixel);
     }
 
-    gCurrent[pixel] = float4(factor, hitT, ao, 0.0f);
+    gCurrent[pixel] = float4(factor, hitT);
+    gCurrentAo[pixel] = ao;
 }

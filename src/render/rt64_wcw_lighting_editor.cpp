@@ -209,6 +209,16 @@ namespace RT64 {
             changed |= ImGui::DragFloat("Max extent", &presetFile.roomMaxExtent, 10.0f, 100.0f, 20000.0f);
         }
 
+        // Colored light (WcwLogic::LightPreset::color): the preset's light color, and the generated rig's key / fill.
+        if (ImGui::CollapsingHeader("Color", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::TextDisabled("Tints the light inside the receiver radius, more with a stronger Shadow; brightness stays the same.");
+            changed |= edited(ImGui::ColorEdit3((std::string("Light color") + fieldMark(p, WcwLogic::FieldColor, isDefault)).c_str(), p.color.data(), ImGuiColorEditFlags_Float), p, WcwLogic::FieldColor);
+            if (!isRoom && p.lights.empty()) {
+                changed |= edited(ImGui::ColorEdit3((std::string("Key color") + fieldMark(p, WcwLogic::FieldKeyColor, isDefault)).c_str(), p.keyColor.data(), ImGuiColorEditFlags_Float), p, WcwLogic::FieldKeyColor);
+                changed |= edited(ImGui::ColorEdit3((std::string("Fill color") + fieldMark(p, WcwLogic::FieldFillColor, isDefault)).c_str(), p.fillColor.data(), ImGuiColorEditFlags_Float), p, WcwLogic::FieldFillColor);
+            }
+        }
+
         // Lights: explicit list, or the generated rig (center + fills).
         if (!isRoom && ImGui::CollapsingHeader("Lights", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::TextDisabled("Positions are world units%s.%s", p.anchorScene ? ", relative to the scene's center and floor" : "",
@@ -221,6 +231,7 @@ namespace RT64 {
                 changed |= edited(ImGui::SliderFloat("Key weight", &p.keyWeight, 0.0f, 1.0f), p, WcwLogic::FieldKeyWeight);
                 if (ImGui::Button("Switch to explicit lights")) {
                     p.lights.push_back({ p.center[0], p.center[1], p.center[2], 2.0f });
+                    WcwLogic::syncColorLists(p);
                     p.setFields |= WcwLogic::FieldLights;
                     changed = true;
                 }
@@ -237,11 +248,27 @@ namespace RT64 {
 
                     changed |= edited(ImGui::DragFloat3("Position", p.lights[i].data(), 5.0f), p, WcwLogic::FieldLights);
                     changed |= edited(ImGui::SliderFloat("Weight", &p.lights[i][3], 0.0f, 4.0f), p, WcwLogic::FieldLights);
+                    WcwLogic::syncColorLists(p);
+                    bool own = (p.lightOwnColor[i] != 0);
+                    if (edited(ImGui::Checkbox("Own color", &own), p, WcwLogic::FieldLights)) {
+                        p.lightOwnColor[i] = own ? 1 : 0;
+                        p.lightColors[i] = p.color;
+                        changed = true;
+                    }
+
+                    if (own) {
+                        ImGui::SameLine();
+                        changed |= edited(ImGui::ColorEdit3("##color", p.lightColors[i].data(), ImGuiColorEditFlags_Float | ImGuiColorEditFlags_NoInputs), p, WcwLogic::FieldLights);
+                    }
+
                     ImGui::PopID();
                 }
 
                 if (remove >= 0) {
+                    WcwLogic::syncColorLists(p);
                     p.lights.erase(p.lights.begin() + remove);
+                    p.lightColors.erase(p.lightColors.begin() + remove);
+                    p.lightOwnColor.erase(p.lightOwnColor.begin() + remove);
                     p.setFields |= WcwLogic::FieldLights;
                     changed = true;
                 }
@@ -249,6 +276,7 @@ namespace RT64 {
                 if ((p.lights.size() < WCW_RT_MAX_LIGHTS) && ImGui::Button("Add light")) {
                     const auto &last = p.lights.back();
                     p.lights.push_back({ last[0] + 100.0f, last[1], last[2], 1.0f });
+                    WcwLogic::syncColorLists(p);
                     p.setFields |= WcwLogic::FieldLights;
                     changed = true;
                 }
@@ -297,26 +325,30 @@ namespace RT64 {
                 changed |= edited(ImGui::DragFloat3("Position", p.glows[i].data(), 5.0f), p, WcwLogic::FieldGlows);
                 changed |= edited(ImGui::SliderFloat("Intensity", &p.glows[i][3], 0.0f, 4.0f), p, WcwLogic::FieldGlows);
                 changed |= edited(ImGui::DragFloat("Range", &p.glows[i][4], 10.0f, 0.0f, 20000.0f), p, WcwLogic::FieldGlows);
+                WcwLogic::syncColorLists(p);
+                changed |= edited(ImGui::ColorEdit3("Color", p.glowColors[i].data(), ImGuiColorEditFlags_Float), p, WcwLogic::FieldGlows);
                 ImGui::PopID();
             }
 
             if (remove >= 0) {
+                WcwLogic::syncColorLists(p);
                 p.glows.erase(p.glows.begin() + remove);
+                p.glowColors.erase(p.glowColors.begin() + remove);
                 p.setFields |= WcwLogic::FieldGlows;
                 changed = true;
             }
 
             if ((p.glows.size() < WCW_RT_MAX_GLOWS) && ImGui::Button("Add glow")) {
                 p.glows.push_back({ p.center[0], p.center[1], p.center[2], 1.0f, 500.0f });
+                WcwLogic::syncColorLists(p);
                 p.setFields |= WcwLogic::FieldGlows;
                 changed = true;
             }
         }
 
         if (changed) {
-            if (isDefault) {
-                WcwLogic::inheritDefault(presetFile);
-            }
+            // Inheritance and the effective key / fill colors follow every edit (a venue's color reaches its rig).
+            WcwLogic::inheritDefault(presetFile);
 
             applyPresetFile();
             presetsEdited = true;

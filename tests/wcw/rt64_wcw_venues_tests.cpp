@@ -38,12 +38,33 @@ static const char *SampleFile = R"json(
 }
 )json";
 
+// Same effective colors: the preset's, the rig's, each explicit light's (own or followed) and each glow's.
+static bool sameColors(const LightPreset &a, const LightPreset &b) {
+    if ((a.color != b.color) || (a.keyColor != b.keyColor) || (a.fillColor != b.fillColor) || (a.lightOwnColor != b.lightOwnColor)) {
+        return false;
+    }
+
+    for (size_t i = 0; i < a.lights.size(); i++) {
+        if (presetLightColor(a, i) != presetLightColor(b, i)) {
+            return false;
+        }
+    }
+
+    for (size_t i = 0; i < a.glows.size(); i++) {
+        if (presetGlowColor(a, i) != presetGlowColor(b, i)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static bool samePreset(const LightPreset &a, const LightPreset &b) {
     return (a.name == b.name) && (a.match == b.match) && (a.center[0] == b.center[0]) && (a.center[1] == b.center[1]) &&
         (a.center[2] == b.center[2]) && (a.spread == b.spread) && (a.fills == b.fills) && (a.keyWeight == b.keyWeight) &&
         (a.lights == b.lights) && (a.size == b.size) && (a.radius == b.radius) && (a.clearance == b.clearance) &&
         (a.falloff == b.falloff) && (a.glows == b.glows) && (a.anchorScene == b.anchorScene) && (a.shadow == b.shadow) &&
-        (a.characterShadow == b.characterShadow);
+        (a.characterShadow == b.characterShadow) && sameColors(a, b);
 }
 
 TEST_CASE("venues: parsing applies default to venues that don't override it") {
@@ -282,4 +303,109 @@ TEST_CASE("outside darkness: a present carrying both swap targets' frames keeps 
     }
 
     CHECK_EQ(framesWithoutDarkening, 0u);
+}
+
+// Colored light (rt-color): "color", "keyColor", "fillColor", [x, y, z, weight, r, g, b] lights and
+// [x, y, z, intensity, range, r, g, b] glows.
+
+static const char *ColorFile = R"json(
+{
+    "default": {
+        "color": [1, 0.9, 0.75],
+        "lights": [[0, 650, 0, 2], [-320, 600, -320, 1, 1, 0, 0]]
+    },
+    "venues": [
+        { "name": "Blue", "match": ["0000000000000001"], "color": [0.6, 0.7, 1] },
+        { "name": "Plain", "match": ["0000000000000002"] },
+        { "name": "Rig", "match": ["0000000000000003"], "lights": [], "keyColor": [1, 0.2, 0.2] },
+        { "name": "Glow", "match": ["0000000000000004"], "glows": [[0, 500, 2700, 1, 1400], [0, 300, 0, 0.5, 900, 0.2, 0.4, 1]] }
+    ]
+}
+)json";
+
+TEST_CASE("colored light: presets without colors stay white and write no colors") {
+    const LightPresetFile file = parseLightPresets(SampleFile);
+    CHECK(file.defaultPreset.color == WhiteLight);
+    CHECK(file.venues[0].keyColor == WhiteLight);
+    CHECK(presetLightColor(file.venues[2], 1) == WhiteLight);
+    CHECK(presetGlowColor(file.venues[0], 0) == WhiteLight);
+    const std::string text = writeLightPresets(file);
+    CHECK(text.find("olor") == std::string::npos);
+    // Explicit lights without a color are written as [x, y, z, weight], as before.
+    CHECK(parseLightPresets(text).defaultPreset.lightOwnColor == std::vector<uint8_t>({ 0, 0, 0 }));
+}
+
+TEST_CASE("colored light: a venue's color reaches its key and fill lights unless it sets them") {
+    const LightPresetFile file = parseLightPresets(ColorFile);
+    const LightColor warm = { 1.0f, 0.9f, 0.75f };
+    const LightColor blue = { 0.6f, 0.7f, 1.0f };
+    CHECK(file.defaultPreset.keyColor == warm);
+    CHECK(file.venues[0].color == blue);
+    CHECK(file.venues[0].keyColor == blue);
+    CHECK(file.venues[0].fillColor == blue);
+    CHECK(file.venues[1].color == warm);
+    CHECK(file.venues[1].keyColor == warm);
+    // Sets only its key color: the fills keep the inherited (warm) color.
+    CHECK(file.venues[2].keyColor == LightColor({ 1.0f, 0.2f, 0.2f }));
+    CHECK(file.venues[2].fillColor == warm);
+}
+
+TEST_CASE("colored light: explicit lights use their own color or follow the preset's, also when inherited") {
+    const LightPresetFile file = parseLightPresets(ColorFile);
+    const LightColor red = { 1.0f, 0.0f, 0.0f };
+    CHECK(presetLightColor(file.defaultPreset, 0) == LightColor({ 1.0f, 0.9f, 0.75f }));
+    CHECK(presetLightColor(file.defaultPreset, 1) == red);
+    // "Blue" inherits default's lights: the one without its own color takes Blue's color, the red one stays red.
+    CHECK(presetLightColor(file.venues[0], 0) == LightColor({ 0.6f, 0.7f, 1.0f }));
+    CHECK(presetLightColor(file.venues[0], 1) == red);
+    // Out of range (generated rig, room lights): the preset's color.
+    CHECK(presetLightColor(file.venues[0], 7) == file.venues[0].color);
+}
+
+TEST_CASE("colored light: glows are white unless they carry a color") {
+    const LightPresetFile file = parseLightPresets(ColorFile);
+    const LightPreset &g = file.venues[3];
+    CHECK_EQ(g.glows.size(), size_t(2));
+    CHECK(presetGlowColor(g, 0) == WhiteLight);
+    CHECK(presetGlowColor(g, 1) == LightColor({ 0.2f, 0.4f, 1.0f }));
+    CHECK(presetGlowColor(g, 5) == WhiteLight);
+}
+
+TEST_CASE("colored light: write then parse keeps every color, and only the colors a preset sets are written") {
+    const LightPresetFile file = parseLightPresets(ColorFile);
+    const std::string text = writeLightPresets(file);
+    const LightPresetFile again = parseLightPresets(text);
+    CHECK(samePreset(again.defaultPreset, file.defaultPreset));
+    CHECK_EQ(again.venues.size(), file.venues.size());
+    for (size_t i = 0; i < file.venues.size(); i++) {
+        CHECK(samePreset(again.venues[i], file.venues[i]));
+        CHECK_EQ(again.venues[i].setFields, file.venues[i].setFields);
+    }
+
+    // "Plain" inherits its colors, so its entry has none and a later edit to default's color still reaches it.
+    const size_t plain = text.find("\"Plain\"");
+    const size_t rig = text.find("\"Rig\"");
+    CHECK(text.substr(plain, rig - plain).find("olor") == std::string::npos);
+}
+
+TEST_CASE("colored light: editing default's color reaches the venues that don't set one (inheritDefault)") {
+    LightPresetFile file = parseLightPresets(ColorFile);
+    file.defaultPreset.color = { 0.5f, 1.0f, 0.5f };
+    inheritDefault(file);
+    CHECK(file.defaultPreset.keyColor == LightColor({ 0.5f, 1.0f, 0.5f }));
+    CHECK(file.venues[1].keyColor == LightColor({ 0.5f, 1.0f, 0.5f }));
+    CHECK(presetLightColor(file.venues[1], 0) == LightColor({ 0.5f, 1.0f, 0.5f }));
+    CHECK(file.venues[0].keyColor == LightColor({ 0.6f, 0.7f, 1.0f }));
+}
+
+TEST_CASE("colored light: adding lights and glows pads the color lists (no own color, white glow)") {
+    LightPreset p;
+    p.color = { 1.0f, 0.5f, 0.5f };
+    p.lights.push_back({ 0.0f, 600.0f, 0.0f, 1.0f });
+    p.glows.push_back({ 0.0f, 0.0f, 0.0f, 1.0f, 100.0f });
+    syncColorLists(p);
+    CHECK_EQ(p.lightOwnColor.size(), size_t(1));
+    CHECK_EQ(p.lightOwnColor[0], uint8_t(0));
+    CHECK(presetLightColor(p, 0) == p.color);
+    CHECK(presetGlowColor(p, 0) == WhiteLight);
 }

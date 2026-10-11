@@ -142,6 +142,8 @@ namespace RT64 {
         std::unique_ptr<RenderBuffer> blueNoiseBuffer;
         std::unique_ptr<RenderTexture> outputTexture;
         std::unique_ptr<RenderTexture> currentTexture;
+        // The traced AO term beside currentTexture's colored shadow term and hit distance.
+        std::unique_ptr<RenderTexture> currentAoTexture;
         uint32_t frameIndex = 0;
         uint32_t reusedTraces = 0;
         std::unique_ptr<RenderDescriptorSet> resolveSet;

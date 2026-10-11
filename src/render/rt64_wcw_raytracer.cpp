@@ -99,6 +99,7 @@ namespace RT64 {
         traceBuilder.addStructuredBuffer(10);
         traceBuilder.addStructuredBuffer(11);
         traceBuilder.addStructuredBuffer(12);
+        traceBuilder.addReadWriteTexture(13);
         traceBuilder.end();
         traceSet = traceBuilder.create(device);
 
@@ -121,6 +122,7 @@ namespace RT64 {
         resolveBuilder.addTexture(2);
         resolveBuilder.addReadWriteTexture(3);
         resolveBuilder.addReadWriteTexture(4);
+        resolveBuilder.addTexture(5);
         resolveBuilder.end();
         resolveSet = resolveBuilder.create(device);
 
@@ -362,6 +364,8 @@ namespace RT64 {
         const float shortCenter = alongX ? (sceneMin[2] + sceneMax[2]) * 0.5f : (sceneMin[0] + sceneMax[0]) * 0.5f;
         const float height = sceneMin[1] + (sceneMax[1] - sceneMin[1]) * roomHeight;
         roomPreset.lights.clear();
+        roomPreset.lightColors.clear();
+        roomPreset.lightOwnColor.clear();
         for (uint32_t i = 0; i < roomCount; i++) {
             const float along = longMin + longLen * (float(i) + 0.5f) / float(roomCount);
             roomPreset.lights.push_back(alongX ? std::array<float, 4>{ along, height, shortCenter, 1.0f } : std::array<float, 4>{ shortCenter, height, along, 1.0f });
@@ -770,6 +774,7 @@ namespace RT64 {
             traceHeight = std::max(uint32_t(std::ceil(outputHeight * traceScale)), 1u);
             outputTexture = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16G16B16A16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
             currentTexture = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R32G32B32A32_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
+            currentAoTexture = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
         }
 
         Slot &slot = slots[currentSlot];
@@ -777,7 +782,7 @@ namespace RT64 {
             slot.historyWidth = traceWidth;
             slot.historyHeight = traceHeight;
             for (auto &history : slot.history) {
-                history = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16G16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
+                history = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16G16B16A16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
             }
 
             slot.output = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16G16B16A16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
@@ -849,12 +854,30 @@ namespace RT64 {
         params.lightClearance = std::max(preset.clearance, 0.0f);
         params.lightFalloff = std::max(envFloat(getenv("WCW_RT_FALLOFF"), preset.falloff), 0.0f);
         params.glowCount = 0;
+        // Colored light (WcwLogic::normalizedLightColor): white unless the preset says otherwise.
+        for (uint32_t c = 0; c < WCW_RT_MAX_LIGHTS; c++) {
+            params.lightColors[c] = { 1.0f, 1.0f, 1.0f, 0.0f };
+        }
+
+        for (uint32_t c = 0; c < WCW_RT_MAX_GLOWS; c++) {
+            params.glowColors[c] = { 1.0f, 1.0f, 1.0f, 0.0f };
+        }
+
+        auto setLightColor = [&](uint32_t index, const std::array<float, 3> &rgb) {
+            const std::array<float, 3> n = WcwLogic::normalizedLightColor(rgb[0], rgb[1], rgb[2]);
+            params.lightColors[index] = { n[0], n[1], n[2], 0.0f };
+        };
+
+        params.colorSplit = (envFloat(getenv("WCW_RT_COLOR_SPLIT"), 0.0f) != 0.0f) ? 1u : 0u;
         params.glowPadding0 = params.glowPadding1 = params.glowPadding2 = 0.0f;
         params.glowIntensity = { 0.0f, 0.0f, 0.0f, 0.0f };
         for (const auto &g : preset.glows) {
             if (params.glowCount < WCW_RT_MAX_GLOWS) {
                 params.glows[params.glowCount] = { origin[0] + g[0], origin[1] + g[1], origin[2] + g[2], std::max(g[4], 1.0f) };
                 params.glowIntensity[params.glowCount] = g[3];
+                const size_t glowIndex = size_t(&g - preset.glows.data());
+                const std::array<float, 3> glowColor = WcwLogic::presetGlowColor(preset, glowIndex);
+                params.glowColors[params.glowCount] = { std::max(glowColor[0], 0.0f), std::max(glowColor[1], 0.0f), std::max(glowColor[2], 0.0f), 0.0f };
                 params.glowCount++;
             }
         }
@@ -866,6 +889,8 @@ namespace RT64 {
 
             for (const auto &l : preset.lights) {
                 if (params.lightListCount < WCW_RT_MAX_LIGHTS) {
+                    const size_t lightIndex = size_t(&l - preset.lights.data());
+                    setLightColor(params.lightListCount, WcwLogic::presetLightColor(preset, lightIndex));
                     params.lights[params.lightListCount++] = { origin[0] + l[0], origin[1] + l[1], origin[2] + l[2], l[3] / std::max(weightSum, 1e-6f) };
                 }
             }
@@ -875,8 +900,10 @@ namespace RT64 {
             const uint32_t fills = params.lightCount;
             const float keyWeight = (fills > 0) ? params.keyWeight : 1.0f;
             const float fillWeight = (fills > 0) ? (1.0f - keyWeight) / float(fills) : 0.0f;
+            setLightColor(params.lightListCount, preset.keyColor);
             params.lights[params.lightListCount++] = { centerX, centerY, centerZ, keyWeight };
             for (uint32_t f = 0; f < fills; f++) {
+                setLightColor(params.lightListCount, preset.fillColor);
                 params.lights[params.lightListCount++] = { centerX + offsets[f][0] * params.lightSpread, centerY, centerZ + offsets[f][1] * params.lightSpread, fillWeight };
             }
         }
@@ -995,6 +1022,7 @@ namespace RT64 {
         traceSet->setBuffer(4, meshStartsBuffer.get(), meshStartsBufferSize, &uintView);
         traceSet->setTexture(5, slot.output.get(), RenderTextureLayout::GENERAL);
         traceSet->setTexture(6, currentTexture.get(), RenderTextureLayout::GENERAL);
+        traceSet->setTexture(13, currentAoTexture.get(), RenderTextureLayout::GENERAL);
         const RenderBufferStructuredView rdpTileView(sizeof(interop::RDPTile));
         const RenderBufferStructuredView gpuTileView(sizeof(interop::GPUTile));
         const RenderBufferStructuredView float2View(sizeof(float) * 2);
@@ -1010,7 +1038,8 @@ namespace RT64 {
         // Trace.
         worker->commandList->barriers(RenderBarrierStage::COMPUTE, {
             RenderTextureBarrier(slot.output.get(), RenderTextureLayout::GENERAL),
-            RenderTextureBarrier(currentTexture.get(), RenderTextureLayout::GENERAL)
+            RenderTextureBarrier(currentTexture.get(), RenderTextureLayout::GENERAL),
+            RenderTextureBarrier(currentAoTexture.get(), RenderTextureLayout::GENERAL)
         });
         if (timingPool != nullptr) {
             worker->commandList->writeTimestamp(timingPool.get(), StampTraceBegin);
@@ -1046,11 +1075,13 @@ namespace RT64 {
             RenderTexture *historyOut = slot.history[slot.historyIndex ^ 1].get();
             resolveSet->setBuffer(0, paramsBuffer.get(), alignUp(sizeof(interop::WcwRtParams), 256));
             resolveSet->setTexture(1, currentTexture.get(), RenderTextureLayout::SHADER_READ);
+            resolveSet->setTexture(5, currentAoTexture.get(), RenderTextureLayout::SHADER_READ);
             resolveSet->setTexture(2, historyIn, RenderTextureLayout::SHADER_READ);
             resolveSet->setTexture(3, historyOut, RenderTextureLayout::GENERAL);
             resolveSet->setTexture(4, slot.output.get(), RenderTextureLayout::GENERAL);
             worker->commandList->barriers(RenderBarrierStage::COMPUTE, {
                 RenderTextureBarrier(currentTexture.get(), RenderTextureLayout::SHADER_READ),
+                RenderTextureBarrier(currentAoTexture.get(), RenderTextureLayout::SHADER_READ),
                 RenderTextureBarrier(historyIn, RenderTextureLayout::SHADER_READ),
                 RenderTextureBarrier(historyOut, RenderTextureLayout::GENERAL),
                 RenderTextureBarrier(slot.output.get(), RenderTextureLayout::GENERAL)

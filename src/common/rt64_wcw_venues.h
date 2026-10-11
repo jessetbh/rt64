@@ -32,8 +32,14 @@ namespace RT64::WcwLogic {
         FieldShadow = 1u << 11,
         FieldCharacterShadow = 1u << 12,
         FieldOutsideDarkness = 1u << 13,
-        FieldOutsideEdge = 1u << 14
+        FieldOutsideEdge = 1u << 14,
+        FieldColor = 1u << 15,
+        FieldKeyColor = 1u << 16,
+        FieldFillColor = 1u << 17
     };
+
+    using LightColor = std::array<float, 3>;
+    constexpr LightColor WhiteLight = { 1.0f, 1.0f, 1.0f };
 
     // One light preset: "default", "room" or a venue.
     struct LightPreset {
@@ -50,12 +56,26 @@ namespace RT64::WcwLogic {
         uint32_t fills = 4;
         float keyWeight = 0.5f;
         std::vector<std::array<float, 4>> lights;
+        // Colored light: "color" tints every light (white: no tint; the renderer normalizes light colors to unit
+        // luminance, WcwLogic::normalizedLightColor). The generated rig's key and fills take "keyColor" / "fillColor"
+        // (default: the preset's color). An explicit light [x, y, z, weight, r, g, b] carries its own color
+        // (lightOwnColor), otherwise it follows color, also when the lights are inherited from "default".
+        // keyColor and fillColor always hold the effective colors (resolved when parsed and by inheritDefault).
+        LightColor color = WhiteLight;
+        LightColor keyColor = WhiteLight;
+        LightColor fillColor = WhiteLight;
+        // Parallel to lights: each light's own color, used where lightOwnColor is 1 (syncColorLists keeps the sizes).
+        std::vector<LightColor> lightColors;
+        std::vector<uint8_t> lightOwnColor;
         float size = 20.0f;
         float radius = 750.0f;
         float clearance = 0.0f;
         float falloff = 0.0f;
         // "glows": [[x, y, z, intensity, range], ...] (offsets from the anchor like lights).
         std::vector<std::array<float, 5>> glows;
+        // Parallel to glows: [x, y, z, intensity, range, r, g, b] gives a glow its color (white otherwise; not
+        // normalized, so a color also scales the glow's strength).
+        std::vector<LightColor> glowColors;
         // "anchor": "scene": center and explicit lights are offsets from the drawn world geometry's center on X/Z
         // and its floor (lowest point) on Y, so one preset fits rooms placed anywhere in the world.
         bool anchorScene = false;
@@ -90,6 +110,16 @@ namespace RT64::WcwLogic {
     // Parses rt_lights.json text (comments allowed). Fills each venue's uniqueMatch. Throws std::exception on
     // malformed JSON.
     LightPresetFile parseLightPresets(const std::string &text);
+
+    // An explicit light's effective color: its own, or the preset's color. Out of range: the preset's color.
+    LightColor presetLightColor(const LightPreset &preset, size_t lightIndex);
+
+    // A glow's color (white when it has none).
+    LightColor presetGlowColor(const LightPreset &preset, size_t glowIndex);
+
+    // Pads or trims the color lists to the lights and glows (new entries: no own color, white glow), after an edit
+    // adds or removes lights or glows.
+    void syncColorLists(LightPreset &preset);
 
     // Writes the file back as JSON that parses to the same presets. Only the fields a preset sets itself are written
     // (setFields), so later edits to "default" still reach the venues that never overrode them. Comments in the

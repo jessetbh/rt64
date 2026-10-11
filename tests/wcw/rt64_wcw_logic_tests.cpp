@@ -183,6 +183,40 @@ TEST_CASE("denoise: AO accumulates longer than shadows, and both keep some histo
     CHECK(d.aoAlpha > 0.0f && d.shadowAlpha < 1.0f);
 }
 
+// Colored light
+
+static float luminance(const std::array<float, 3> &c) {
+    return 0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2];
+}
+
+TEST_CASE("light color: white stays white (presets without colors look exactly as before)") {
+    const std::array<float, 3> white = normalizedLightColor(1.0f, 1.0f, 1.0f);
+    CHECK_NEAR(white[0], 1.0f, 1e-5f);
+    CHECK_NEAR(white[1], 1.0f, 1e-5f);
+    CHECK_NEAR(white[2], 1.0f, 1e-5f);
+    const std::array<float, 3> grey = normalizedLightColor(0.3f, 0.3f, 0.3f);
+    CHECK_NEAR(grey[0], 1.0f, 1e-5f);
+}
+
+TEST_CASE("light color: a tint keeps the light's brightness") {
+    const std::array<float, 3> warm = normalizedLightColor(1.0f, 0.9f, 0.75f);
+    CHECK_NEAR(luminance(warm), 1.0f, 1e-4f);
+    CHECK(warm[0] > warm[1] && warm[1] > warm[2]);
+    const std::array<float, 3> cool = normalizedLightColor(0.8f, 0.9f, 1.0f);
+    CHECK_NEAR(luminance(cool), 1.0f, 1e-4f);
+    CHECK(cool[2] > cool[0]);
+}
+
+TEST_CASE("light color: saturated colors are capped, black falls back to white") {
+    const std::array<float, 3> red = normalizedLightColor(1.0f, 0.0f, 0.0f);
+    CHECK(red[0] <= MaxLightChannel);
+    CHECK_EQ(red[1], 0.0f);
+    const std::array<float, 3> black = normalizedLightColor(0.0f, 0.0f, 0.0f);
+    CHECK_EQ(black[0], 1.0f);
+    const std::array<float, 3> negative = normalizedLightColor(-1.0f, -1.0f, -1.0f);
+    CHECK_EQ(negative[2], 1.0f);
+}
+
 // Blue noise (ray tracer sample jitter)
 
 static const std::vector<float> &blueTile() {

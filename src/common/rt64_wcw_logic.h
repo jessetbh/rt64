@@ -9,6 +9,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <vector>
+#include <array>
 
 // [wcw] Decision logic for frame interpolation, present pacing, the CRT beam simulator and ray-traced shadows, kept
 // free of renderer state so it can be unit tested (tests/wcw). The renderer calls these functions; a change to any
@@ -105,6 +106,15 @@ namespace RT64::WcwLogic {
     constexpr uint32_t DenoiseMaxRadius = 4;
 
     DenoiseSettings denoiseSettings();
+
+    // Colored light
+
+    // A preset light's RGB scaled to unit luminance (Rec. 709 weights), so a color tints the light without changing
+    // how bright it is: white stays white, a warm [1, 0.9, 0.75] becomes slightly red-heavy at the same brightness.
+    // Channels are capped at MaxLightChannel so a saturated color can't blow out one channel; black, negative or
+    // missing colors fall back to white.
+    constexpr float MaxLightChannel = 2.0f;
+    std::array<float, 3> normalizedLightColor(float r, float g, float b);
 
     // Blue noise for the ray tracer's random samples (soft shadow jitter, AO directions): a size x size tile
     // (size a power of two) built with void-and-cluster (Ulichney 1993) on a torus, so it tiles seamlessly.
