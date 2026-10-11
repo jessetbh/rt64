@@ -43,6 +43,9 @@ namespace RT64 {
         std::condition_variable presentIdCondition;
         std::thread *presentThread = nullptr;
         std::mutex threadMutex;
+        // [wcw fix] Held while threadPresent uses render targets (all its waits are bounded), so the workload
+        // thread can wait for an in-flight present before destroying the targets.
+        std::mutex wcwPresentTargetsMutex;
         std::atomic<bool> presentThreadRunning = false;
         std::recursive_mutex inspectorMutex;
         std::mutex screenFbChangePoolMutex;

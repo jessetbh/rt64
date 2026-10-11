@@ -1224,6 +1224,7 @@ namespace RT64 {
                     notifyPresentId(present);
                 }
                 else {
+                    std::scoped_lock<std::mutex> presentTargetsLock(wcwPresentTargetsMutex);
                     threadPresent(present, swapChainValid);
                 }
 
