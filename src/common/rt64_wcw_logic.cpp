@@ -20,21 +20,21 @@ namespace RT64::WcwLogic {
         // a shorter character radius keeps a limb from darkening the whole torso next to it.
         case AoLevel::Subtle:
             settings.samples = baseSamples;
-            settings.strength = 0.55f;
-            settings.characterStrength = 0.5f;
-            settings.radius = 60.0f;
-            settings.characterRadius = 35.0f;
+            settings.strength = 0.45f;
+            settings.characterStrength = 0.4f;
+            settings.radius = 45.0f;
+            settings.characterRadius = 25.0f;
             settings.gain = 1.5f;
-            settings.characterGain = 1.75f;
+            settings.characterGain = 1.5f;
             break;
         case AoLevel::Strong:
             settings.samples = baseSamples * 2;
-            settings.strength = 0.75f;
-            settings.characterStrength = 0.85f;
-            settings.radius = 80.0f;
-            settings.characterRadius = 45.0f;
-            settings.gain = 2.0f;
-            settings.characterGain = 2.5f;
+            settings.strength = 0.6f;
+            settings.characterStrength = 0.6f;
+            settings.radius = 60.0f;
+            settings.characterRadius = 30.0f;
+            settings.gain = 1.75f;
+            settings.characterGain = 1.75f;
             break;
         case AoLevel::Off:
         default:

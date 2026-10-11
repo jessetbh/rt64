@@ -76,21 +76,27 @@ TEST_CASE("ao: reach suits the AKI world scale and contrast stays below the blot
     // a gain of 3 turned sampling noise into dark blotches on the wrestlers.
     for (uint32_t level = 1; level <= 2; level++) {
         const AoSettings settings = aoSettings(level, 1);
-        CHECK(settings.radius >= 50.0f);
+        CHECK(settings.radius >= 40.0f);
         CHECK((settings.gain >= 1.0f) && (settings.gain <= 2.5f));
     }
 
     CHECK(aoSettings(uint32_t(AoLevel::Strong), 1).gain > aoSettings(uint32_t(AoLevel::Subtle), 1).gain);
 }
 
-TEST_CASE("ao: Strong puts extra weight on the wrestlers, within the blotch-free range") {
-    // The owner wants the AO to show on the wrestlers; the world (mat, floor) was already about right.
-    const AoSettings strong = aoSettings(uint32_t(AoLevel::Strong), 1);
-    CHECK(strong.characterStrength > strong.strength);
-    CHECK(strong.characterGain > strong.gain);
-    CHECK(strong.characterStrength <= 0.9f);
-    CHECK(strong.characterGain <= 3.0f);
+TEST_CASE("ao: wrestlers stay below the muddy range at the normal camera distance") {
+    // Owner review of a CPU match: wrestler strength 0.85 with gain 2.5 and a 45-unit reach darkened whole bodies
+    // instead of creases, and an 80-unit world reach left grime along the ring edges. Keep the AO in creases and
+    // contacts: moderate strength and gain, short reach.
+    for (uint32_t level = 1; level <= 2; level++) {
+        const AoSettings settings = aoSettings(level, 1);
+        CHECK(settings.characterStrength <= 0.65f);
+        CHECK(settings.characterGain <= 2.0f);
+        CHECK(settings.characterRadius <= 35.0f);
+        CHECK(settings.radius <= 65.0f);
+    }
+
     const AoSettings subtle = aoSettings(uint32_t(AoLevel::Subtle), 1);
+    const AoSettings strong = aoSettings(uint32_t(AoLevel::Strong), 1);
     CHECK(subtle.characterGain < strong.characterGain);
 }
 
