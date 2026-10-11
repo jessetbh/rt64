@@ -7,6 +7,7 @@
 #include <thread>
 
 #include "common/rt64_thread.h"
+#include "common/rt64_wcw_logic.h"
 #include "render/rt64_hdr_output.h"
 #include "rhi/rt64_render_hooks.h"
 
@@ -520,8 +521,7 @@ namespace RT64 {
                     wcwHfrFrameStart = std::chrono::steady_clock::now();
                 }
                 else {
-                    const auto gameFrame = std::chrono::microseconds(1000000 / viOriginalRate);
-                    const auto target = wcwHfrFrameStart + (gameFrame * i) / framesToPresent;
+                    const auto target = WcwLogic::evenPresentTarget(wcwHfrFrameStart, int(i), int(framesToPresent), viOriginalRate);
                     threadBeamFillUntil(target, swapChainValid);
                     const auto coarse = target - std::chrono::milliseconds(1);
                     if (std::chrono::steady_clock::now() < coarse) {
@@ -804,12 +804,8 @@ namespace RT64 {
 
             if (presentFrame && swapChainValid) {
                 // Wait until the approximate time the next present should be at the current intended rate.
-                // [wcw crt] Not with the beam simulator: its frames are paced to their even targets before the
-                // acquire, and the vblank wait below lands each on a refresh. Sleeping a full frame period past
-                // the previous present first rounded every interval up to the next refresh (3 refreshes per
-                // 120 fps frame at 280 Hz instead of 2.33), so the presents fell behind and whole game frames
-                // were dropped (about 92 presents/s instead of 120).
-                if ((presentTimestamp != Timestamp()) && (targetRate > 0) && (targetRate > viOriginalRate) && !crtFilter->beamActive()) {
+                // [wcw crt] Not with the beam simulator (WcwLogic::sleepFramePeriodBeforePresent).
+                if (WcwLogic::sleepFramePeriodBeforePresent(presentTimestamp != Timestamp(), targetRate, viOriginalRate, crtFilter->beamActive())) {
                     Timer::preciseSleepUntil(presentTimestamp + std::chrono::nanoseconds(1'000'000'000 / targetRate));
                 }
 

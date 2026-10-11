@@ -5,6 +5,7 @@
 #include "rt64_workload_queue.h"
 
 #include "common/rt64_thread.h"
+#include "common/rt64_wcw_logic.h"
 
 #include "rt64_present_queue.h"
 
@@ -1036,8 +1037,8 @@ namespace RT64 {
         Thread::setCurrentThreadName("RT64 Workload");
 
         WorkloadConfiguration workloadConfig;
-        int64_t logicalTicks = 0;
-        int64_t displayTicks = 0;
+        // [wcw] Logical/display tick accounting for interpolation (WcwLogic::InterpolationTicks).
+        WcwLogic::InterpolationTicks wcwTicks;
         uint32_t originalRateForTicks = 0;
         uint32_t displayRateForTicks = 0;
         int processCursor = -1;
@@ -1425,8 +1426,7 @@ namespace RT64 {
 
                     const bool resetTicks = !generateInterpolatedFrames || (originalRateForTicks != workload.viOriginalRate) || (displayRateForTicks != workloadConfig.targetRate) || !displayRateAboveOriginal;
                     if (resetTicks) {
-                        logicalTicks = 0;
-                        displayTicks = 0;
+                        wcwTicks.reset();
                         originalRateForTicks = workload.viOriginalRate;
                         displayRateForTicks = workloadConfig.targetRate;
                     }
@@ -1435,20 +1435,14 @@ namespace RT64 {
                 // Estimate amount of frames to render based on how many display frames it'd take to reach the next logical frame.
                 uint32_t displayFrames = 1;
                 if (generateInterpolatedFrames) {
-                    logicalTicks += workloadConfig.targetRate;
-                    displayFrames = uint32_t((logicalTicks - displayTicks) / workload.viOriginalRate);
                     deltaTimeMs = 1.0f / float(workloadConfig.targetRate);
 
                     // [wcw fix] Cap the display frames per game frame at N = display rate / game rate (2 for a 30Hz
                     // game at 60Hz, 4 at 120Hz): the tick accounting can otherwise creep ahead and leave the present
                     // behind. WCW_HFR_CAP=<n> overrides N for debugging.
                     static const uint32_t wcwHfrCapEnv = getenv("WCW_HFR_CAP") ? uint32_t(std::max(atoi(getenv("WCW_HFR_CAP")), 2)) : 0;
-                    const uint32_t wcwFramesPerGameFrame = (wcwHfrCapEnv > 0) ? wcwHfrCapEnv :
-                        std::max(2u, (workloadConfig.targetRate + workload.viOriginalRate / 2) / workload.viOriginalRate);
-                    if (displayFrames > wcwFramesPerGameFrame) {
-                        displayTicks += workload.viOriginalRate * (displayFrames - wcwFramesPerGameFrame);
-                        displayFrames = wcwFramesPerGameFrame;
-                    }
+                    const uint32_t wcwFramesPerGameFrame = WcwLogic::framesPerGameFrame(workloadConfig.targetRate, workload.viOriginalRate, wcwHfrCapEnv);
+                    displayFrames = wcwTicks.beginGameFrame(workloadConfig.targetRate, workload.viOriginalRate, wcwHfrCapEnv);
 
                     // At rates that aren't a multiple of the game rate (e.g. 144 Hz) game frames alternate between
                     // floor and floor+1 frames; only fewer than floor is incomplete.
@@ -1457,8 +1451,8 @@ namespace RT64 {
                         wcwRunGenIncomplete = true;
                     }
 
-                    assert((logicalTicks > displayTicks) && "Logical ticks must always remain bigger than the display ticks.");
-                    assert(((logicalTicks - displayTicks) <= (workloadConfig.targetRate + workload.viOriginalRate)) && "The gap between logical ticks and display ticks can't be bigger than the target rate.");
+                    assert((wcwTicks.logical > wcwTicks.display) && "Logical ticks must always remain bigger than the display ticks.");
+                    assert(((wcwTicks.logical - wcwTicks.display) <= (workloadConfig.targetRate + workload.viOriginalRate)) && "The gap between logical ticks and display ticks can't be bigger than the target rate.");
                     assert((displayFrames > 0) && "At least one display frame must be generated.");
                 }
                 else if (workload.viOriginalRate > 0) {
@@ -1546,7 +1540,8 @@ namespace RT64 {
                 bool skipWorkloadNow = false;
                 // [wcw hfr] The run's first layer primes this run's generated targets (see threadRenderFrame).
                 wcwPrimeTargets.clear();
-                if (generateInterpolatedFrames && !usingMSAA && (wcwCompositeRunLength == 1)) {
+                const bool wcwPrimeEnabled = wcwInterpolationProfile().primeGeneratedFrames || (getenv("WCW_HFR_PRIME") != nullptr);
+                if (WcwLogic::primeGeneratedTargets(wcwPrimeEnabled, generateInterpolatedFrames, usingMSAA, wcwCompositeRunLength)) {
                     for (uint32_t i = 0; (i + 1 < displayFrames) && (i < interpolatedTargets.size()); i++) {
                         wcwPrimeTargets.push_back(interpolatedTargets[i].get());
                     }
@@ -1565,7 +1560,7 @@ namespace RT64 {
                         const int64_t expectedTimeMicro = frame * maxTimePerFrameMicro;
                         const int64_t measuredFrameMicro = renderTimeTotalMicro / framesRendered;
                         if ((currentTimeMicro > expectedTimeMicro) || ((currentTimeMicro + measuredFrameMicro) > adjustedTimeWindowMicro)) {
-                            displayTicks += workload.viOriginalRate;
+                            wcwTicks.skip(workload.viOriginalRate, 1);
                             skippedFrames = true;
                             wcwRunGenIncomplete = true;
                             continue;
@@ -1575,9 +1570,9 @@ namespace RT64 {
                     RenderTarget *overrideTarget = nullptr;
                     uint32_t overrideModifier = 0;
                     if (generateInterpolatedFrames) {
-                        prevFrameWeight = std::clamp((workloadConfig.targetRate + displayTicks - logicalTicks) / float(workloadConfig.targetRate), 0.0f, 1.0f);
-                        displayTicks += workload.viOriginalRate;
-                        curFrameWeight = std::clamp((workloadConfig.targetRate + displayTicks - logicalTicks) / float(workloadConfig.targetRate), 0.0f, 1.0f);
+                        const WcwLogic::FrameWeights weights = wcwTicks.advance(workloadConfig.targetRate, workload.viOriginalRate);
+                        prevFrameWeight = weights.prev;
+                        curFrameWeight = weights.cur;
 
                         // Override the render target.
                         if (usingMSAA || (frame > 0)) {
@@ -1687,7 +1682,7 @@ namespace RT64 {
 
                         // Add the amount of display ticks that correspond to the remaining frames.
                         if (skipWorkloadNow) {
-                            displayTicks += workload.viOriginalRate * (displayFrames - (frame + 1));
+                            wcwTicks.skip(workload.viOriginalRate, displayFrames - (frame + 1));
                         }
 
                         ext.sharedResources->interpolatedCondition.notify_all();

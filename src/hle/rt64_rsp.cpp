@@ -12,6 +12,7 @@
 #include "../include/rt64_extended_gbi.h"
 #include "common/rt64_common.h"
 #include "common/rt64_math.h"
+#include "common/rt64_wcw_logic.h"
 #include "gbi/rt64_f3d.h"
 #include "render/rt64_wcw_raytracer.h"
 #include "shared/rt64_rsp_fog.h"
@@ -425,31 +426,8 @@ namespace RT64 {
     // (address +/- 0x40) was already seen takes the partner's identity. WCW_HFR_SLOTSTRIDE overrides 0x40
     // (0 disables).
     static uint32_t wcwCanonicalSlot(uint32_t addr) {
-        static const uint32_t stride = getenv("WCW_HFR_SLOTSTRIDE") ? uint32_t(strtoul(getenv("WCW_HFR_SLOTSTRIDE"), nullptr, 0)) : 0x40u;
-        static std::unordered_map<uint32_t, uint32_t> canonical;
-        static std::mutex canonicalMutex;
-        if (stride == 0) {
-            return addr;
-        }
-
-        std::lock_guard<std::mutex> lock(canonicalMutex);
-        auto it = canonical.find(addr);
-        if (it != canonical.end()) {
-            return it->second;
-        }
-
-        uint32_t id = addr;
-        auto lower = canonical.find(addr - stride);
-        auto upper = canonical.find(addr + stride);
-        if (lower != canonical.end()) {
-            id = lower->second;
-        }
-        else if (upper != canonical.end()) {
-            id = upper->second;
-        }
-
-        canonical.emplace(addr, id);
-        return id;
+        static WcwLogic::MatrixSlotIdentity identity(getenv("WCW_HFR_SLOTSTRIDE") ? uint32_t(strtoul(getenv("WCW_HFR_SLOTSTRIDE"), nullptr, 0)) : 0x40u);
+        return identity.canonical(addr);
     }
 
     void RSP::wcwSetScreenSpace(bool screenSpace) {

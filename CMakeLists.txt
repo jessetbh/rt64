@@ -319,6 +319,7 @@ set (SOURCES
     "${PROJECT_SOURCE_DIR}/src/common/rt64_timer.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_user_configuration.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_user_paths.cpp"
+    "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_logic.cpp"
 
     "${PROJECT_SOURCE_DIR}/src/gbi/rt64_gbi.cpp"
     "${PROJECT_SOURCE_DIR}/src/gbi/rt64_gbi_f3d.cpp"
@@ -444,6 +445,28 @@ target_link_libraries(rt64 re-spirv)
 target_link_libraries(rt64 nfd)
 target_link_libraries(rt64 libzstd_static)
 target_link_libraries(rt64 plume)
+
+# [wcw] Unit tests for the frame interpolation, pacing, CRT beam and ray-traced shadow logic (tests/wcw). They build
+# and run as part of every rt64 build, so a failing test fails the game's build. RT64_WCW_TESTS=OFF skips them.
+option(RT64_WCW_TESTS "Build and run the wcw unit tests with rt64" ON)
+if (RT64_WCW_TESTS AND NOT CMAKE_CROSSCOMPILING)
+    add_executable(rt64_wcw_tests
+        "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_logic_tests.cpp"
+        "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_logic.cpp"
+    )
+    target_include_directories(rt64_wcw_tests PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/tests/wcw")
+    set(RT64_WCW_TESTS_STAMP "${CMAKE_CURRENT_BINARY_DIR}/rt64_wcw_tests.passed")
+    add_custom_command(
+        OUTPUT "${RT64_WCW_TESTS_STAMP}"
+        COMMAND rt64_wcw_tests
+        COMMAND ${CMAKE_COMMAND} -E touch "${RT64_WCW_TESTS_STAMP}"
+        DEPENDS rt64_wcw_tests
+        COMMENT "Running rt64 wcw unit tests"
+        VERBATIM
+    )
+    add_custom_target(rt64_wcw_tests_run DEPENDS "${RT64_WCW_TESTS_STAMP}")
+    add_dependencies(rt64 rt64_wcw_tests_run)
+endif()
 
 # Add tools.
 add_subdirectory(src/tools/texture_hasher)
