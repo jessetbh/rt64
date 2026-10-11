@@ -245,11 +245,11 @@ namespace RT64 {
         void finishPresent();
         const LightPreset &activePreset() const;
 
-        // Runtime settings from the frontend's graphics menu. Quality: 0 Performance (half-res,
-        // 1 sample per light, 1 AO ray), 1 Balanced (half-res, 2/2), 2 Quality (full-res, 2/2).
-        // WCW_RT forces it on; WCW_RT_SCALE / WCW_RT_SAMPLES / WCW_RT_AO_SAMPLES override quality.
-        // aoLevel: the Ambient Occlusion option (WcwLogic::AoLevel: 0 Off, 1 Subtle, 2 Strong).
-        static void setUserSettings(bool enabled, uint32_t quality, uint32_t aoLevel = 1);
+        // Runtime settings from the frontend's graphics menu. Quality (WcwLogic::RtQuality / rtPreset): 0 Performance
+        // (reduced resolution, 1 shadow ray per light, no AO), 1 Balanced (reduced resolution, 2, Subtle AO), 2 Quality
+        // (full resolution, 2, Subtle AO), 3 Ultra (full resolution, 4, Strong AO with 8 rays). WCW_RT forces it on;
+        // WCW_RT_SCALE / WCW_RT_SAMPLES / WCW_RT_AO_SAMPLES and the WCW_RT_AO* look overrides override the level.
+        static void setUserSettings(bool enabled, uint32_t quality);
         // True when ray tracing should run this frame (WCW_RT or the menu option). The camera
         // hand-off in rt64_rsp.cpp follows it, so Off keeps the original rendering.
         static bool active();

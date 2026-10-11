@@ -12,15 +12,18 @@ namespace RT64::WcwLogic {
         return (frameCounter >= builtFrame) && ((frameCounter - builtFrame) <= ShadowCasterStaleFrames);
     }
 
-    AoSettings aoSettings(uint32_t level, uint32_t quality) {
+    AoSettings aoLookSettings(AoLevel level, uint32_t samples) {
         AoSettings settings;
-        const uint32_t baseSamples = (quality == 0) ? 1u : 2u;
-        switch (AoLevel(std::min(level, uint32_t(AoLevel::Strong)))) {
+        if (samples == 0) {
+            return settings;
+        }
+
+        switch (level) {
         // Radii are in AKI world units (a ring is several hundred across, a wrestler about 150 tall). Wrestlers
         // are mostly convex, so their occlusion lives in creases and contacts: the gain brings those out, and
         // a shorter character radius keeps a limb from darkening the whole torso next to it.
         case AoLevel::Subtle:
-            settings.samples = baseSamples;
+            settings.samples = samples;
             settings.strength = 0.45f;
             settings.characterStrength = 0.4f;
             settings.radius = 45.0f;
@@ -29,7 +32,7 @@ namespace RT64::WcwLogic {
             settings.characterGain = 1.5f;
             break;
         case AoLevel::Strong:
-            settings.samples = baseSamples * 2;
+            settings.samples = samples;
             settings.strength = 0.6f;
             settings.characterStrength = 0.6f;
             settings.radius = 60.0f;
@@ -43,6 +46,54 @@ namespace RT64::WcwLogic {
         }
 
         return settings;
+    }
+
+    RtPreset rtPreset(uint32_t quality) {
+        RtPreset preset;
+        switch (RtQuality(std::min(quality, uint32_t(RtQuality::Ultra)))) {
+        case RtQuality::Performance:
+            preset.scale = 0.5f;
+            preset.maxLines = 720.0f;
+            preset.samplesPerLight = 1;
+            break;
+        case RtQuality::Balanced:
+            preset.scale = 0.5f;
+            preset.maxLines = 1080.0f;
+            preset.samplesPerLight = 2;
+            preset.ao = AoLevel::Subtle;
+            preset.aoSamples = 2;
+            break;
+        case RtQuality::Quality:
+            // The full look: Strong AO. With 4 rays and the separate AO cleanup it reads clean (before that cleanup,
+            // Strong mottled the mat next to the wrestlers).
+            preset.samplesPerLight = 2;
+            preset.ao = AoLevel::Strong;
+            preset.aoSamples = 4;
+            break;
+        case RtQuality::Ultra:
+        default:
+            // Quality's look, cleaner: twice its shadow rays and AO rays.
+            preset.samplesPerLight = 4;
+            preset.ao = AoLevel::Strong;
+            preset.aoSamples = 8;
+            break;
+        }
+
+        return preset;
+    }
+
+    float rtTraceScale(const RtPreset &preset, uint32_t targetHeight) {
+        float scale = preset.scale;
+        if ((preset.maxLines > 0.0f) && (targetHeight > 0)) {
+            scale = std::min(scale, preset.maxLines / float(targetHeight));
+        }
+
+        return scale;
+    }
+
+    AoSettings aoSettings(uint32_t quality) {
+        const RtPreset preset = rtPreset(quality);
+        return aoLookSettings(preset.ao, preset.aoSamples);
     }
 
     bool aoCycleOn(uint64_t unixMs, uint64_t periodMs) {

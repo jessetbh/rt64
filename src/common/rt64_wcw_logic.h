@@ -24,9 +24,20 @@ namespace RT64::WcwLogic {
     // Whether a scene last built on game frame builtFrame still casts shadows on game frame frameCounter.
     bool shadowCasterFresh(uint64_t frameCounter, uint64_t builtFrame);
 
+    // Ray tracing quality presets
+
+    // The menu's Ray Tracing Quality levels.
+    enum class RtQuality : uint32_t {
+        Performance = 0,
+        Balanced = 1,
+        Quality = 2,
+        Ultra = 3
+    };
+
     // Ray-traced ambient occlusion
 
-    // The menu's Ambient Occlusion levels.
+    // The AO looks. There is no AO menu: each quality level picks one (RtPreset::ao): none on Performance, Subtle on
+    // Balanced, Strong on Quality and Ultra.
     enum class AoLevel : uint32_t {
         Off = 0,
         Subtle = 1,
@@ -51,9 +62,32 @@ namespace RT64::WcwLogic {
     // screen recording can be labelled from its own start time. Even periods are on.
     bool aoCycleOn(uint64_t unixMs, uint64_t periodMs);
 
-    // The AO parameters for a menu level at a ray tracing quality (0 Performance, 1 Balanced, 2 Quality). Higher
-    // quality only adds samples; the look (strengths, radii) depends on the level alone.
-    AoSettings aoSettings(uint32_t level, uint32_t quality);
+    // The AO parameters for a look with this many rays per pixel per frame. The look (strengths, radii, gains)
+    // depends on the level alone; Off traces no rays whatever the count.
+    AoSettings aoLookSettings(AoLevel level, uint32_t samples);
+
+    // What a Ray Tracing Quality level traces. Performance and Balanced trace at reduced resolution (soft,
+    // temporally resolved shadows don't need every pixel), capped at maxLines so 4K targets don't multiply the
+    // rays; Quality and Ultra trace every pixel. Higher levels add rays, and the AO look comes with the level.
+    struct RtPreset {
+        // Trace resolution relative to the color target, before the line cap.
+        float scale = 1.0f;
+        // Cap on the trace height in lines (0 = none).
+        float maxLines = 0.0f;
+        // Jittered shadow rays per light per pixel per frame (the key light gets more by its weight).
+        uint32_t samplesPerLight = 1;
+        AoLevel ao = AoLevel::Off;
+        uint32_t aoSamples = 0;
+    };
+
+    // The preset for a quality level; levels past Ultra clamp to Ultra.
+    RtPreset rtPreset(uint32_t quality);
+
+    // The trace resolution relative to a color target targetHeight lines tall.
+    float rtTraceScale(const RtPreset &preset, uint32_t targetHeight);
+
+    // The AO parameters for a quality level.
+    AoSettings aoSettings(uint32_t quality);
 
     // The resolve pass's cleanup of the traced shadow and AO terms, which it filters and accumulates separately.
     // Shadows have real edges (a wrestler's outline on the mat), so they get a tight spatial filter and react
