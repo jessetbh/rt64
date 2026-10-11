@@ -298,6 +298,10 @@ namespace RT64 {
         }
     }
     
+    // [wcw hfr] Generated targets to prime before the run's first layer draws its blended frame (set by the
+    // workload thread, consumed by threadRenderFrame).
+    static std::vector<RenderTarget *> wcwPrimeTargets;
+
     void WorkloadQueue::threadRenderFrame(GameFrame &curFrame, const GameFrame &prevFrame, const WorkloadConfiguration &workloadConfig,
         const DebuggerRenderer &debuggerRenderer, const DebuggerCamera &debuggerCamera, float curFrameWeight, float prevFrameWeight,
         float deltaTimeMs, RenderTargetKey overrideTargetKey, int32_t overrideTargetFbPairIndex, RenderTarget *overrideTarget,
@@ -742,21 +746,32 @@ namespace RT64 {
             // content behind the re-rendered geometry: World Tour's title fade alternated grey/white.
             static const bool wcwHfrPrimeEnv = getenv("WCW_HFR_PRIME") != nullptr;
             const bool wcwHfrPrime = wcwInterpolationProfile().primeGeneratedFrames || wcwHfrPrimeEnv;
-            if (wcwHfrPrime && (overrideTarget != nullptr) && !usingMSAA) {
+            // The copy happens once per run, before its first layer draws the blended frame into the live target:
+            // the generated targets then start from the same content as the game's buffer (usually the clear
+            // the previous frame left). Priming each generated frame from the live target after the blend was
+            // drawn applied translucent full-screen layers (fades) twice, and priming every layer replaced the
+            // earlier layers' draws with the blended frame's.
+            if (wcwHfrPrime && (overrideTarget == nullptr) && !wcwPrimeTargets.empty() && !usingMSAA) {
                 RenderTarget &liveTarget = targetManager.get(overrideTargetKey, true);
-                if (!liveTarget.isEmpty() && (&liveTarget != overrideTarget)) {
-                    overrideTarget->resize(ext.workloadGraphicsWorker, liveTarget.width, liveTarget.height);
+                for (RenderTarget *primeTarget : wcwPrimeTargets) {
+                    if (liveTarget.isEmpty() || (primeTarget == nullptr) || (&liveTarget == primeTarget)) {
+                        continue;
+                    }
+
+                    primeTarget->resize(ext.workloadGraphicsWorker, liveTarget.width, liveTarget.height);
                     RenderTextureBarrier primeBarriers[] = {
                         RenderTextureBarrier(liveTarget.texture.get(), RenderTextureLayout::COPY_SOURCE),
-                        RenderTextureBarrier(overrideTarget->texture.get(), RenderTextureLayout::COPY_DEST)
+                        RenderTextureBarrier(primeTarget->texture.get(), RenderTextureLayout::COPY_DEST)
                     };
                     ext.workloadGraphicsWorker->commandList->barriers(RenderBarrierStage::COPY, primeBarriers, uint32_t(std::size(primeBarriers)));
-                    const RenderBox primeBox(0, 0, int32_t(std::min(liveTarget.width, overrideTarget->width)), int32_t(std::min(liveTarget.height, overrideTarget->height)));
+                    const RenderBox primeBox(0, 0, int32_t(std::min(liveTarget.width, primeTarget->width)), int32_t(std::min(liveTarget.height, primeTarget->height)));
                     ext.workloadGraphicsWorker->commandList->copyTextureRegion(
-                        RenderTextureCopyLocation::Subresource(overrideTarget->texture.get()),
+                        RenderTextureCopyLocation::Subresource(primeTarget->texture.get()),
                         RenderTextureCopyLocation::Subresource(liveTarget.texture.get()), 0, 0, 0, &primeBox);
                 }
             }
+
+            wcwPrimeTargets.clear();
 
             // Record all framebuffer pairs.
             uint32_t framebufferIndex = 0;
@@ -1294,6 +1309,31 @@ namespace RT64 {
                     }
                 }
 
+                // [wcw hfr] WCW_HFR_FBTRACE=<first present>,<count>: per workload, every framebuffer pair and the
+                // interpolation target the scan picked (present numbers as in wcw_present_lum.csv).
+                {
+                    static int wcwFbTraceFirst = -1, wcwFbTraceCount = 0;
+                    static bool wcwFbTraceInit = false;
+                    if (!wcwFbTraceInit) {
+                        wcwFbTraceInit = true;
+                        if (const char *e = getenv("WCW_HFR_FBTRACE")) {
+                            sscanf(e, "%d,%d", &wcwFbTraceFirst, &wcwFbTraceCount);
+                        }
+                    }
+
+                    const int n = int(wcwRtPresentCounter);
+                    if ((wcwFbTraceFirst >= 0) && (n >= wcwFbTraceFirst) && (n < wcwFbTraceFirst + wcwFbTraceCount)) {
+                        fprintf(stderr, "[wcw hfr fb] present %d workload %u run %llu pairs %u target 0x%X pair %d\n", n, processCursor,
+                            (unsigned long long)workload.wcwRunSerial, workload.fbPairCount, interpolationTargetKey.address, interpolationTargetFbPairIndex);
+                        for (uint32_t f = 0; f < workload.fbPairCount; f++) {
+                            const FramebufferPair &p = workload.fbPairs[f];
+                            fprintf(stderr, "[wcw hfr fb]   pair %u color 0x%X depth 0x%X calls %u fillOnly %d candidate %d drawRect %s projections %u\n", f,
+                                p.colorImage.address, p.depthImage.address, p.gameCallCount, int(p.fillRectOnly), int(p.earlyPresentCandidate()),
+                                p.drawColorRect.isEmpty() ? "empty" : "set", p.projectionCount);
+                        }
+                    }
+                }
+
                 // [wcw fix] A layer that draws nothing inherits the run's interpolation target.
                 {
                     static RenderTargetKey wcwLastRunKey;
@@ -1494,6 +1534,14 @@ namespace RT64 {
                 const int64_t maxTimePerFrameMicro = adjustedTimeWindowMicro / displayFrames;
                 bool skippedFrames = false;
                 bool skipWorkloadNow = false;
+                // [wcw hfr] The run's first layer primes this run's generated targets (see threadRenderFrame).
+                wcwPrimeTargets.clear();
+                if (generateInterpolatedFrames && !usingMSAA && (wcwCompositeRunLength == 1)) {
+                    for (uint32_t i = 0; (i + 1 < displayFrames) && (i < interpolatedTargets.size()); i++) {
+                        wcwPrimeTargets.push_back(interpolatedTargets[i].get());
+                    }
+                }
+
                 uint32_t targetIndex = 0;
                 uint32_t framesRendered = 0;
                 int64_t renderTimeTotalMicro = 0;
