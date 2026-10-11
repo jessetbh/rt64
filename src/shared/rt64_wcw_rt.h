@@ -22,6 +22,9 @@
 // Raw ambient occlusion of this frame in grey, not filtered or composited (tuning the AO's look and noise).
 #define WCW_RT_MODE_AO_RAW 9
 
+// Side of the blue noise tile the trace shader samples (WcwLogic::BlueNoiseSize; a power of two).
+#define WCW_RT_BLUE_NOISE_SIZE 64
+
 #define WCW_RT_MAX_LIGHTS 8
 #define WCW_RT_MAX_GLOWS 4
 
@@ -115,6 +118,11 @@ namespace interop {
         float aoCharacterGain;
         // 1 while WCW_RT_AO_CYCLE has AO switched off (full-screen on/off comparisons over time).
         uint aoCycleOff;
+        // Random samples (shadow jitter, AO directions): 1 = blue noise from the WCW_RT_BLUE_NOISE_SIZE tile, 0 = the
+        // old interleaved gradient noise (WCW_RT_NOISE=0).
+        uint noiseMode;
+        // WCW_RT_NOISE_SPLIT=1: the old noise on the left half of the screen (same-moment comparisons).
+        uint noiseSplit;
     };
 
     struct WcwRtCompositeCB {

@@ -26,6 +26,8 @@ StructuredBuffer<float2> gTexCoords : register(t9);
 StructuredBuffer<uint> gMeshTiles : register(t10);
 // World-space vertex normals (zero for vertices without one); only meaningful on lit meshes (WCW_RT_MESH_LIT).
 StructuredBuffer<float4> gWorldNorm : register(t11);
+// Blue noise tile, WCW_RT_BLUE_NOISE_SIZE squared values in [0, 1), row-major.
+StructuredBuffer<float> gBlueNoise : register(t12);
 // The framebuffer renderer's bindless RGBA texture cache.
 Texture2D<float4> gTextures[8192] : register(t0, space1);
 
@@ -104,6 +106,22 @@ bool candidateIsSolid(uint instanceId, uint geometryIndex, uint primitiveIndex, 
 float noise(uint2 pixel, uint seed) {
     const float2 p = float2(pixel) + float(seed) * 5.588238f;
     return frac(52.9829189f * frac(0.06711056f * p.x + 0.00583715f * p.y));
+}
+
+// Random sample `dim` of a pixel this frame, in [0, 1). Blue noise: every dimension reads the tile at its own
+// toroidal offset (R2 sequence), so dimensions are uncorrelated, and each frame rotates all values by the golden
+// ratio, so the temporal resolve averages well-spread values. The old interleaved gradient noise stays available
+// (WCW_RT_NOISE=0, or the left half with WCW_RT_NOISE_SPLIT=1); igOffset decorrelates its uses.
+float sampleNoise(uint2 pixel, uint dim, uint2 igOffset) {
+    const bool oldNoise = (gParams.noiseMode == 0) || ((gParams.noiseSplit != 0) && (pixel.x < (gParams.resolution.x / 2)));
+    if (oldNoise) {
+        return noise(pixel + igOffset, gParams.frameIndex * 64 + dim);
+    }
+
+    const uint size = WCW_RT_BLUE_NOISE_SIZE;
+    const uint2 shift = uint2(frac(float(dim) * 0.7548776662f) * float(size), frac(float(dim) * 0.5698402910f) * float(size));
+    const uint2 p = (pixel + shift) & (size - 1);
+    return frac(gBlueNoise[p.y * size + p.x] + float(gParams.frameIndex & 1023u) * 0.6180339887f);
 }
 
 bool resolvedMode() {
@@ -363,8 +381,7 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
     for (uint s = 0, samples = max(gParams.samplesPerLight, 1) * uint(clamp(round(gParams.lights[l].w), 1.0f, 4.0f)); s < samples; s++, i++) {
         // Area light: jittered samples on the light's panel (soft penumbrae, refined over
         // frames by the resolve pass).
-        const uint seed = gParams.frameIndex * 64 + i * 2;
-        const float2 jitter = float2(noise(pixel, seed), noise(pixel + uint2(37, 113), seed + 1)) - 0.5f;
+        const float2 jitter = float2(sampleNoise(pixel, i * 2, uint2(0, 0)), sampleNoise(pixel, i * 2 + 1, uint2(37, 113))) - 0.5f;
         const float2 offset = jitter * gParams.lightSize;
         const float weight = lightWeights[l] / max(weightSum, 1e-6f) / float(samples);
         const float3 lightPos = gParams.lights[l].xyz + float3(offset.x, 0.0f, offset.y);
@@ -431,9 +448,8 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
         const float aoRadius = characterReceiver ? gParams.aoCharacterRadius : gParams.aoRadius;
         float occluded = 0.0f;
         for (uint a = 0; a < gParams.aoSamples; a++) {
-            const uint seed = gParams.frameIndex * 64 + 40 + a * 2;
-            const float u = noise(pixel + uint2(71, 29), seed);
-            const float v = noise(pixel + uint2(13, 97), seed + 1);
+            const float u = sampleNoise(pixel, 40 + a * 2, uint2(71, 29));
+            const float v = sampleNoise(pixel, 41 + a * 2, uint2(13, 97));
             const float r = sqrt(u);
             const float phi = 6.2831853f * v;
             float3 dir = normalize(tangent * (r * cos(phi)) + bitangent * (r * sin(phi)) + hemisphere * sqrt(max(1.0f - u, 0.0f)));

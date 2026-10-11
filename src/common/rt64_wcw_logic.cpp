@@ -5,6 +5,7 @@
 #include "rt64_wcw_logic.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace RT64::WcwLogic {
     bool shadowCasterFresh(uint64_t frameCounter, uint64_t builtFrame) {
@@ -46,6 +47,109 @@ namespace RT64::WcwLogic {
 
     bool aoCycleOn(uint64_t unixMs, uint64_t periodMs) {
         return (periodMs == 0) || (((unixMs / periodMs) % 2) == 0);
+    }
+
+    std::vector<float> blueNoiseTile(uint32_t size) {
+        const uint32_t count = size * size;
+        std::vector<float> values(count, 0.0f);
+        if ((size == 0) || ((size & (size - 1)) != 0)) {
+            return values;
+        }
+
+        // Toroidal Gaussian energy kernel (sigma 1.5), indexed by the offset between two cells.
+        const uint32_t mask = size - 1;
+        std::vector<float> kernel(count);
+        for (uint32_t y = 0; y < size; y++) {
+            for (uint32_t x = 0; x < size; x++) {
+                const float dx = float(std::min(x, size - x));
+                const float dy = float(std::min(y, size - y));
+                kernel[y * size + x] = std::exp(-(dx * dx + dy * dy) / (2.0f * 1.5f * 1.5f));
+            }
+        }
+
+        // energy[c] = sum of the kernel over every set cell, kept up to date as cells are set or cleared.
+        std::vector<uint8_t> set(count, 0);
+        std::vector<float> energy(count, 0.0f);
+        auto toggle = [&](uint32_t cell, float sign) {
+            set[cell] = (sign > 0.0f) ? 1 : 0;
+            const uint32_t cx = cell & mask, cy = cell / size;
+            for (uint32_t y = 0; y < size; y++) {
+                for (uint32_t x = 0; x < size; x++) {
+                    energy[y * size + x] += sign * kernel[((y - cy) & mask) * size + ((x - cx) & mask)];
+                }
+            }
+        };
+
+        // The densest set cell (tightest cluster) or the emptiest unset cell (largest void); ties go to the lowest index.
+        auto pick = [&](bool wantSet) {
+            uint32_t best = 0;
+            bool found = false;
+            for (uint32_t c = 0; c < count; c++) {
+                if ((set[c] != 0) != wantSet) {
+                    continue;
+                }
+
+                if (!found || (wantSet ? (energy[c] > energy[best]) : (energy[c] < energy[best]))) {
+                    best = c;
+                    found = true;
+                }
+            }
+
+            return best;
+        };
+
+        // Initial pattern: about 10% of the cells from a fixed LCG, then relaxed by moving the tightest cluster's
+        // cell into the largest void until that stops changing anything.
+        uint32_t lcg = 0x2545F491u;
+        const uint32_t initialCount = std::max(count / 10, 1u);
+        for (uint32_t placed = 0; placed < initialCount;) {
+            lcg = lcg * 1664525u + 1013904223u;
+            const uint32_t cell = (lcg >> 8) % count;
+            if (set[cell] == 0) {
+                toggle(cell, 1.0f);
+                placed++;
+            }
+        }
+
+        for (uint32_t i = 0; i < count; i++) {
+            const uint32_t cluster = pick(true);
+            toggle(cluster, -1.0f);
+            const uint32_t voidCell = pick(false);
+            if (voidCell == cluster) {
+                toggle(cluster, 1.0f);
+                break;
+            }
+
+            toggle(voidCell, 1.0f);
+        }
+
+        const std::vector<uint8_t> initialSet = set;
+        const std::vector<float> initialEnergy = energy;
+        std::vector<uint32_t> rank(count, 0);
+
+        // Phase 1: remove the tightest clusters one by one; the last cell removed gets rank 0.
+        for (uint32_t r = initialCount; r > 0; r--) {
+            const uint32_t cluster = pick(true);
+            toggle(cluster, -1.0f);
+            rank[cluster] = r - 1;
+        }
+
+        // Phases 2 and 3: from the initial pattern, fill the largest void until every cell is set. With a kernel
+        // that sums to the same total everywhere, the "tightest cluster of unset cells" of phase 3 is the same
+        // cell as the largest void, so one loop covers both.
+        set = initialSet;
+        energy = initialEnergy;
+        for (uint32_t r = initialCount; r < count; r++) {
+            const uint32_t voidCell = pick(false);
+            toggle(voidCell, 1.0f);
+            rank[voidCell] = r;
+        }
+
+        for (uint32_t c = 0; c < count; c++) {
+            values[c] = (float(rank[c]) + 0.5f) / float(count);
+        }
+
+        return values;
     }
 
     BeamDecision decideBeam(uint32_t displayRefreshRate, bool vsync, bool interpolating, uint32_t contentRate) {
