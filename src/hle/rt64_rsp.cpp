@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cassert>
+#include <mutex>
 #include <unordered_map>
 
 #include "../include/rt64_extended_gbi.h"
@@ -74,6 +75,7 @@ namespace RT64 {
         projectionMatrixChanged = false;
         projectionMatrixInversed = false;
         wcwCameraLoaded = false;
+        wcwScreenSpace = false;
         viewportChanged = false;
         modelViewProjMatrix = hlslpp::float4x4(0.0f);
         modelViewProjChanged = false;
@@ -133,6 +135,88 @@ namespace RT64 {
     void RSP::setSegment(uint32_t seg, uint32_t address) {
         assert(seg < RSP_MAX_SEGMENTS);
         segments[seg] = address;
+    }
+
+    // [wcw fix] Frame interpolation: AKI games upload only fully combined model*camera matrices
+    // (gSPForceMatrix), which cannot be interpolated cleanly. In games whose camera multiply is a
+    // function (No Mercy, WM2000, VPW2), hand-edited hooks in the recompiled code (each game's
+    // tools/readd_hand_edits.py) report each object's camera-independent matrix and the camera it was
+    // combined with, keyed by the address of the result; forceMatrix looks the pair up when that result
+    // is uploaded. The camera multiply (out = A * B with B the camera) stores entries, guMtxF2L moves
+    // them from the float source to the fixed-point upload address. Games that multiply inline (World
+    // Tour, Revenge, VPW64) use the hookless path in forceMatrix instead.
+    static std::mutex g_wcwLocalMatrixMutex;
+    // entityAddr is the object's own local-matrix address: a stable per-object identity across frames.
+    struct WcwLocalMatrixEntry { hlslpp::float4x4 pureLocal; hlslpp::float4x4 camera; uint32_t entityAddr = 0; };
+    static std::unordered_map<uint32_t, WcwLocalMatrixEntry> g_wcwLocalMatrixByAddr;
+    // The camera address differs per game (No Mercy 0x80062BA8, WM2000 0x80057198, VPW2 0x80056F78).
+    // Each game's hook filters on its own camera address before calling in, so opBAddr is not
+    // re-checked here.
+
+    static hlslpp::float4x4 wcwMatrixFromRowMajor16(const float *m16) {
+        hlslpp::float4x4 m;
+        for (uint32_t j = 0; j < 4; j++) {
+            for (uint32_t i = 0; i < 4; i++) {
+                m[j][i] = m16[j * 4 + i];
+            }
+        }
+        return m;
+    }
+
+    extern "C" void wcw_interp_process_multiply(uint32_t destAddr, uint32_t opBAddr, uint32_t srcAddr, const float *aMatrix16, const float *bMatrix16) {
+        std::lock_guard<std::mutex> lock(g_wcwLocalMatrixMutex);
+        if (bMatrix16 != nullptr) {
+            // Only accept a real perspective camera matrix.
+            const float row3_2 = bMatrix16[14];
+            const float row3_3 = bMatrix16[15];
+            const float row2_3 = bMatrix16[11];
+            const bool looksLikeCamera = (abs(row3_3 - row3_2) > 5.0f) && (abs(row2_3) > 1e-3f);
+            if (!looksLikeCamera) {
+                g_wcwLocalMatrixByAddr.erase(destAddr);
+                return;
+            }
+
+            WcwLocalMatrixEntry entry;
+            entry.pureLocal = wcwMatrixFromRowMajor16(aMatrix16);
+            entry.camera = wcwMatrixFromRowMajor16(bMatrix16);
+            entry.entityAddr = srcAddr;
+            g_wcwLocalMatrixByAddr[destAddr] = entry;
+            return;
+        }
+
+        // Not a camera multiply: the address now holds something else.
+        g_wcwLocalMatrixByAddr.erase(destAddr);
+    }
+
+    extern "C" void wcw_interp_invalidate_local_matrix(uint32_t destAddr) {
+        std::lock_guard<std::mutex> lock(g_wcwLocalMatrixMutex);
+        g_wcwLocalMatrixByAddr.erase(destAddr);
+    }
+
+    extern "C" void wcw_interp_forward_local_matrix(uint32_t srcAddr, uint32_t dstAddr) {
+        std::lock_guard<std::mutex> lock(g_wcwLocalMatrixMutex);
+        auto it = g_wcwLocalMatrixByAddr.find(srcAddr);
+        if (it == g_wcwLocalMatrixByAddr.end()) {
+            g_wcwLocalMatrixByAddr.erase(dstAddr);
+            return;
+        }
+
+        // Copy rather than move: the same source may be converted more than once.
+        g_wcwLocalMatrixByAddr[dstAddr] = it->second;
+    }
+
+    // One-shot lookup by the force-matrix upload address.
+    static bool wcwLookupLocalMatrix(uint32_t stagingAddr, hlslpp::float4x4 &outLocal, hlslpp::float4x4 &outCamera, uint32_t &outEntityAddr) {
+        std::lock_guard<std::mutex> lock(g_wcwLocalMatrixMutex);
+        auto it = g_wcwLocalMatrixByAddr.find(stagingAddr);
+        if (it == g_wcwLocalMatrixByAddr.end()) {
+            return false;
+        }
+        outLocal = it->second.pureLocal;
+        outCamera = it->second.camera;
+        outEntityAddr = it->second.entityAddr;
+        g_wcwLocalMatrixByAddr.erase(it);
+        return true;
     }
 
     // [wcw fix] AKI-engine games (WCW/WWF) never load a projection matrix: they submit fully
@@ -336,6 +420,63 @@ namespace RT64 {
         }
     }
 
+    // [wcw hfr] AKI engines double-buffer their uploaded matrices: an object's matrix alternates between
+    // two slots 0x40 apart from frame to frame. Give both slots one identity: an address whose partner
+    // (address +/- 0x40) was already seen takes the partner's identity. WCW_HFR_SLOTSTRIDE overrides 0x40
+    // (0 disables).
+    static uint32_t wcwCanonicalSlot(uint32_t addr) {
+        static const uint32_t stride = getenv("WCW_HFR_SLOTSTRIDE") ? uint32_t(strtoul(getenv("WCW_HFR_SLOTSTRIDE"), nullptr, 0)) : 0x40u;
+        static std::unordered_map<uint32_t, uint32_t> canonical;
+        static std::mutex canonicalMutex;
+        if (stride == 0) {
+            return addr;
+        }
+
+        std::lock_guard<std::mutex> lock(canonicalMutex);
+        auto it = canonical.find(addr);
+        if (it != canonical.end()) {
+            return it->second;
+        }
+
+        uint32_t id = addr;
+        auto lower = canonical.find(addr - stride);
+        auto upper = canonical.find(addr + stride);
+        if (lower != canonical.end()) {
+            id = lower->second;
+        }
+        else if (upper != canonical.end()) {
+            id = upper->second;
+        }
+
+        canonical.emplace(addr, id);
+        return id;
+    }
+
+    void RSP::wcwSetScreenSpace(bool screenSpace) {
+        if (screenSpace == wcwScreenSpace) {
+            return;
+        }
+
+        const int top = projectionMatrixStackSize - 1;
+        if (screenSpace) {
+            wcwCameraView = viewMatrixStack[top];
+            wcwCameraProj = projMatrixStack[top];
+            wcwCameraViewProj = viewProjMatrixStack[top];
+            viewMatrixStack[top] = wcwPreCameraView;
+            projMatrixStack[top] = wcwPreCameraProj;
+            viewProjMatrixStack[top] = wcwPreCameraViewProj;
+        }
+        else {
+            viewMatrixStack[top] = wcwCameraView;
+            projMatrixStack[top] = wcwCameraProj;
+            viewProjMatrixStack[top] = wcwCameraViewProj;
+        }
+
+        wcwScreenSpace = screenSpace;
+        projectionMatrixChanged = true;
+        projectionMatrixInversed = false;
+    }
+
     void RSP::forceMatrix(uint32_t address) {
 #   ifdef LOG_SPECIAL_MATRIX_OPERATIONS
         RT64_LOG_PRINTF("RSP::forceMatrix(0x%08X)", address);
@@ -346,6 +487,35 @@ namespace RT64 {
         modelViewProjMatrix = fixedMatrix->toMatrix4x4();
         modelViewProjInserted = true;
         modelViewProjChanged = false;
+
+        // [wcw hfr] With a camera loaded, a matrix without perspective is a screen-space draw.
+        if (wcwCameraLoaded) {
+            const float eps = 1e-5f;
+            const bool affine = (std::abs(float(modelViewProjMatrix[0][3])) < eps) && (std::abs(float(modelViewProjMatrix[1][3])) < eps) &&
+                (std::abs(float(modelViewProjMatrix[2][3])) < eps) && (std::abs(float(modelViewProjMatrix[3][3]) - 1.0f) < eps);
+            wcwSetScreenSpace(affine);
+        }
+
+        // [wcw fix] The hooks key entries by KSEG0 address; rdramAddress is the physical offset.
+        pureModelMatrixValid = wcwLookupLocalMatrix(rdramAddress + 0x80000000u, pureModelMatrix, currentCameraMatrix, pureModelEntityAddr);
+
+        // [wcw hfr] WCW_HFR_HOOKLESS=1: with the camera loaded and no hook entry, derive the
+        // camera-independent matrix from the combined one (pure = MVP * inv(camera VP)); the object's
+        // identity across frames is the address the matrix is uploaded from.
+        static const bool wcwHfrHooklessEnv = getenv("WCW_HFR_HOOKLESS") != nullptr;
+        const bool wcwHfrHookless = wcwInterpolationProfile().hooklessObjects || wcwHfrHooklessEnv;
+        if (wcwCameraLoaded && !wcwScreenSpace) {
+            const hlslpp::float4x4 &wcwVP = viewProjMatrixStack[projectionMatrixStackSize - 1];
+            if (!pureModelMatrixValid && wcwHfrHookless && !isMatrixZero(wcwVP)) {
+                currentCameraMatrix = wcwVP;
+                pureModelMatrix = hlslpp::mul(modelViewProjMatrix, hlslpp::inverse(wcwVP));
+                pureModelEntityAddr = wcwCanonicalSlot(rdramAddress + 0x80000000u);
+                pureModelMatrixValid = true;
+            }
+
+            wcwHfrForced.fetch_add(1, std::memory_order_relaxed);
+            wcwHfrPure.fetch_add(pureModelMatrixValid ? 1 : 0, std::memory_order_relaxed);
+        }
 
         // [wcw2k] WCW2K_MTXLOG=1: log gSPForceMatrix loads (AKI engines CPU-transform
         // and force the combined MVP via G_MOVEMEM instead of gSPMatrix).
@@ -398,11 +568,22 @@ namespace RT64 {
 
         // With ray tracing off the camera is consumed and ignored, so the default path keeps the
         // identity-VP [wcw fix] behavior and never touches the extended correction matrices.
-        if (!WcwRaytracer::active()) {
+        // [wcw hfr] Interpolation (framerate above Original) also uses the camera: it splits forced
+        // matrices into object and camera, and keeps screen-space draws out of the camera.
+        const bool wcwInterpCamera = (state->ext.workloadQueue != nullptr) &&
+            (state->ext.workloadQueue->ext.sharedResources->userConfig.refreshRate != UserConfiguration::RefreshRate::Original) &&
+            (getenv("WCW_HFR_NOCAMERA") == nullptr);
+        if (!WcwRaytracer::active() && !wcwInterpCamera) {
             return true;
         }
 
+        // [wcw hfr] A camera load always applies to the camera matrices, not the screen-space set.
+        wcwSetScreenSpace(false);
+
         if (!wcwCameraLoaded) {
+            wcwPreCameraView = viewMatrixStack[top];
+            wcwPreCameraProj = projMatrixStack[top];
+            wcwPreCameraViewProj = viewProjMatrixStack[top];
             viewMatrixStack[top] = hlslpp::float4x4::identity();
             projMatrixStack[top] = hlslpp::float4x4::identity();
             wcwCameraLoaded = true;
@@ -653,6 +834,9 @@ namespace RT64 {
         
         // ModelViewProj is only updated when a vertex is processed and the flag is enabled.
         auto &worldTransforms = workload.drawData.worldTransforms;
+        auto &worldTransformsPure = workload.drawData.worldTransformsPure;
+        auto &worldTransformsCamera = workload.drawData.worldTransformsCamera;
+        auto &worldTransformsPureValid = workload.drawData.worldTransformsPureValid;
         auto &worldTransformGroups = workload.drawData.worldTransformGroups;
         auto &worldTransformSegmentedAddresses = workload.drawData.worldTransformSegmentedAddresses;
         auto &worldTransformPhysicalAddresses = workload.drawData.worldTransformPhysicalAddresses;
@@ -662,6 +846,10 @@ namespace RT64 {
             computeModelViewProj();
             curTransformIndex = static_cast<uint16_t>(worldTransforms.size());
             worldTransforms.emplace_back(hlslpp::mul(modelMatrixStack[modelMatrixStackSize - 1], extended.viewProjMatrix));
+            // [wcw fix] Keep the parallel pure/camera arrays in sync (no pure matrix on this path).
+            worldTransformsPure.emplace_back(worldTransforms.back());
+            worldTransformsCamera.emplace_back(hlslpp::float4x4::identity());
+            worldTransformsPureValid.emplace_back(0);
         }
         else if (modelViewProjInserted) {
 #       ifdef LOG_SPECIAL_MATRIX_OPERATIONS
@@ -683,6 +871,18 @@ namespace RT64 {
 
             curTransformIndex = static_cast<uint16_t>(worldTransforms.size());
             worldTransforms.emplace_back(hlslpp::mul(hlslpp::mul(modelViewProjMatrix, invViewProjMatrixStack[projectionMatrixStackSize - 1]), extended.viewProjMatrix));
+            // [wcw fix] Carry the camera-independent matrix and its camera alongside the combined one
+            // when the hooks provided them; otherwise fall back to the combined matrix.
+            if (pureModelMatrixValid) {
+                worldTransformsPure.emplace_back(pureModelMatrix);
+                worldTransformsCamera.emplace_back(currentCameraMatrix);
+                worldTransformsPureValid.emplace_back(1);
+            }
+            else {
+                worldTransformsPure.emplace_back(worldTransforms.back());
+                worldTransformsCamera.emplace_back(hlslpp::float4x4::identity());
+                worldTransformsPureValid.emplace_back(0);
+            }
 
             // [wcw rt] WCW_RT_LOG=1: sample decomposed world translations (static scenery must
             // stay put while the camera moves when the camera hand-off is correct).
@@ -709,7 +909,10 @@ namespace RT64 {
         }
 
         if (addWorldTransform) {
-            uint32_t physicalAddress = modelMatrixPhysicalAddressStack[modelMatrixStackSize - 1];
+            // [wcw fix] AKI games never update the gSPMatrix address stack, so use the object's own
+            // local-matrix address as its cross-frame identity when it is known for THIS transform.
+            const bool usePureEntityAddr = worldTransformsPureValid.back() != 0;
+            uint32_t physicalAddress = usePureEntityAddr ? pureModelEntityAddr : modelMatrixPhysicalAddressStack[modelMatrixStackSize - 1];
             workload.physicalAddressTransformMap.emplace(physicalAddress, uint32_t(worldTransformGroups.size()));
             worldTransformGroups.emplace_back(extended.curModelMatrixIdGroupIndex);
             worldTransformSegmentedAddresses.emplace_back(modelMatrixSegmentedAddressStack[modelMatrixStackSize - 1]);

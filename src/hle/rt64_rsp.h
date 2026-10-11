@@ -153,10 +153,25 @@ namespace RT64 {
         // [wcw rt] Set once a forceMatrix-only game has supplied its real camera through
         // the float view/projection commands this display list (see setWcwCameraMatrix).
         bool wcwCameraLoaded;
+
+        // [wcw hfr] While a camera is loaded, screen-space draws (forced matrices without perspective:
+        // the HUD, 2D overlays) use the matrices the display list had before the camera, so that
+        // interpolating the camera never moves them. wcwScreenSpace says which set is current.
+        bool wcwScreenSpace;
+        hlslpp::float4x4 wcwPreCameraView, wcwPreCameraProj, wcwPreCameraViewProj;
+        hlslpp::float4x4 wcwCameraView, wcwCameraProj, wcwCameraViewProj;
+        void wcwSetScreenSpace(bool screenSpace);
         bool viewportChanged;
         hlslpp::float4x4 modelViewProjMatrix;
         bool modelViewProjChanged;
         bool modelViewProjInserted;
+        // [wcw fix] The camera-independent model matrix, the camera it was combined with and the
+        // object's local-matrix address for the current force-matrix upload, when the game-side
+        // hooks provided them (see the matrix cache in rt64_rsp.cpp).
+        hlslpp::float4x4 pureModelMatrix;
+        hlslpp::float4x4 currentCameraMatrix;
+        bool pureModelMatrixValid = false;
+        uint32_t pureModelEntityAddr = 0;
         int projectionIndex;
         std::array<interop::RSPViewport, RSP_EXTENDED_STACK_SIZE> viewportStack;
         int viewportStackSize;

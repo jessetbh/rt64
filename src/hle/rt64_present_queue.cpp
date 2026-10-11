@@ -4,6 +4,8 @@
 
 #include "rt64_present_queue.h"
 
+#include <thread>
+
 #include "common/rt64_thread.h"
 #include "render/rt64_hdr_output.h"
 #include "rhi/rt64_render_hooks.h"
@@ -110,6 +112,9 @@ namespace RT64 {
         presentThread = new std::thread(&PresentQueue::threadLoop, this);
     }
 
+    // [wcw hfr] Spike diagnostics: present waits that timed out since the last WCW_HFR_LOG line.
+    static uint32_t wcwHfrTimeouts = 0;
+
     void PresentQueue::threadPresent(const Present &present, bool &swapChainValid) {
         FramebufferManager &fbManager = ext.sharedResources->framebufferManager;
         RenderTargetManager &targetManager = ext.sharedResources->renderTargetManager;
@@ -136,8 +141,11 @@ namespace RT64 {
         int32_t framesToPresent = 1;
         int wcw_reason = 0; // [wcw] DIAGNOSTIC present outcome: 0=vi-not-visible 1=ok 2=target-empty 3=scratch
         uint32_t wcw_addr = 0; // [wcw] DIAGNOSTIC: address of the fb actually presented
+        uint64_t wcwPairBlendSerial = 0; // [wcw fix] run serial of the blend shown at i=0
+        bool wcwHfrRealRepeat = false; // [wcw hfr] trace: i=0 repeated the newest complete real frame
         bool lockedWorkloadMutex = false;
-        InterpolatedFrameCounters &frameCounters = ext.sharedResources->interpolatedFrames[ext.sharedResources->interpolatedFramesIndex];
+        const uint32_t wcwPresentSetIndex = ext.sharedResources->interpolatedFramesIndex;
+        InterpolatedFrameCounters &frameCounters = ext.sharedResources->interpolatedFrames[wcwPresentSetIndex];
 
         // TODO: There's a possible race condition interactions that can happen while the workload
         // queue is rendering extra frames and the present event is processed while it's generating
@@ -207,6 +215,20 @@ namespace RT64 {
                         }
                     }
 
+                    // [wcw fix] AKI games double-buffer in a match, so the buffer just drawn is never the
+                    // one being presented and the check below never passes. Allow interpolation for a
+                    // buffer that VI history shows was presented, without changing what is presented.
+                    if (!colorFb->interpolationEnabled && !present.debuggerFramebuffer.view) {
+                        for (size_t h = 0; h < viHistory.history.size(); h++) {
+                            const VIHistory::Present &entry = viHistory.history[h];
+                            if ((colorFb->addressStart == entry.vi.fbAddress()) && (colorFb->width == entry.fbWidth) &&
+                                (colorFb->siz == entry.vi.fbSiz()) && entry.vi.compatibleWith(present.screenVI)) {
+                                colorFb->interpolationEnabled = true;
+                                break;
+                            }
+                        }
+                    }
+
                     // Present early (or games that behave like it) will make it so that the presented image is a color image
                     // that the workload modified. We run a basic check to see if that holds true to indicate it was presented
                     // so interpolation is possible.
@@ -237,8 +259,45 @@ namespace RT64 {
                     ext.sharedResources->workloadMutex.lock();
                 }
 
+                // [wcw fix] Note which run's blend this buffer holds, so the real frame presented next
+                // can be taken from the same run.
+                {
+                    const uint32_t pairSl = (presentFb->addressStart >> 10) & 3;
+                    wcwPairBlendSerial = (RT64::wcwAddrSlotAddr[pairSl].load(std::memory_order_relaxed) == presentFb->addressStart) ? RT64::wcwAddrSlotSerial[pairSl].load(std::memory_order_relaxed) : 0;
+                }
+
                 RenderTargetKey colorTargetKey(presentFb->addressStart, presentFb->width, presentFb->siz, Framebuffer::Type::Color);
                 colorTarget = &targetManager.get(colorTargetKey, true);
+
+                // [wcw fix] In multi-layer match frames, never show a game framebuffer whose run has not
+                // finished rendering as the blend: repeat the newest complete real frame instead.
+                // (Single-layer screens are excluded: their completion stamp lags while they are fine.)
+                bool wcwUsingRealFrame = false;
+                if ((framesToPresent > 1) && !usingMSAA && RT64::wcwInterpActive.load(std::memory_order_relaxed) && (wcwPairBlendSerial > 0) &&
+                    (RT64::wcwLastRunLength.load(std::memory_order_relaxed) >= 4)) {
+                    const uint32_t sl = (presentFb->addressStart >> 10) & 3;
+                    const bool complete = (RT64::wcwAddrSlotComplete[sl].load(std::memory_order_relaxed) == wcwPairBlendSerial);
+                    if (!complete) {
+                        uint64_t bestReal = 0;
+                        int bestRealK = -1;
+                        for (int k = 0; k < 3; k++) {
+                            const uint64_t rs = RT64::wcwSlotRealSerial[k].load(std::memory_order_relaxed);
+                            if ((rs > bestReal) && (RT64::wcwSlotRealComplete[k].load(std::memory_order_relaxed) == rs)) {
+                                bestReal = rs;
+                                bestRealK = k;
+                            }
+                        }
+
+                        auto &realTargets = (bestRealK == 0) ? ext.sharedResources->interpolatedColorTargets
+                            : ((bestRealK == 1) ? ext.sharedResources->wcwInterpolatedColorTargetsB : ext.sharedResources->wcwInterpolatedColorTargetsC);
+                        if ((bestRealK >= 0) && !realTargets.empty() && (realTargets[0] != nullptr)) {
+                            colorTarget = realTargets[0].get();
+                            wcwUsingRealFrame = true;
+                            wcwHfrRealRepeat = true;
+                        }
+                    }
+                }
+
                 // [wcw] DIAGNOSTIC: report whether the present found a non-empty rendered target.
                 { static int pn = 0; static const bool wcwTrace = getenv("WCW_TRACE") != nullptr; if (wcwTrace && (pn++ % 61) == 0) fprintf(stderr, "[wcw][blit#%d] addr=0x%X w=%d siz=%d empty=%d interp=%d\n",
                     pn, presentFb->addressStart, (int)presentFb->width, (int)presentFb->siz, (int)colorTarget->isEmpty(), (int)presentFb->interpolationEnabled); }
@@ -246,7 +305,7 @@ namespace RT64 {
                     wcw_reason = 1;
                     wcw_addr = presentFb->addressStart;
                     // If a depth framebuffer is about to be shown, convert it to color.
-                    if (presentFb->isLastWriteDifferent(Framebuffer::Type::Color)) {
+                    if (!wcwUsingRealFrame && presentFb->isLastWriteDifferent(Framebuffer::Type::Color)) {
                         RenderTargetKey otherColorTargetKey(presentFb->addressStart, presentFb->width, presentFb->siz, presentFb->lastWriteType);
                         RenderTarget &otherColorTarget = targetManager.get(otherColorTargetKey, true);
                         if (!otherColorTarget.isEmpty()) {
@@ -330,16 +389,21 @@ namespace RT64 {
 
         for (int32_t i = 0; i < framesToPresent; i++) {
             uint32_t frameCountersNextPresented = 0;
+            int64_t wcwHfrFallbackAge = -1;
             if ((framesToPresent > 1) && (usingMSAA || (i > 0))) {
                 // Stall until the interpolated color target is available.
                 const uint32_t targetIndex = usingMSAA ? i : (i - 1);
                 std::unique_lock<std::mutex> interpolatedLock(ext.sharedResources->interpolatedMutex);
-                ext.sharedResources->interpolatedCondition.wait(interpolatedLock, [&]() {
+                // [wcw fix] Bounded wait: in a multi-layer frame only the last layer makes the target
+                // available, and an unbounded wait here can stall VI and with it the game logic that
+                // would complete the frame. On timeout this frame is dropped like a skipped one.
+                const bool wcwInterpTimedOut = !ext.sharedResources->interpolatedCondition.wait_for(interpolatedLock, RT64::wcwCoherentWaitBound(), [&]() {
                     return (frameCounters.available > targetIndex) || ((frameCounters.available == targetIndex) && frameCounters.skipped);
                 });
+                wcwHfrTimeouts += wcwInterpTimedOut ? 1 : 0;
 
                 // Do not present any more frames after this one after reaching the last available frame if the workload was skipped.
-                if ((frameCounters.available == targetIndex) && frameCounters.skipped) {
+                if (wcwInterpTimedOut || ((frameCounters.available == targetIndex) && frameCounters.skipped)) {
                     framesToPresent = std::min(int(frameCounters.available), i + 1);
                     frameCountersNextPresented = frameCounters.count;
                 }
@@ -349,7 +413,33 @@ namespace RT64 {
 
                 if (i < framesToPresent) {
                     uint32_t targetIndex = usingMSAA ? i : (i - 1);
-                    colorTarget = ext.sharedResources->interpolatedColorTargets[targetIndex].get();
+                    // [wcw fix] Counter set 1 uses the second set of interpolated targets.
+                    auto &wcwTargets = ((wcwPresentSetIndex & 1) != 0) ? ext.sharedResources->wcwInterpolatedColorTargetsB : ext.sharedResources->interpolatedColorTargets;
+                    colorTarget = (targetIndex < wcwTargets.size()) ? wcwTargets[targetIndex].get() : nullptr;
+                    // [wcw hfr] Spike diagnostics: fallback set, and how many runs old its content is.
+                    wcwHfrFallbackAge = (wcwPairBlendSerial > 0) ? int64_t(wcwPairBlendSerial) - int64_t(RT64::wcwSlotRealSerial[wcwPresentSetIndex & 1].load(std::memory_order_relaxed)) : -1;
+                    // [wcw fix] Show the real frame of the same run as the blend just shown, from its
+                    // rotating slot (serial % 3), once that run has finished.
+                    if (wcwPairBlendSerial > 0) {
+                        const uint32_t k = uint32_t(wcwPairBlendSerial % 3);
+                        colorTarget = nullptr;
+                        if ((RT64::wcwSlotRealSerial[k].load(std::memory_order_relaxed) == wcwPairBlendSerial) &&
+                            (RT64::wcwSlotRealComplete[k].load(std::memory_order_relaxed) == wcwPairBlendSerial)) {
+                            auto &slotTargets = (k == 0) ? ext.sharedResources->interpolatedColorTargets
+                                : ((k == 1) ? ext.sharedResources->wcwInterpolatedColorTargetsB : ext.sharedResources->wcwInterpolatedColorTargetsC);
+                            if (targetIndex < slotTargets.size()) {
+                                colorTarget = slotTargets[targetIndex].get();
+                                wcwHfrFallbackAge = -2;
+                            }
+                        }
+
+                        // [wcw fix] The run's generated frames aren't (all) there: present nothing more for this game
+                        // frame rather than an older run's frame. (Gadge64, No Mercy 0.2.0.)
+                        if (colorTarget == nullptr) {
+                            framesToPresent = i;
+                            frameCountersNextPresented = frameCounters.count;
+                        }
+                    }
                 }
                 else {
                     colorTarget = nullptr;
@@ -361,6 +451,89 @@ namespace RT64 {
 
             uint32_t swapChainIndex = 0;
             const bool presentFrame = (i < framesToPresent) && swapChainValid;
+
+            // [wcw hfr] WCW_HFR_LOG=1: presents per second, and how many were generated in-between frames.
+            static const bool wcwHfrLog = getenv("WCW_HFR_LOG") != nullptr;
+            if (wcwHfrLog && presentFrame) {
+                static auto wcwHfrStart = std::chrono::steady_clock::now();
+                static uint32_t wcwHfrPresents = 0, wcwHfrInterpolated = 0, wcwHfrMaxBurst = 0;
+                static uint32_t wcwHfrFresh = 0, wcwHfrFallback = 0, wcwHfrStale = 0;
+                static int64_t wcwHfrMaxAge = 0;
+                wcwHfrPresents++;
+                wcwHfrInterpolated += (i > 0) ? 1 : 0;
+                if (i > 0) {
+                    if (wcwHfrFallbackAge == -2) {
+                        wcwHfrFresh++;
+                    }
+                    else {
+                        wcwHfrFallback++;
+                        wcwHfrStale += (wcwHfrFallbackAge > 0) ? 1 : 0;
+                        wcwHfrMaxAge = std::max(wcwHfrMaxAge, wcwHfrFallbackAge);
+                    }
+                }
+                wcwHfrMaxBurst = std::max(wcwHfrMaxBurst, uint32_t(framesToPresent));
+                const double wcwHfrSecs = std::chrono::duration<double>(std::chrono::steady_clock::now() - wcwHfrStart).count();
+                if (wcwHfrSecs >= 1.0) {
+                    fprintf(stderr, "[wcw hfr] %.1f presents/s, %.1f interpolated/s, max %u per game frame | in-between: fresh %u fallback %u (older run %u, max age %lld) | wait timeouts %u | 3D matrices %u, camera-independent %u, paired %u | passes compared %u, ids %u, id matches %u\n",
+                        wcwHfrPresents / wcwHfrSecs, wcwHfrInterpolated / wcwHfrSecs, wcwHfrMaxBurst, wcwHfrFresh, wcwHfrFallback, wcwHfrStale,
+                        (long long)wcwHfrMaxAge, wcwHfrTimeouts, wcwHfrForced.exchange(0), wcwHfrPure.exchange(0), wcwHfrPurePairs.exchange(0),
+                        wcwHfrWorkloadsCompared.exchange(0), wcwHfrIds.exchange(0), wcwHfrIdPairs.exchange(0));
+                    wcwHfrStart = std::chrono::steady_clock::now();
+                    wcwHfrPresents = wcwHfrInterpolated = wcwHfrMaxBurst = 0;
+                    wcwHfrFresh = wcwHfrFallback = wcwHfrStale = wcwHfrTimeouts = 0;
+                    wcwHfrMaxAge = 0;
+                }
+            }
+
+            // [wcw hfr] WCW_HFR_TRACE=<first present>,<count>: one line per presented frame. The present
+            // number matches wcw_present_lum.csv (counted after the present, hence + 1).
+            static int wcwHfrTraceFirst = -1, wcwHfrTraceCount = 0;
+            static bool wcwHfrTraceInit = false;
+            if (!wcwHfrTraceInit) {
+                wcwHfrTraceInit = true;
+                if (const char *e = getenv("WCW_HFR_TRACE")) {
+                    sscanf(e, "%d,%d", &wcwHfrTraceFirst, &wcwHfrTraceCount);
+                }
+            }
+
+            if (presentFrame && (wcwHfrTraceFirst >= 0)) {
+                const int n = int(wcwRtPresentCounter) + 1;
+                if ((n >= wcwHfrTraceFirst) && (n < wcwHfrTraceFirst + wcwHfrTraceCount)) {
+                    fprintf(stderr, "[wcw hfr trace] n=%d i=%d/%d set=%u avail=%u count=%u presented=%u skipped=%d serial=%llu src=%s realRepeat=%d target=%p empty=%d\n",
+                        n, int(i), int(framesToPresent), wcwPresentSetIndex, frameCounters.available, frameCounters.count, frameCounters.presented,
+                        int(frameCounters.skipped), (unsigned long long)wcwPairBlendSerial,
+                        (i == 0) ? "real" : ((wcwHfrFallbackAge == -2) ? "slot" : "fallback"), int(wcwHfrRealRepeat),
+                        (void *)colorTarget, (colorTarget != nullptr) ? int(colorTarget->isEmpty()) : -1);
+                }
+            }
+
+            // [wcw hfr] WCW_HFR_PACE=1: spread a game frame's presents evenly over its duration (present i at
+            // start + i * gameFrame / framesToPresent). Presenting on the next refresh bunches them on fast
+            // displays (2 frames ~7 ms apart at 144 Hz, then a long gap), which looks like judder.
+            static const bool wcwHfrPaceEnv = getenv("WCW_HFR_PACE") != nullptr;
+            // [wcw crt] The beam simulator always paces evenly: the wait happens before the swap chain image is
+            // acquired, so it can be filled with beam sub-frames (one per display refresh).
+            const bool wcwHfrPace = wcwInterpolationProfile().evenPacing || wcwHfrPaceEnv || crtFilter->beamActive();
+            static std::chrono::steady_clock::time_point wcwHfrFrameStart;
+            if (wcwHfrPace && presentFrame && (framesToPresent > 1) && (viOriginalRate > 0)) {
+                if (i == 0) {
+                    wcwHfrFrameStart = std::chrono::steady_clock::now();
+                }
+                else {
+                    const auto gameFrame = std::chrono::microseconds(1000000 / viOriginalRate);
+                    const auto target = wcwHfrFrameStart + (gameFrame * i) / framesToPresent;
+                    threadBeamFillUntil(target, swapChainValid);
+                    const auto coarse = target - std::chrono::milliseconds(1);
+                    if (std::chrono::steady_clock::now() < coarse) {
+                        std::this_thread::sleep_until(coarse);
+                    }
+
+                    while (std::chrono::steady_clock::now() < target) {
+                        std::this_thread::yield();
+                    }
+                }
+            }
+
             double wcwAcqMs = 0.0;
             if (presentFrame) {
                 auto wcwAcq0 = std::chrono::steady_clock::now();
@@ -429,8 +602,9 @@ namespace RT64 {
                 if (renderParams.texture != nullptr) {
                     commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(renderParams.texture, RenderTextureLayout::SHADER_READ));
 
-                    crtFilter->setDisplayConditions(ext.appWindow->getRefreshRate(), ext.swapChain->isVsyncEnabled(),
-                        (framesToPresent > 1) || (refreshRate != UserConfiguration::RefreshRate::Original));
+                    const bool crtInterpolating = (framesToPresent > 1) || (refreshRate != UserConfiguration::RefreshRate::Original);
+                    crtFilter->setDisplayConditions(ext.appWindow->getRefreshRate(), ext.swapChain->isVsyncEnabled(), crtInterpolating,
+                        crtInterpolating ? targetRate : 0);
 
                     CrtFilter::RenderParams crtParams;
                     crtParams.presentWorker = ext.presentGraphicsWorker;
@@ -460,9 +634,14 @@ namespace RT64 {
                     // BMP dump window configurable: WCW_BMP_START (default 600), WCW_BMP_COUNT
                     // (default 13), WCW_LUM_END (default 1500) — lets captures target any moment
                     // (e.g. in-game menus) instead of only early boot.
-                    static const int wcwBmpStart = getenv("WCW_BMP_START") ? atoi(getenv("WCW_BMP_START")) : 600;
+                    static int wcwBmpStart = getenv("WCW_BMP_START") ? atoi(getenv("WCW_BMP_START")) : 600;
+                    // WCW_BMP_START_SEC=S: start the dump window at the first present S seconds after the first
+                    // present instead (present counts per second vary with the framerate; game time does not).
+                    static const double wcwBmpStartSec = getenv("WCW_BMP_START_SEC") ? atof(getenv("WCW_BMP_START_SEC")) : -1.0;
+                    static std::chrono::steady_clock::time_point wcwBmpClock0 = std::chrono::steady_clock::now();
+                    static bool wcwBmpStartResolved = false;
                     static const int wcwBmpCount = getenv("WCW_BMP_COUNT") ? atoi(getenv("WCW_BMP_COUNT")) : 13;
-                    static const int wcwLumEnd = getenv("WCW_LUM_END") ? atoi(getenv("WCW_LUM_END")) : 1500;
+                    static int wcwLumEnd = getenv("WCW_LUM_END") ? atoi(getenv("WCW_LUM_END")) : 1500;
                     // WCW_BMP_EVERY=N: dump every Nth present from WCW_BMP_START instead (WCW_BMP_COUNT
                     // dumps), reading back only those presents.
                     static const int wcwBmpEvery = getenv("WCW_BMP_EVERY") ? atoi(getenv("WCW_BMP_EVERY")) : 0;
@@ -473,7 +652,18 @@ namespace RT64 {
                     if (wcwLum) {
                         wcwPresentN++;
                         wcwRtPresentCounter = wcwPresentN;
-                        const bool wcwEveryHit = (wcwBmpEvery <= 0) || ((wcwPresentN >= wcwBmpStart) && (((wcwPresentN - wcwBmpStart) % wcwBmpEvery) == 0));
+                        if ((wcwBmpStartSec >= 0.0) && !wcwBmpStartResolved) {
+                            wcwBmpStart = INT_MAX;
+                            if (std::chrono::duration<double>(std::chrono::steady_clock::now() - wcwBmpClock0).count() >= wcwBmpStartSec) {
+                                wcwBmpStart = wcwPresentN;
+                                wcwBmpStartResolved = true;
+                                // Read back only the dump window (reading every present slows the presents).
+                                wcwLumEnd = wcwBmpStart + wcwBmpCount * std::max(wcwBmpEvery, 1);
+                                fprintf(stderr, "[wcw] BMP window starts at present %d (%.1f s)\n", wcwPresentN, wcwBmpStartSec);
+                            }
+                        }
+                        const bool wcwEveryHit = (wcwBmpEvery <= 0) ? ((wcwBmpStartSec < 0.0) || (wcwPresentN >= wcwBmpStart))
+                            : ((wcwPresentN >= wcwBmpStart) && (((wcwPresentN - wcwBmpStart) % wcwBmpEvery) == 0));
                         if (wcwPresentN >= 240 && wcwPresentN <= wcwLumEnd && wcwEveryHit) {
                             uint32_t w = ext.swapChain->getWidth(), h = ext.swapChain->getHeight();
                             uint32_t row = (w + 63) & ~63u;
@@ -614,7 +804,12 @@ namespace RT64 {
 
             if (presentFrame && swapChainValid) {
                 // Wait until the approximate time the next present should be at the current intended rate.
-                if ((presentTimestamp != Timestamp()) && (targetRate > 0) && (targetRate > viOriginalRate)) {
+                // [wcw crt] Not with the beam simulator: its frames are paced to their even targets before the
+                // acquire, and the vblank wait below lands each on a refresh. Sleeping a full frame period past
+                // the previous present first rounded every interval up to the next refresh (3 refreshes per
+                // 120 fps frame at 280 Hz instead of 2.33), so the presents fell behind and whole game frames
+                // were dropped (about 92 presents/s instead of 120).
+                if ((presentTimestamp != Timestamp()) && (targetRate > 0) && (targetRate > viOriginalRate) && !crtFilter->beamActive()) {
                     Timer::preciseSleepUntil(presentTimestamp + std::chrono::nanoseconds(1'000'000'000 / targetRate));
                 }
 
@@ -811,7 +1006,24 @@ namespace RT64 {
     }
 
     // [wcw crt] Presents the next beam simulator sub-frame of the last frame, with the UI on top.
-    void PresentQueue::threadBeamPresent(bool &swapChainValid) {
+    // [wcw crt] Frame interpolation presents a few frames per game frame (e.g. 4 at 120 fps), fewer than the
+    // display's refreshes (280 Hz: 2.33 per frame): fill the refreshes before the next interpolated frame is
+    // due with beam sub-frames of the current one. Called from threadPresent, which holds threadMutex.
+    void PresentQueue::threadBeamFillUntil(std::chrono::steady_clock::time_point deadline, bool &swapChainValid) {
+        const uint32_t refreshRate = ext.appWindow->getRefreshRate();
+        if ((refreshRate == 0) || !crtFilter->beamActive()) {
+            return;
+        }
+
+        const auto period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / double(refreshRate)));
+        while (swapChainValid && ((std::chrono::steady_clock::now() + period) < deadline) &&
+            crtFilter->hasBeamFrame(ext.swapChain->getWidth(), ext.swapChain->getHeight()))
+        {
+            threadBeamPresent(swapChainValid, false);
+        }
+    }
+
+    void PresentQueue::threadBeamPresent(bool &swapChainValid, bool lockThread) {
         // [wcw crt] DIAGNOSTIC (env WCW_CRT_LOG=1): per-phase timing of the idle beam present.
         using BeamClock = std::chrono::steady_clock;
         static double phaseMs[6] = {};
@@ -823,10 +1035,17 @@ namespace RT64 {
             phaseStart = now;
         };
 
-        std::unique_lock<std::mutex> threadLock(threadMutex);
+        std::unique_lock<std::mutex> threadLock(threadMutex, std::defer_lock);
+        if (lockThread) {
+            threadLock.lock();
+        }
+
         phase(0);
         if (!swapChainValid || ext.swapChain->needsResize() || ext.swapChain->isEmpty() || swapChainFramebuffers.empty()) {
-            threadLock.unlock();
+            if (threadLock.owns_lock()) {
+                threadLock.unlock();
+            }
+
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             return;
         }

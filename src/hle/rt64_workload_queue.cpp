@@ -42,13 +42,13 @@ namespace RT64 {
 
         threadCursor = 0;
         writeCursor = 0;
-        barrierCursor = int(workloads.size()) - 1;
+        barrierCursor = int(WORKLOAD_QUEUE_SIZE) - 1;
         workloadId = 0;
         lastPresentId = 0;
     }
 
     void WorkloadQueue::advanceToNextWorkload() {
-        int nextWriteCursor = (writeCursor + 1) % workloads.size();
+        int nextWriteCursor = (writeCursor + 1) % WORKLOAD_QUEUE_SIZE;
 
         // Stall the thread until the barrier is lifted if we're trying to write on a workload being used by the GPU.
         bool waitForBarrier;
@@ -80,7 +80,7 @@ namespace RT64 {
             return writeCursor - 1;
         }
         else {
-            return uint32_t(workloads.size()) - 1;
+            return uint32_t(WORKLOAD_QUEUE_SIZE) - 1;
         }
     }
 
@@ -278,6 +278,8 @@ namespace RT64 {
             fbManager.destroyAllTileCopies();
             ext.sharedResources->fbConfigChanged = false;
             ext.sharedResources->interpolatedColorTargets.clear();
+            ext.sharedResources->wcwInterpolatedColorTargetsB.clear();
+            ext.sharedResources->wcwInterpolatedColorTargetsC.clear();
         }
 
         if (ext.sharedResources->userConfigChanged) {
@@ -296,6 +298,10 @@ namespace RT64 {
         }
     }
     
+    // [wcw hfr] Generated targets to prime before the run's first layer draws its blended frame (set by the
+    // workload thread, consumed by threadRenderFrame).
+    static std::vector<RenderTarget *> wcwPrimeTargets;
+
     void WorkloadQueue::threadRenderFrame(GameFrame &curFrame, const GameFrame &prevFrame, const WorkloadConfiguration &workloadConfig,
         const DebuggerRenderer &debuggerRenderer, const DebuggerCamera &debuggerCamera, float curFrameWeight, float prevFrameWeight,
         float deltaTimeMs, RenderTargetKey overrideTargetKey, int32_t overrideTargetFbPairIndex, RenderTarget *overrideTarget,
@@ -733,7 +739,40 @@ namespace RT64 {
             ext.workloadGraphicsWorker->commandList->writeTimestamp(queryPool.get(), 0);
             framebufferRenderer->endFramebuffers(ext.workloadGraphicsWorker, &workload.drawBuffers, &workload.outputBuffers, workloadConfig.raytracingEnabled);
             framebufferRenderer->recordSetup(ext.workloadGraphicsWorker, bufferUploaders, processRSP ? rspProcessor.get() : nullptr, processWorldVertices ? vertexProcessor.get() : nullptr, &workload.outputBuffers, workloadConfig.raytracingEnabled);
-            
+
+            // [wcw hfr] WCW_HFR_PRIME=1: start a generated frame's target from the live target's content
+            // (ported from the July World Tour fix, bd35fac). Games that clear each buffer in the PREVIOUS
+            // frame submit no clear in this one, so a fresh override target keeps undefined (white)
+            // content behind the re-rendered geometry: World Tour's title fade alternated grey/white.
+            static const bool wcwHfrPrimeEnv = getenv("WCW_HFR_PRIME") != nullptr;
+            const bool wcwHfrPrime = wcwInterpolationProfile().primeGeneratedFrames || wcwHfrPrimeEnv;
+            // The copy happens once per run, before its first layer draws the blended frame into the live target:
+            // the generated targets then start from the same content as the game's buffer (usually the clear
+            // the previous frame left). Priming each generated frame from the live target after the blend was
+            // drawn applied translucent full-screen layers (fades) twice, and priming every layer replaced the
+            // earlier layers' draws with the blended frame's.
+            if (wcwHfrPrime && (overrideTarget == nullptr) && !wcwPrimeTargets.empty() && !usingMSAA) {
+                RenderTarget &liveTarget = targetManager.get(overrideTargetKey, true);
+                for (RenderTarget *primeTarget : wcwPrimeTargets) {
+                    if (liveTarget.isEmpty() || (primeTarget == nullptr) || (&liveTarget == primeTarget)) {
+                        continue;
+                    }
+
+                    primeTarget->resize(ext.workloadGraphicsWorker, liveTarget.width, liveTarget.height);
+                    RenderTextureBarrier primeBarriers[] = {
+                        RenderTextureBarrier(liveTarget.texture.get(), RenderTextureLayout::COPY_SOURCE),
+                        RenderTextureBarrier(primeTarget->texture.get(), RenderTextureLayout::COPY_DEST)
+                    };
+                    ext.workloadGraphicsWorker->commandList->barriers(RenderBarrierStage::COPY, primeBarriers, uint32_t(std::size(primeBarriers)));
+                    const RenderBox primeBox(0, 0, int32_t(std::min(liveTarget.width, primeTarget->width)), int32_t(std::min(liveTarget.height, primeTarget->height)));
+                    ext.workloadGraphicsWorker->commandList->copyTextureRegion(
+                        RenderTextureCopyLocation::Subresource(primeTarget->texture.get()),
+                        RenderTextureCopyLocation::Subresource(liveTarget.texture.get()), 0, 0, 0, &primeBox);
+                }
+            }
+
+            wcwPrimeTargets.clear();
+
             // Record all framebuffer pairs.
             uint32_t framebufferIndex = 0;
             for (uint32_t f = 0; f < fbPairCount; f++) {
@@ -844,7 +883,11 @@ namespace RT64 {
                     const uint64_t writeTimestamp = fbManager.nextWriteTimestamp();
                     FixedRect depthFbRect;
                     if (colorFb != nullptr) {
-                        colorFb->lastWriteRect.merge(fbPair.drawColorRect.scaled(fixedResScale.x, fixedResScale.y));
+                        // [wcw fix] A layer can draw nothing into colour; don't merge a null rect.
+                        if (!fbPair.drawColorRect.isNull()) {
+                            colorFb->lastWriteRect.merge(fbPair.drawColorRect.scaled(fixedResScale.x, fixedResScale.y));
+                        }
+
                         colorFb->lastWriteType = Framebuffer::Type::Color;
                         colorFb->lastWriteFmt = colorImg.fmt;
                         colorFb->lastWriteTimestamp = writeTimestamp;
@@ -967,7 +1010,7 @@ namespace RT64 {
 
     void WorkloadQueue::threadAdvanceBarrier() {
         std::scoped_lock<std::mutex> cursorLock(cursorMutex);
-        barrierCursor = (barrierCursor + 1) % workloads.size();
+        barrierCursor = (barrierCursor + 1) % WORKLOAD_QUEUE_SIZE;
     }
 
     void WorkloadQueue::threadAdvanceWorkloadId(uint64_t newWorkloadId) {
@@ -988,7 +1031,21 @@ namespace RT64 {
         uint32_t originalRateForTicks = 0;
         uint32_t displayRateForTicks = 0;
         int processCursor = -1;
-        bool frameReduction = false;
+        // [wcw fix] AKI games draw one displayed frame as a run of layers (several workloads to the
+        // same colour address, about 5 in a match). State for the current run: its length, recent run
+        // lengths, its serial number, and its generated frame while it waits for the run's last layer.
+        uint32_t wcwCompositeRunLength = 0;
+        uint32_t wcwLastCompositeRunLength = 0;
+        uint32_t wcwRunLengthHistory[8] = {};
+        uint32_t wcwRunLengthCursor = 0;
+        uint64_t wcwRunSerialCounter = 0;
+        bool wcwInterpFlushPending = false;
+        uint32_t wcwInterpFlushIndex = 0;
+        uint64_t wcwPendingRunSerial = 0;
+        uint32_t wcwPendingRunAddr = 0;
+        uint32_t wcwPendingFrames = 0; // generated frames the pending run will make available
+        // True once any layer of the current run has skipped its generated frame.
+        bool wcwRunGenIncomplete = false;
         while (threadsRunning) {
             {
                 std::unique_lock<std::mutex> cursorLock(cursorMutex);
@@ -998,7 +1055,7 @@ namespace RT64 {
 
                 if (threadsRunning) {
                     processCursor = threadCursor;
-                    threadCursor = (threadCursor + 1) % workloads.size();
+                    threadCursor = (threadCursor + 1) % WORKLOAD_QUEUE_SIZE;
                 }
             }
 
@@ -1041,10 +1098,156 @@ namespace RT64 {
                 workloadProfiler.start();
                 threadConfigurationUpdate(workload.viFbSize, workloadConfig);
 
+                // [wcw fix] Detect multi-layer frames: several consecutive workloads drawing to the same colour
+                // address make up one displayed frame. immediateRepeat marks layers 2+ of the current run;
+                // recentColorGroups remembers how long each address's last run was, which classifies layer 1.
+                uint32_t thisWorkloadColorAddress = (workload.fbPairCount > 0) ? workload.fbPairs[0].colorImage.address : 0;
+                // [wcw fix] A workload that draws nothing belongs to the current run (it cannot change the
+                // image), instead of splitting the run or refusing generation.
+                bool wcwDrawsNothing = false;
+                if (RT64::wcwInterpActive.load(std::memory_order_relaxed)) {
+                    wcwDrawsNothing = true;
+                    for (uint32_t f = 0; f < workload.fbPairCount; f++) {
+                        if (!workload.fbPairs[f].drawColorRect.isEmpty()) {
+                            wcwDrawsNothing = false;
+                            break;
+                        }
+                    }
+
+                    if (wcwDrawsNothing && hasLastGroupColorAddress) {
+                        thisWorkloadColorAddress = lastGroupColorAddress;
+                    }
+                }
+
+                const bool immediateRepeat = hasLastGroupColorAddress && (thisWorkloadColorAddress == lastGroupColorAddress);
+                if (immediateRepeat) {
+                    currentGroupRunLength++;
+                }
+                else {
+                    if (hasLastGroupColorAddress) {
+                        bool updatedExisting = false;
+                        for (auto &g : recentColorGroups) {
+                            if (g.address == lastGroupColorAddress) {
+                                g.runLength = currentGroupRunLength;
+                                updatedExisting = true;
+                                break;
+                            }
+                        }
+
+                        if (!updatedExisting) {
+                            recentColorGroups[recentColorGroupsNext] = { lastGroupColorAddress, currentGroupRunLength };
+                            recentColorGroupsNext = (recentColorGroupsNext + 1) % recentColorGroups.size();
+                        }
+                    }
+
+                    currentGroupRunLength = 1;
+                }
+
+                bool knownComposite = false;
+                for (const auto &g : recentColorGroups) {
+                    if ((g.address == thisWorkloadColorAddress) && (g.runLength >= 2)) {
+                        knownComposite = true;
+                        break;
+                    }
+                }
+
+                // Multi-layer screens are not interpolated, except while the 60Hz path is active (a match
+                // draws every frame as several layers).
+                bool multiLayerComposite = immediateRepeat || knownComposite;
+                if (RT64::wcwInterpActive.load(std::memory_order_relaxed)) {
+                    multiLayerComposite = false;
+                }
+
+                lastGroupColorAddress = thisWorkloadColorAddress;
+                hasLastGroupColorAddress = true;
+
                 // FIXME: This is a very hacky way to find out if we need to advance the frame if the workload was paused for the first time.
                 if (!workload.paused || (!gameFrames[curFrameIndex].workloads.empty() && (gameFrames[curFrameIndex].workloads[0] != (uint32_t)processCursor))) {
                     prevFrameIndex = curFrameIndex;
                     curFrameIndex = (curFrameIndex + 1) % gameFrames.size();
+                }
+
+                // [wcw fix] Pair each layer with the same layer of the previous displayed frame, not with the
+                // previous layer of this one. For an N-layer frame that is N game frames back.
+                if (!immediateRepeat) {
+                    if (wcwCompositeRunLength > 0) {
+                        wcwLastCompositeRunLength = wcwCompositeRunLength;
+                        RT64::wcwLastRunLength.store(wcwCompositeRunLength, std::memory_order_relaxed);
+                        wcwRunLengthHistory[wcwRunLengthCursor] = wcwCompositeRunLength;
+                        wcwRunLengthCursor = (wcwRunLengthCursor + 1) % uint32_t(std::size(wcwRunLengthHistory));
+                    }
+
+                    wcwCompositeRunLength = 1;
+                    wcwRunGenIncomplete = false;
+                    wcwRunSerialCounter++;
+                }
+                else {
+                    wcwCompositeRunLength++;
+                }
+
+                workload.wcwRunSerial = wcwRunSerialCounter;
+                {
+                    const uint32_t step = (wcwLastCompositeRunLength > 0) ? wcwLastCompositeRunLength : 1;
+                    if (step < gameFrames.size()) {
+                        prevFrameIndex = (curFrameIndex + (uint32_t)gameFrames.size() - step) % (uint32_t)gameFrames.size();
+                    }
+                }
+
+                // [wcw fix] The fixed step lands on the wrong layer when run lengths vary, and the ring slot it
+                // points at may already be recycled. Layers are therefore snapshotted after rendering (see the
+                // end of this iteration), and paired with their snapshot from the previous run instead.
+                // The wrestler layer (80+ transforms) pairs with the latest wrestler snapshot, if it is intact,
+                // at most two presents old and of a similar size.
+                {
+                    const uint32_t curXf = uint32_t(workload.drawData.worldTransforms.size());
+                    if ((curXf >= 80) && (wcwSnapFrameIndex < gameFrames.size()) && (wcwSnapFrameIndex != curFrameIndex) &&
+                        RT64::wcwInterpActive.load(std::memory_order_relaxed)) {
+                        const GameFrame &snapFrame = gameFrames[wcwSnapFrameIndex];
+                        const bool intact = (snapFrame.workloads.size() == 1) && (snapFrame.workloads[0] == wcwSnapWorkloadIndex);
+                        const bool recent = (workload.presentId > wcwSnapPresentId) && ((workload.presentId - wcwSnapPresentId) <= 2);
+                        const uint32_t snapXf = intact ? uint32_t(workloads[wcwSnapWorkloadIndex].drawData.worldTransforms.size()) : 0;
+                        const bool sameLayer = (snapXf * 4 <= curXf * 5) && (curXf * 4 <= snapXf * 5);
+                        if (intact && recent && sameLayer) {
+                            prevFrameIndex = wcwSnapFrameIndex;
+                        }
+                    }
+                }
+
+                // Other layers pair with the previous run's snapshot of the closest transform count (run
+                // position breaks ties).
+                {
+                    const uint32_t curXf = uint32_t(workload.drawData.worldTransforms.size());
+                    if ((curXf >= 1) && (curXf < 80) && (workload.wcwRunSerial > 0) && RT64::wcwInterpActive.load(std::memory_order_relaxed)) {
+                        uint32_t best = UINT32_MAX, bestScore = UINT32_MAX;
+                        for (uint32_t k = 0; k < WCW_SNAPSHOT_SLOTS; k++) {
+                            const WcwLayerSnap &reg = wcwLayerSnaps[k];
+                            const uint32_t wi = WORKLOAD_QUEUE_SIZE + k;
+                            if ((reg.runSerial + 1 != workload.wcwRunSerial) || (reg.frameIndex >= gameFrames.size()) || (reg.frameIndex == curFrameIndex)) {
+                                continue;
+                            }
+
+                            const GameFrame &f = gameFrames[reg.frameIndex];
+                            if ((f.workloads.size() != 1) || (f.workloads[0] != wi) || (workloads[wi].wcwRunSerial != reg.runSerial)) {
+                                continue;
+                            }
+
+                            const uint32_t a = curXf, b = std::max(reg.xf, 1u);
+                            if ((a * 10 > b * 13) || (b * 10 > a * 13)) {
+                                continue;
+                            }
+
+                            const uint32_t posDiff = (reg.runPos > wcwCompositeRunLength) ? (reg.runPos - wcwCompositeRunLength) : (wcwCompositeRunLength - reg.runPos);
+                            const uint32_t score = ((a > b) ? (a - b) : (b - a)) * 4 + posDiff;
+                            if (score < bestScore) {
+                                bestScore = score;
+                                best = reg.frameIndex;
+                            }
+                        }
+
+                        if (best != UINT32_MAX) {
+                            prevFrameIndex = best;
+                        }
+                    }
                 }
                 
                 // TODO: The frame detection needs to be more elaborate than just matching one workload to one frame.
@@ -1086,6 +1289,15 @@ namespace RT64 {
                             continue;
                         }
 
+                        // [wcw hfr] WCW_HFR_TARGETDRAWS=1: never pick a pair that only clears (fill rects) as the
+                        // interpolation target. Older AKI engines end a frame by pre-clearing the NEXT buffer, which
+                        // the scan above reaches first: every generated frame then re-renders only that clear (black).
+                        static const bool wcwHfrTargetDrawsEnv = getenv("WCW_HFR_TARGETDRAWS") != nullptr;
+                        const bool wcwHfrTargetDraws = wcwInterpolationProfile().skipClearOnlyTargets || wcwHfrTargetDrawsEnv;
+                        if (wcwHfrTargetDraws && (fbPair.fillRectOnly || (fbPair.gameCallCount == 0))) {
+                            continue;
+                        }
+
                         Framebuffer *interpolationFb = fbManager.find(colorImg.address);
                         if ((interpolationFb != nullptr) && interpolationFb->interpolationEnabled) {
                             interpolationTargetKey.fbType = Framebuffer::Type::Color;
@@ -1094,6 +1306,43 @@ namespace RT64 {
                             interpolationTargetKey.width = fbPair.colorImage.width;
                             interpolationTargetFbPairIndex = f;
                         }
+                    }
+                }
+
+                // [wcw hfr] WCW_HFR_FBTRACE=<first present>,<count>: per workload, every framebuffer pair and the
+                // interpolation target the scan picked (present numbers as in wcw_present_lum.csv).
+                {
+                    static int wcwFbTraceFirst = -1, wcwFbTraceCount = 0;
+                    static bool wcwFbTraceInit = false;
+                    if (!wcwFbTraceInit) {
+                        wcwFbTraceInit = true;
+                        if (const char *e = getenv("WCW_HFR_FBTRACE")) {
+                            sscanf(e, "%d,%d", &wcwFbTraceFirst, &wcwFbTraceCount);
+                        }
+                    }
+
+                    const int n = int(wcwRtPresentCounter);
+                    if ((wcwFbTraceFirst >= 0) && (n >= wcwFbTraceFirst) && (n < wcwFbTraceFirst + wcwFbTraceCount)) {
+                        fprintf(stderr, "[wcw hfr fb] present %d workload %u run %llu pairs %u target 0x%X pair %d\n", n, processCursor,
+                            (unsigned long long)workload.wcwRunSerial, workload.fbPairCount, interpolationTargetKey.address, interpolationTargetFbPairIndex);
+                        for (uint32_t f = 0; f < workload.fbPairCount; f++) {
+                            const FramebufferPair &p = workload.fbPairs[f];
+                            fprintf(stderr, "[wcw hfr fb]   pair %u color 0x%X depth 0x%X calls %u fillOnly %d candidate %d drawRect %s projections %u\n", f,
+                                p.colorImage.address, p.depthImage.address, p.gameCallCount, int(p.fillRectOnly), int(p.earlyPresentCandidate()),
+                                p.drawColorRect.isEmpty() ? "empty" : "set", p.projectionCount);
+                        }
+                    }
+                }
+
+                // [wcw fix] A layer that draws nothing inherits the run's interpolation target.
+                {
+                    static RenderTargetKey wcwLastRunKey;
+                    if (!interpolationTargetKey.isEmpty()) {
+                        wcwLastRunKey = interpolationTargetKey;
+                    }
+                    else if (wcwDrawsNothing && !wcwLastRunKey.isEmpty() && (wcwLastRunKey.address == thisWorkloadColorAddress)) {
+                        interpolationTargetKey = wcwLastRunKey;
+                        interpolationTargetFbPairIndex = -1;
                     }
                 }
 
@@ -1112,11 +1361,57 @@ namespace RT64 {
                     matchingProfiler.end();
                     matchingProfiler.log();
 
+                    // [wcw fix] A layer with no VI rate of its own belongs to the same tick as the rest of its
+                    // run: give it the last known rate rather than refusing it a generated frame.
+                    static uint32_t wcwLastGoodRate = 0;
+                    if (workload.viOriginalRate > 0) {
+                        wcwLastGoodRate = workload.viOriginalRate;
+                    }
+                    else if (RT64::wcwInterpActive.load(std::memory_order_relaxed) && (wcwLastGoodRate > 0)) {
+                        workload.viOriginalRate = wcwLastGoodRate;
+                    }
+
+                    // [wcw fix] After a hitch the VI rate estimate briefly reads the full display rate, which
+                    // would switch generation off. Hold the last rate below the target instead, for at most
+                    // 40 consecutive workloads.
+                    {
+                        static uint32_t wcwLastSubTargetRate = 0;
+                        static uint32_t wcwClampRun = 0;
+                        if (workloadConfig.targetRate > 0) {
+                            if ((workload.viOriginalRate > 0) && (workload.viOriginalRate < workloadConfig.targetRate)) {
+                                wcwLastSubTargetRate = workload.viOriginalRate;
+                                wcwClampRun = 0;
+                            }
+                            else if ((workload.viOriginalRate >= workloadConfig.targetRate) && (wcwLastSubTargetRate > 0) &&
+                                RT64::wcwInterpActive.load(std::memory_order_relaxed) && (wcwClampRun < 40)) {
+                                workload.viOriginalRate = wcwLastSubTargetRate;
+                                wcwClampRun++;
+                            }
+                        }
+                    }
+
+                    // [wcw fix] All layers of a run use the rate of its first layer, so they agree on how many frames
+                    // to generate and at which weights. A later layer's estimate can read double (e.g. 60 instead of
+                    // 30); at a 120Hz target that gave it 2 frames while the rest of the run drew 4, leaving the extra
+                    // generated frames with only some of the run's layers. (Gadge64, No Mercy 0.2.0.)
+                    {
+                        static uint32_t wcwRunRate = 0;
+                        if (RT64::wcwInterpActive.load(std::memory_order_relaxed) && (wcwCompositeRunLength > 1) && (wcwRunRate > 0)) {
+                            workload.viOriginalRate = wcwRunRate;
+                        }
+                        else {
+                            wcwRunRate = workload.viOriginalRate;
+                        }
+                    }
+
                     const bool displayRateAboveOriginal = (workload.viOriginalRate > 0) && (workloadConfig.targetRate > workload.viOriginalRate);
                     // [wcw] DIAGNOSTIC: WCW_NO_INTERP=1 disables interpolated-frame generation, to
                     // test whether the black flicker frames are produced by the interpolation path.
                     static const bool wcwNoInterp = getenv("WCW_NO_INTERP") != nullptr;
-                    generateInterpolatedFrames = !workload.paused && displayRateAboveOriginal && !interpolationTargetKey.isEmpty() && !wcwNoInterp;
+                    generateInterpolatedFrames = !workload.paused && displayRateAboveOriginal && !interpolationTargetKey.isEmpty() && !wcwNoInterp && !multiLayerComposite;
+
+                    // [wcw fix] Frame matching is running: enable the 60Hz behaviour elsewhere in the renderer.
+                    RT64::wcwInterpActive.store(true, std::memory_order_relaxed);
 
                     const bool resetTicks = !generateInterpolatedFrames || (originalRateForTicks != workload.viOriginalRate) || (displayRateForTicks != workloadConfig.targetRate) || !displayRateAboveOriginal;
                     if (resetTicks) {
@@ -1134,10 +1429,22 @@ namespace RT64 {
                     displayFrames = uint32_t((logicalTicks - displayTicks) / workload.viOriginalRate);
                     deltaTimeMs = 1.0f / float(workloadConfig.targetRate);
 
-                    if ((displayFrames > 1) && frameReduction) {
-                        displayTicks += workload.viOriginalRate;
-                        displayFrames--;
-                        frameReduction = false;
+                    // [wcw fix] Cap the display frames per game frame at N = display rate / game rate (2 for a 30Hz
+                    // game at 60Hz, 4 at 120Hz): the tick accounting can otherwise creep ahead and leave the present
+                    // behind. WCW_HFR_CAP=<n> overrides N for debugging.
+                    static const uint32_t wcwHfrCapEnv = getenv("WCW_HFR_CAP") ? uint32_t(std::max(atoi(getenv("WCW_HFR_CAP")), 2)) : 0;
+                    const uint32_t wcwFramesPerGameFrame = (wcwHfrCapEnv > 0) ? wcwHfrCapEnv :
+                        std::max(2u, (workloadConfig.targetRate + workload.viOriginalRate / 2) / workload.viOriginalRate);
+                    if (displayFrames > wcwFramesPerGameFrame) {
+                        displayTicks += workload.viOriginalRate * (displayFrames - wcwFramesPerGameFrame);
+                        displayFrames = wcwFramesPerGameFrame;
+                    }
+
+                    // At rates that aren't a multiple of the game rate (e.g. 144 Hz) game frames alternate between
+                    // floor and floor+1 frames; only fewer than floor is incomplete.
+                    const uint32_t wcwMinFramesPerGameFrame = std::min(wcwFramesPerGameFrame, std::max(2u, workloadConfig.targetRate / workload.viOriginalRate));
+                    if (displayFrames < wcwMinFramesPerGameFrame) {
+                        wcwRunGenIncomplete = true;
                     }
 
                     assert((logicalTicks > displayTicks) && "Logical ticks must always remain bigger than the display ticks.");
@@ -1152,16 +1459,48 @@ namespace RT64 {
                 
                 // Get the current and previous set of frame counters. The other set can be in use by the present queue. Skip if no new present event has arrived before this workload event.
                 InterpolatedFrameCounters &prevFrameCounters = ext.sharedResources->interpolatedFrames[ext.sharedResources->interpolatedFramesIndex];
-                const bool useDifferentCounters = (lastPresentId != workload.presentId);
+                // [wcw fix] A present event arriving in the middle of a run does not switch counter sets: the
+                // run finishes and publishes into the set it started in.
+                const bool wcwMidRunFlip = generateInterpolatedFrames && (wcwCompositeRunLength > 1) &&
+                    (lastPresentId != workload.presentId) && RT64::wcwInterpActive.load(std::memory_order_relaxed);
+                const bool useDifferentCounters = (lastPresentId != workload.presentId) && !wcwMidRunFlip;
+                // [wcw fix] A new run has started (or this workload won't generate), so the pending run is
+                // complete: publish its generated frame now.
+                if (wcwInterpFlushPending && (useDifferentCounters || !generateInterpolatedFrames)) {
+                    {
+                        std::scoped_lock<std::mutex> managerLock(ext.sharedResources->interpolatedMutex);
+                        InterpolatedFrameCounters &wcwFlushCounters = ext.sharedResources->interpolatedFrames[wcwInterpFlushIndex];
+                        wcwFlushCounters.available = std::max(wcwFlushCounters.available, wcwPendingFrames);
+                        RT64::wcwAddrSlotComplete[(wcwPendingRunAddr >> 10) & 3].store(wcwPendingRunSerial, std::memory_order_relaxed);
+                        RT64::wcwSlotRealComplete[wcwPendingRunSerial % 3].store(wcwPendingRunSerial, std::memory_order_relaxed);
+                    }
+
+                    ext.sharedResources->interpolatedCondition.notify_all();
+                    wcwInterpFlushPending = false;
+                }
+
                 if (useDifferentCounters) {
                     ext.sharedResources->interpolatedFramesIndex = ext.sharedResources->interpolatedFramesIndex ^ 1;
                     lastPresentId = workload.presentId;
+
+                    // [wcw hfr] WCW_HFR_SYNC=1: the set switched to was last used two present events ago;
+                    // at 4 display frames per game frame its presentation can still be running. Wait
+                    // (bounded) until the present queue has shown everything it made available.
+                    static const bool wcwHfrSync = getenv("WCW_HFR_SYNC") != nullptr;
+                    if (wcwHfrSync && generateInterpolatedFrames) {
+                        InterpolatedFrameCounters &nextCounters = ext.sharedResources->interpolatedFrames[ext.sharedResources->interpolatedFramesIndex];
+                        std::unique_lock<std::mutex> interpolatedLock(ext.sharedResources->interpolatedMutex);
+                        ext.sharedResources->interpolatedCondition.wait_for(interpolatedLock, RT64::wcwCoherentWaitBound(), [&]() {
+                            return nextCounters.skipped || (nextCounters.presented >= nextCounters.available);
+                        });
+                    }
                 }
                 // If the same set of counters is used, we wait until the presentation of its targets is finished so the targets are available to use. Waiting is ignored
                 // if the frame counter has never presented anything yet, as it'll only be a valid value if the previous present event actually did something.
                 else if (generateInterpolatedFrames) {
+                    // [wcw fix] Bounded: with the deferred flip above, an unbounded wait here can deadlock.
                     std::unique_lock<std::mutex> interpolatedLock(ext.sharedResources->interpolatedMutex);
-                    ext.sharedResources->interpolatedCondition.wait(interpolatedLock, [&]() {
+                    ext.sharedResources->interpolatedCondition.wait_for(interpolatedLock, RT64::wcwCoherentWaitBound(), [&]() {
                         return (prevFrameCounters.presented == 0) || (prevFrameCounters.presented >= prevFrameCounters.available);
                     });
                 }
@@ -1173,7 +1512,11 @@ namespace RT64 {
                 curFrameCounters.count = displayFrames;
 
                 // Create as many render targets as required to store the interpolated targets.
-                auto &interpolatedTargets = ext.sharedResources->interpolatedColorTargets;
+                // [wcw fix] Three target sets, chosen by run serial % 3: the real frame of a run stays intact
+                // until the present has shown it after that run's blend.
+                const uint32_t wcwPairSlot = uint32_t(workload.wcwRunSerial % 3);
+                auto &interpolatedTargets = (wcwPairSlot == 0) ? ext.sharedResources->interpolatedColorTargets
+                    : ((wcwPairSlot == 1) ? ext.sharedResources->wcwInterpolatedColorTargetsB : ext.sharedResources->wcwInterpolatedColorTargetsC);
                 const bool usingMSAA = (ext.sharedResources->renderTargetManager.multisampling.sampleCount > 1);
                 const bool usesHDR = ext.sharedResources->renderTargetManager.usesHDR;
                 uint32_t requiredFrames = (usingMSAA && generateInterpolatedFrames) ? displayFrames : (displayFrames - 1);
@@ -1191,18 +1534,30 @@ namespace RT64 {
                 const int64_t maxTimePerFrameMicro = adjustedTimeWindowMicro / displayFrames;
                 bool skippedFrames = false;
                 bool skipWorkloadNow = false;
+                // [wcw hfr] The run's first layer primes this run's generated targets (see threadRenderFrame).
+                wcwPrimeTargets.clear();
+                if (generateInterpolatedFrames && !usingMSAA && (wcwCompositeRunLength == 1)) {
+                    for (uint32_t i = 0; (i + 1 < displayFrames) && (i < interpolatedTargets.size()); i++) {
+                        wcwPrimeTargets.push_back(interpolatedTargets[i].get());
+                    }
+                }
+
                 uint32_t targetIndex = 0;
                 uint32_t framesRendered = 0;
                 int64_t renderTimeTotalMicro = 0;
                 for (uint32_t frame = 0; (frame < displayFrames) && !skipWorkloadNow; frame++) {
                     // Evaluate if this frame should be skipped. Measure the current time and compare it to what frame is estimated should be have been rendered by now.
-                    if ((frame > 0) && (originalTimeMicro > 0)) {
+                    // [wcw hfr] WCW_HFR_NOSKIP=1: never skip. In a multi-layer run each layer renders its share of
+                    // every generated frame; a later layer skipping leaves those frames with only the earlier layers.
+                    static const bool wcwHfrNoSkip = getenv("WCW_HFR_NOSKIP") != nullptr;
+                    if ((frame > 0) && (originalTimeMicro > 0) && !wcwHfrNoSkip) {
                         const int64_t currentTimeMicro = workloadTimer.elapsedMicroseconds() - setupTimeMicro;
                         const int64_t expectedTimeMicro = frame * maxTimePerFrameMicro;
                         const int64_t measuredFrameMicro = renderTimeTotalMicro / framesRendered;
                         if ((currentTimeMicro > expectedTimeMicro) || ((currentTimeMicro + measuredFrameMicro) > adjustedTimeWindowMicro)) {
                             displayTicks += workload.viOriginalRate;
                             skippedFrames = true;
+                            wcwRunGenIncomplete = true;
                             continue;
                         }
                     }
@@ -1217,16 +1572,9 @@ namespace RT64 {
                         // Override the render target.
                         if (usingMSAA || (frame > 0)) {
                             overrideTarget = interpolatedTargets[targetIndex].get();
-                            overrideModifier = (targetIndex + 1);
-
-                            if (useDifferentCounters && (prevFrameCounters.available > 0) && (targetIndex < prevFrameCounters.available)) {
-                                // Wait until the target has finished presenting if the alternate frame counter (used by the present queue) is making use of this target.
-                                std::unique_lock<std::mutex> interpolatedLock(ext.sharedResources->interpolatedMutex);
-                                ext.sharedResources->interpolatedCondition.wait(interpolatedLock, [&]() {
-                                    frameReduction = frameReduction || (prevFrameCounters.presented <= targetIndex);
-                                    return prevFrameCounters.presented > targetIndex;
-                                });
-                            }
+                            // [wcw fix] Each target set needs its own framebuffer-cache keys. No wait for the
+                            // present is needed: it reads a different set.
+                            overrideModifier = (targetIndex + 1) + 64 * wcwPairSlot;
 
                             targetIndex++;
                         }
@@ -1250,6 +1598,19 @@ namespace RT64 {
                     threadRenderFrame(curFrame, prevFrame, workloadConfig, workload.debuggerRenderer, workload.debuggerCamera, curFrameWeight, prevFrameWeight, deltaTimeMs,
                         interpolationTargetKey, interpolationTargetFbPairIndex, overrideTarget, overrideModifier, velocityUploaderUsed, uploadExtras, tileInterpolationUsed, lookAtInterpolationUsed);
 
+                    // [wcw fix] Record which run each buffer now holds: the blend in the game framebuffer
+                    // (frame 0) and the real frame in this run's target set.
+                    if (generateInterpolatedFrames) {
+                        if (overrideTarget == nullptr) {
+                            const uint32_t sl = (interpolationTargetKey.address >> 10) & 3;
+                            RT64::wcwAddrSlotAddr[sl].store(interpolationTargetKey.address, std::memory_order_relaxed);
+                            RT64::wcwAddrSlotSerial[sl].store(workload.wcwRunSerial, std::memory_order_relaxed);
+                        }
+                        else {
+                            RT64::wcwSlotRealSerial[workload.wcwRunSerial % 3].store(workload.wcwRunSerial, std::memory_order_relaxed);
+                        }
+                    }
+
                     // Add total time the frame took to render.
                     renderTimeTotalMicro += workloadTimer.elapsedMicroseconds() - renderTimeMicro;
 
@@ -1262,13 +1623,56 @@ namespace RT64 {
                     if (generateInterpolatedFrames && (usingMSAA || (frame > 0))) {
                         {
                             std::scoped_lock<std::mutex> cursorLock(cursorMutex);
-                            skipWorkloadNow = ((frame + 1) < displayFrames) && (writeCursor != threadCursor);
+                            // [wcw fix] Multi-layer frames: the next layer is always queued already, so this would stop every
+                            // layer but the last after its first generated frame (harmless at 2 frames per game frame, but at
+                            // 4 the remaining generated frames got only the last layer). Layers finish all their frames.
+                            skipWorkloadNow = ((frame + 1) < displayFrames) && (writeCursor != threadCursor) &&
+                                !RT64::wcwInterpActive.load(std::memory_order_relaxed);
+                        }
+
+                        // [wcw fix] Only the run's last layer publishes the generated frame, so the present
+                        // never shows a partly drawn one. The expected length is the longest recent run; a
+                        // run that ends shorter is published when the next run starts (see above). If any
+                        // layer of the run skipped its generated frame, drop the frame instead.
+                        uint32_t wcwExpectedRunLen = (wcwLastCompositeRunLength > 0) ? wcwLastCompositeRunLength : 1;
+                        bool wcwFlushNow = true;
+                        if (!usingMSAA) {
+                            for (uint32_t h : wcwRunLengthHistory) {
+                                wcwExpectedRunLen = std::max(wcwExpectedRunLen, h);
+                            }
+
+                            wcwFlushNow = (wcwCompositeRunLength >= wcwExpectedRunLen);
+                        }
+
+                        // A run where any layer skipped a generated frame publishes none of them: with more than one
+                        // generated frame per game frame, layers could otherwise disagree on which frames they drew.
+                        const bool wcwDropNow = wcwRunGenIncomplete;
+                        if (wcwDropNow) {
+                            wcwFlushNow = false;
+                        }
+
+                        if (wcwFlushNow) {
+                            RT64::wcwAddrSlotComplete[(interpolationTargetKey.address >> 10) & 3].store(workload.wcwRunSerial, std::memory_order_relaxed);
+                            RT64::wcwSlotRealComplete[workload.wcwRunSerial % 3].store(workload.wcwRunSerial, std::memory_order_relaxed);
                         }
 
                         {
                             std::scoped_lock<std::mutex> managerLock(ext.sharedResources->interpolatedMutex);
-                            curFrameCounters.skipped = skipWorkloadNow;
-                            curFrameCounters.available++;
+                            curFrameCounters.skipped = skipWorkloadNow || wcwDropNow;
+                            if (wcwFlushNow) {
+                                curFrameCounters.available++;
+                            }
+                        }
+
+                        if (wcwFlushNow || wcwDropNow) {
+                            wcwInterpFlushPending = false;
+                        }
+                        else {
+                            wcwInterpFlushPending = true;
+                            wcwInterpFlushIndex = ext.sharedResources->interpolatedFramesIndex;
+                            wcwPendingRunSerial = workload.wcwRunSerial;
+                            wcwPendingRunAddr = interpolationTargetKey.address;
+                            wcwPendingFrames = usingMSAA ? (frame + 1) : frame;
                         }
 
                         // Add the amount of display ticks that correspond to the remaining frames.
@@ -1290,6 +1694,64 @@ namespace RT64 {
                     }
 
                     ext.sharedResources->interpolatedCondition.notify_all();
+                }
+
+                // [wcw fix] Snapshot this layer (CPU-side data) into a slot past the ring that the producer never
+                // writes, and point its GameFrame at the copy, so it stays a valid predecessor for the next run
+                // after its ring slot is recycled. Consumers reach previous data through the GameFrame's workload
+                // indices; the copied submissionFrame keeps the staleness checks satisfied.
+                {
+                    const uint32_t src = uint32_t(processCursor);
+                    const size_t srcXf = (src < WORKLOAD_QUEUE_SIZE) ? workloads[src].drawData.worldTransforms.size() : 0;
+                    const bool isWrestlerLayer = (srcXf >= 80);
+                    if ((src < WORKLOAD_QUEUE_SIZE) && (curFrame.workloads.size() == 1) && (curFrame.workloads[0] == src) &&
+                        (srcXf >= 1) && RT64::wcwInterpActive.load(std::memory_order_relaxed)) {
+                        const uint32_t dstIndex = WORKLOAD_QUEUE_SIZE + (wcwSnapCounter++ % WCW_SNAPSHOT_SLOTS);
+                        const Workload &s = workloads[src];
+                        Workload &d = workloads[dstIndex];
+                        d.submissionFrame = s.submissionFrame;
+                        d.drawData = s.drawData;
+                        d.fbPairs = s.fbPairs;
+                        d.fbPairCount = s.fbPairCount;
+                        d.fbPairSubmitted = s.fbPairSubmitted;
+                        d.gameCallCount = s.gameCallCount;
+                        d.viOriginalRate = s.viOriginalRate;
+                        d.viFbSize = s.viFbSize;
+                        d.transformIdMap = s.transformIdMap;
+                        d.physicalAddressTransformMap = s.physicalAddressTransformMap;
+                        d.transformIgnoredIds = s.transformIgnoredIds;
+                        d.workloadId = s.workloadId;
+                        d.presentId = s.presentId;
+                        d.wcwRunSerial = s.wcwRunSerial;
+                        d.paused = false;
+                        d.extended = s.extended;
+
+                        curFrame.workloads[0] = dstIndex;
+                        if ((dstIndex < curFrame.frameMap.workloads.size()) && (src < curFrame.frameMap.workloads.size())) {
+                            curFrame.frameMap.workloads[dstIndex] = curFrame.frameMap.workloads[src];
+                        }
+
+                        for (std::vector<GameScene> *scenes : { &curFrame.perspectiveScenes, &curFrame.orthographicScenes }) {
+                            for (GameScene &scene : *scenes) {
+                                for (GameIndices::Projection &proj : scene.projections) {
+                                    if (proj.workloadIndex == src) {
+                                        proj.workloadIndex = dstIndex;
+                                    }
+                                }
+                            }
+                        }
+
+                        WcwLayerSnap &reg = wcwLayerSnaps[dstIndex - WORKLOAD_QUEUE_SIZE];
+                        reg.frameIndex = curFrameIndex;
+                        reg.runSerial = s.wcwRunSerial;
+                        reg.runPos = wcwCompositeRunLength;
+                        reg.xf = uint32_t(srcXf);
+                        if (isWrestlerLayer) {
+                            wcwSnapFrameIndex = curFrameIndex;
+                            wcwSnapWorkloadIndex = dstIndex;
+                            wcwSnapPresentId = s.presentId;
+                        }
+                    }
                 }
 
                 threadConfigurationValidate();

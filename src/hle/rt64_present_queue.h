@@ -13,7 +13,8 @@
 #include "rt64_present.h"
 #include "rt64_shared_queue_resources.h"
 
-#define PRESENT_QUEUE_SIZE 4
+// [wcw fix] Grown from 4 (keep in step with WORKLOAD_QUEUE_SIZE).
+#define PRESENT_QUEUE_SIZE 8
 
 namespace RT64 {
     struct WorkloadQueue;
@@ -70,7 +71,8 @@ namespace RT64 {
         void waitForPresentId(uint64_t waitId);
         void setup(const External &ext);
         void threadPresent(const Present &present, bool &swapChainValid);
-        void threadBeamPresent(bool &swapChainValid);
+        void threadBeamPresent(bool &swapChainValid, bool lockThread = true);
+        void threadBeamFillUntil(std::chrono::steady_clock::time_point deadline, bool &swapChainValid);
         void skipInterpolation();
         void notifyPresentId(const Present &present);
         void threadAdvanceBarrier();

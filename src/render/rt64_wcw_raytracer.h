@@ -80,12 +80,16 @@ namespace RT64 {
         // bounds), not the workload's position within the present: the game's workload cycle
         // drifts against presents, so positions would swap scenes from frame to frame.
         static const uint32_t MaxSlots = 8;
-        static const uint32_t StaleWorkloads = 8;
+        // Other scenes stay shadow casters for this many game frames after their last build. Counted in game
+        // frames, not workloads: frame interpolation renders every workload once per displayed frame (4 times
+        // per game frame at 120 Hz), which aged the wrestlers' scene out before the floor's pass used it.
+        static const uint64_t StaleFrames = 2;
         struct Slot {
             std::unique_ptr<RenderBuffer> blasBuffer;
             std::unique_ptr<RenderAccelerationStructure> blas;
             uint64_t blasBufferSize = 0;
             uint64_t builtWorkload = 0;
+            uint64_t builtFrame = 0;
             uint32_t meshCount = 0;
             float boundsMin[3] = {};
             float boundsMax[3] = {};
