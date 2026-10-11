@@ -59,15 +59,18 @@ namespace RT64 {
         windowWrapper = std::make_unique<CocoaWindow>(window.window);
 #   endif
 
-        if (listener->usesWindowMessageFilter()) {
-            if ((sdlWindow == nullptr) && SDL_WasInit(SDL_INIT_VIDEO)) {
-                // We'd normally install the event filter here, but Mupen does not set its own event filter
-                // until much later. Instead, we delegate this to the first time a screen update is sent.
-                // FIXME: We attempt to get the first window created by SDL2. This can be improved later
-                // by actually passing the SDL_Window handle through as a parameter.
-                sdlWindow = SDL_GetWindowFromID(1);
-            }
+        // [wcw fix] Find the SDL window even when developer mode is off at startup: it is only used for the inspector's
+        // input (the event filter, installed once developer mode turns on) and its ImGui backend. Without it, an
+        // inspector opened later (F1 with developer mode, WCW_INSPECTOR) got the Win32 backend and no input at all.
+        if ((sdlWindow == nullptr) && SDL_WasInit(SDL_INIT_VIDEO)) {
+            // We'd normally install the event filter here, but Mupen does not set its own event filter
+            // until much later. Instead, we delegate this to the first time a screen update is sent.
+            // FIXME: We attempt to get the first window created by SDL2. This can be improved later
+            // by actually passing the SDL_Window handle through as a parameter.
+            sdlWindow = SDL_GetWindowFromID(1);
+        }
 
+        if (listener->usesWindowMessageFilter()) {
             if (sdlWindow == nullptr) {
 #           ifdef _WIN32
                 assert(HookedApplicationWindow == nullptr);

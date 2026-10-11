@@ -2615,6 +2615,13 @@ namespace RT64 {
 
         ImGui::End();
 
+        // [wcw rt] Lighting editor for the ray tracing venue presets.
+        if ((ext.workloadQueue != nullptr) && (ext.workloadQueue->framebufferRenderer != nullptr) &&
+            (ext.workloadQueue->framebufferRenderer->wcwRaytracer != nullptr))
+        {
+            ext.workloadQueue->framebufferRenderer->wcwRaytracer->drawLightingEditor();
+        }
+
         if (inspectorMode != InspectorMode::None) {
             if (ImGui::Begin("Inspector")) {
                 switch (inspectorMode) {

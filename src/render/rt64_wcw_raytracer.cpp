@@ -14,6 +14,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 
 #include <json/json.hpp>
 
@@ -170,48 +171,6 @@ namespace RT64 {
         workloadCounter++;
     }
 
-    static WcwRaytracer::LightPreset parsePreset(const nlohmann::json &j, const WcwRaytracer::LightPreset &base) {
-        WcwRaytracer::LightPreset p = base;
-        p.name = j.value("name", std::string());
-        p.match.clear();
-        if (j.contains("match")) {
-            for (const auto &h : j["match"]) {
-                p.match.push_back(strtoull(h.get<std::string>().c_str(), nullptr, 16));
-            }
-        }
-
-        if (j.contains("center")) {
-            for (uint32_t i = 0; i < 3; i++) {
-                p.center[i] = j["center"][i].get<float>();
-            }
-        }
-
-        p.spread = j.value("spread", p.spread);
-        p.fills = j.value("fills", p.fills);
-        p.keyWeight = j.value("keyWeight", p.keyWeight);
-        p.size = j.value("size", p.size);
-        p.radius = j.value("radius", p.radius);
-        p.clearance = j.value("clearance", p.clearance);
-        p.falloff = j.value("falloff", p.falloff);
-        if (j.contains("glows")) {
-            p.glows.clear();
-            for (const auto &g : j["glows"]) {
-                p.glows.push_back({ g[0].get<float>(), g[1].get<float>(), g[2].get<float>(), g[3].get<float>(), g[4].get<float>() });
-            }
-        }
-        p.shadow = j.value("shadow", p.shadow);
-        p.characterShadow = j.value("characterShadow", p.characterShadow);
-        p.anchorScene = (j.value("anchor", std::string(p.anchorScene ? "scene" : "world")) == "scene");
-        if (j.contains("lights")) {
-            p.lights.clear();
-            for (const auto &l : j["lights"]) {
-                p.lights.push_back({ l[0].get<float>(), l[1].get<float>(), l[2].get<float>(), (l.size() > 3) ? l[3].get<float>() : 1.0f });
-            }
-        }
-
-        return p;
-    }
-
     void WcwRaytracer::loadPresets(bool force) {
         if (presetsPath.empty()) {
             const char *pathText = getenv("WCW_RT_LIGHTS_FILE");
@@ -225,73 +184,69 @@ namespace RT64 {
             return;
         }
 
+        const std::lock_guard<std::recursive_mutex> lock(presetsMutex);
         presetsStamp = stamp;
-        defaultPreset = LightPreset();
-        venuePresets.clear();
+        presetFile = WcwLogic::LightPresetFile();
         mode = envMode;
         activeVenue = -1;
         candidateVenue = -1;
         candidateFrames = 0;
+        presetsEdited = false;
         if (ec) {
+            applyPresetFile();
             return;
         }
 
         try {
-            std::ifstream file(presetsPath);
-            const nlohmann::json root = nlohmann::json::parse(file, nullptr, true, true);
-            if (root.contains("debugMode")) {
-                mode = root["debugMode"].get<uint32_t>();
+            std::ifstream file(presetsPath, std::ios::binary);
+            std::stringstream text;
+            text << file.rdbuf();
+            presetFile = WcwLogic::parseLightPresets(text.str());
+            if (presetFile.hasDebugMode) {
+                mode = presetFile.debugMode;
             }
 
-            if (root.contains("default")) {
-                defaultPreset = parsePreset(root["default"], LightPreset());
-                defaultPreset.name = "default";
-            }
-
-            roomEnabled = false;
-            if (root.contains("room")) {
-                const nlohmann::json &room = root["room"];
-                roomPreset = parsePreset(room, defaultPreset);
-                roomPreset.name = "room (fallback)";
-                roomPreset.anchorScene = false;
-                roomMaxExtent = room.value("maxExtent", 3000.0f);
-                roomCount = std::clamp(room.value("count", 3u), 1u, uint32_t(WCW_RT_MAX_LIGHTS));
-                roomHeight = room.value("height", 0.85f);
-                roomEnabled = true;
-            }
-
-            if (root.contains("venues")) {
-                for (const auto &v : root["venues"]) {
-                    venuePresets.push_back(parsePreset(v, defaultPreset));
-                }
-            }
-
-            // Textures listed by several venues (shared arena parts) can't tell them apart.
-            for (LightPreset &p : venuePresets) {
-                p.uniqueMatch.clear();
-                for (uint64_t h : p.match) {
-                    bool shared = false;
-                    for (const LightPreset &o : venuePresets) {
-                        if ((&o != &p) && (std::find(o.match.begin(), o.match.end(), h) != o.match.end())) {
-                            shared = true;
-                            break;
-                        }
-                    }
-
-                    if (!shared) {
-                        p.uniqueMatch.push_back(h);
-                    }
-                }
-            }
-
+            applyPresetFile();
             fprintf(stderr, "[wcw rt] light presets loaded from %s: %zu venue(s)\n", presetsPath.c_str(), venuePresets.size());
         }
         catch (const std::exception &e) {
+            presetFile = WcwLogic::LightPresetFile();
+            applyPresetFile();
             fprintf(stderr, "[wcw rt] light presets %s failed to parse: %s\n", presetsPath.c_str(), e.what());
         }
     }
 
+    void WcwRaytracer::applyPresetFile() {
+        const std::lock_guard<std::recursive_mutex> lock(presetsMutex);
+        WcwLogic::computeUniqueMatches(presetFile.venues);
+        defaultPreset = presetFile.defaultPreset;
+        defaultPreset.name = "default";
+        roomEnabled = presetFile.roomEnabled;
+        roomPreset = presetFile.roomPreset;
+        roomPreset.name = "room (fallback)";
+        roomMaxExtent = presetFile.roomMaxExtent;
+        roomCount = std::clamp(presetFile.roomCount, 1u, uint32_t(WCW_RT_MAX_LIGHTS));
+        roomHeight = presetFile.roomHeight;
+        venuePresets = presetFile.venues;
+        if (activeVenue >= int(venuePresets.size())) {
+            activeVenue = -1;
+        }
+
+        if (venueOverride >= int(venuePresets.size())) {
+            venueOverride = -2;
+        }
+
+        // The room rig is generated from the scene bounds every present.
+        updateRoomPreset();
+    }
+
+    WcwRaytracer::LightPreset WcwRaytracer::activePresetCopy() {
+        const std::lock_guard<std::recursive_mutex> lock(presetsMutex);
+        return activePreset();
+    }
+
     void WcwRaytracer::finishPresent() {
+        const std::lock_guard<std::recursive_mutex> lock(presetsMutex);
         // Textures drawn by world geometry this present, kept for the last VenueWindow presents.
         std::vector<uint64_t> hashes;
         hashes.reserve(frameTextureTris.size());
@@ -332,26 +287,7 @@ namespace RT64 {
         }
 
         // Best venue: the largest fraction of its match textures seen in the window (at least half).
-        int best = -1;
-        float bestScore = 0.5f;
-        for (size_t v = 0; v < venuePresets.size(); v++) {
-            const LightPreset &p = venuePresets[v];
-            if (p.match.empty()) {
-                continue;
-            }
-
-            const std::vector<uint64_t> &scored = p.uniqueMatch.empty() ? p.match : p.uniqueMatch;
-            uint32_t seen = 0;
-            for (uint64_t h : scored) {
-                seen += textureCounts.count(h) ? 1 : 0;
-            }
-
-            const float score = float(seen) / float(scored.size());
-            if (score >= bestScore) {
-                bestScore = score;
-                best = int(v);
-            }
-        }
+        const int best = WcwLogic::bestVenue(venuePresets, [this](uint64_t h) { return textureCounts.count(h) > 0; });
 
         // Switch only after the choice held for a few presents (no flapping on cut scenes).
         if (best != activeVenue) {
@@ -435,6 +371,14 @@ namespace RT64 {
     }
 
     const WcwRaytracer::LightPreset &WcwRaytracer::activePreset() const {
+        // The Lighting editor can force a preset.
+        if ((venueOverride >= 0) && (venueOverride < int(venuePresets.size()))) {
+            return venuePresets[venueOverride];
+        }
+        else if (venueOverride == -1) {
+            return defaultPreset;
+        }
+
         if (activeVenue >= 0) {
             return venuePresets[activeVenue];
         }
@@ -514,9 +458,16 @@ namespace RT64 {
         return supported && active() && !sceneActive;
     }
 
+    static std::atomic<int> wcwRtSplitOverride = -1;
+
+    void WcwRaytracer::setSplitScreenOverride(int split) {
+        wcwRtSplitOverride = split;
+    }
+
     bool WcwRaytracer::splitScreen() {
         static const bool split = getenv("WCW_RT_SPLIT") != nullptr;
-        return split;
+        const int forced = wcwRtSplitOverride;
+        return (forced >= 0) ? (forced != 0) : split;
     }
 
     bool WcwRaytracer::replacesBlobShadows() const {
@@ -537,7 +488,7 @@ namespace RT64 {
             loadPresets(true);
         }
 
-        const LightPreset &preset = activePreset();
+        const LightPreset preset = activePresetCopy();
         receiverRadius = std::max(envFloat(getenv("WCW_RT_RADIUS"), preset.radius), 0.0f);
         float origin[3];
         presetOrigin(preset, origin);
@@ -874,7 +825,7 @@ namespace RT64 {
         const hlslpp::float4x4 invView = hlslpp::inverse(viewMatrix);
         params.invViewProj = hlslpp::inverse(viewProj);
         params.eyePosition = hlslpp::float4(invView[3].xyz, 1.0f);
-        const LightPreset &preset = activePreset();
+        const LightPreset preset = activePresetCopy();
         float origin[3];
         presetOrigin(preset, origin);
         const float centerX = envFloat(getenv("WCW_RT_LIGHT_X"), origin[0] + preset.center[0]);

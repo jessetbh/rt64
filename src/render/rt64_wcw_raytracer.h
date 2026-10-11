@@ -10,11 +10,13 @@
 #include <cfloat>
 #include <deque>
 #include <string>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
 #include "common/rt64_common.h"
 #include "common/rt64_plume.h"
+#include "common/rt64_wcw_venues.h"
 #include "shared/rt64_wcw_rt.h"
 
 namespace RT64 {
@@ -180,32 +182,9 @@ namespace RT64 {
         // most of which must have been drawn in the last VenueWindow presents). The file is
         // reloaded when it changes, so presets can be tuned while the game runs. WCW_RT_VENUE_LOG=1
         // prints the current scene's stable world textures to build a match list from.
-        struct LightPreset {
-            std::string name;
-            std::vector<uint64_t> match;
-            // The match textures no other venue lists (scored instead of match when not empty).
-            std::vector<uint64_t> uniqueMatch;
-            // Lights' center (receiver center on X/Z, key light height on Y).
-            float center[3] = { 0.0f, 460.0f, 0.0f };
-            // Generated rig: a key light at the center plus "fills" lights at center +- spread
-            // on X/Z; or an explicit "lights" list (xyz + relative weight) replacing it.
-            float spread = 200.0f;
-            uint32_t fills = 4;
-            float keyWeight = 0.5f;
-            std::vector<std::array<float, 4>> lights;
-            float size = 20.0f;
-            float radius = 750.0f;
-            float clearance = 0.0f;
-            float falloff = 0.0f;
-            // "glows": [[x, y, z, intensity, range], ...] (offsets from the anchor like lights).
-            std::vector<std::array<float, 5>> glows;
-            // "anchor": "scene": center and explicit lights are offsets from the drawn world
-            // geometry's center on X/Z and its floor (lowest point) on Y, so one preset fits rooms
-            // placed anywhere in the world (backstage zones).
-            bool anchorScene = false;
-            float shadow = 0.6f;
-            float characterShadow = 0.35f;
-        };
+        // The preset data model, its parsing/writing and venue matching live in WcwLogic (common/rt64_wcw_venues,
+        // unit tested); the Lighting editor (rt64_wcw_lighting_editor.cpp) edits presetFile.
+        using LightPreset = WcwLogic::LightPreset;
 
         static const uint32_t VenueWindow = 60;
         LightPreset defaultPreset;
@@ -243,6 +222,27 @@ namespace RT64 {
         void finishPresent();
         const LightPreset &activePreset() const;
 
+        // [wcw rt] Lighting editor (rt64_wcw_lighting_editor.cpp, a "Lighting" window in the RT64 inspector).
+        // presetFile is the parsed rt_lights.json and the source of truth for the presets in use (defaultPreset,
+        // roomPreset, venuePresets), which applyPresetFile() refreshes. presetsMutex guards both against the
+        // inspector thread; the render side reads presets through activePresetCopy().
+        std::recursive_mutex presetsMutex;
+        WcwLogic::LightPresetFile presetFile;
+        // Forced preset: -2 none (detection), -1 "default", >= 0 a venue.
+        int venueOverride = -2;
+        bool presetsEdited = false;
+        std::string editorMessage;
+        char editorNewVenueName[64] = {};
+        void applyPresetFile();
+        LightPreset activePresetCopy();
+        // The current scene's stable world textures (hash, max triangles), seen in >= 90% of the venue window.
+        std::vector<std::pair<uint64_t, uint32_t>> stableTextures() const;
+        // Writes presetFile to the presets path (the previous file is kept as <path>.bak).
+        bool savePresets();
+        // A new venue matched by the current scene's textures no other venue lists, inheriting "default"; forced.
+        int newVenueFromScene(const std::string &name);
+        void drawLightingEditor();
+
         // Runtime settings from the frontend's graphics menu. Quality: 0 Performance (half-res,
         // 1 sample per light, 1 AO ray), 1 Balanced (half-res, 2/2), 2 Quality (full-res, 2/2).
         // WCW_RT forces it on; WCW_RT_SCALE / WCW_RT_SAMPLES / WCW_RT_AO_SAMPLES override quality.
@@ -263,6 +263,8 @@ namespace RT64 {
         bool replacesBlobShadows() const;
         // WCW_RT_SPLIT: ray tracing only on the right half of the screen (before/after comparisons).
         static bool splitScreen();
+        // The Lighting editor's split toggle (-1: WCW_RT_SPLIT decides).
+        static void setSplitScreenOverride(int split);
         void beginScene(const hlslpp::float4x4 &view, const hlslpp::float4x4 &proj, const RenderViewport &viewport,
             const RenderBuffer *worldPosBuffer, uint64_t worldPosSize, const RenderBuffer *worldNormBuffer, uint64_t worldNormSize,
             const RenderBuffer *faceIndicesBuffer, uint64_t faceIndicesSize,
