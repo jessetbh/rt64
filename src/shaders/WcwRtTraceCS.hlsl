@@ -454,7 +454,9 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
             // shadow; glows still brighten what they reach.
             const float outside = outsideFactorAt(hitPos.xz);
 
-            gCurrent[pixel] = float4(outside * (1.0f + glowLight(hitPos, normal, pixel)), hitT);
+            // Glows add light on top of the darkened surface (not scaled by it), so a lamp's pool reaches full
+            // brightness under the lamp even in a dark room: the darkness is the missing ambient light.
+            gCurrent[pixel] = float4(outside + glowLight(hitPos, normal, pixel), hitT);
             gCurrentAo[pixel] = 1.0f;
             return;
         }
