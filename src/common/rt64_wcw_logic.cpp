@@ -25,14 +25,16 @@ namespace RT64::WcwLogic {
             settings.radius = 60.0f;
             settings.characterRadius = 35.0f;
             settings.gain = 1.5f;
+            settings.characterGain = 1.75f;
             break;
         case AoLevel::Strong:
             settings.samples = baseSamples * 2;
             settings.strength = 0.75f;
-            settings.characterStrength = 0.7f;
+            settings.characterStrength = 0.85f;
             settings.radius = 80.0f;
             settings.characterRadius = 45.0f;
             settings.gain = 2.0f;
+            settings.characterGain = 2.5f;
             break;
         case AoLevel::Off:
         default:
@@ -40,6 +42,10 @@ namespace RT64::WcwLogic {
         }
 
         return settings;
+    }
+
+    bool aoCycleOn(uint64_t unixMs, uint64_t periodMs) {
+        return (periodMs == 0) || (((unixMs / periodMs) % 2) == 0);
     }
 
     BeamDecision decideBeam(uint32_t displayRefreshRate, bool vsync, bool interpolating, uint32_t contentRate) {

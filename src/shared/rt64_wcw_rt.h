@@ -111,8 +111,10 @@ namespace interop {
         // Resolve: radius of the depth-aware tent filter (2 = 5x5). Wider smooths AO and soft shadow grain;
         // the depth weights keep object edges sharp. WCW_RT_FILTER_RADIUS overrides.
         uint filterRadius;
-        float aoPadding1;
-        float aoPadding2;
+        // Contrast gain on characters (aoGain is the world's): wrestlers carry the AO the owner wants to see.
+        float aoCharacterGain;
+        // 1 while WCW_RT_AO_CYCLE has AO switched off (full-screen on/off comparisons over time).
+        uint aoCycleOff;
     };
 
     struct WcwRtCompositeCB {

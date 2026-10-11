@@ -43,7 +43,12 @@ namespace RT64::WcwLogic {
         float characterRadius = 0.0f;
         // Contrast: the occluded fraction is multiplied by this (clamped to 1) before darkening.
         float gain = 1.0f;
+        float characterGain = 1.0f;
     };
+
+    // WCW_RT_AO_CYCLE: AO on for periodMs, off for periodMs, repeating, phased to wall-clock time (Unix ms) so a
+    // screen recording can be labelled from its own start time. Even periods are on.
+    bool aoCycleOn(uint64_t unixMs, uint64_t periodMs);
 
     // The AO parameters for a menu level at a ray tracing quality (0 Performance, 1 Balanced, 2 Quality). Higher
     // quality only adds samples; the look (strengths, radii) depends on the level alone.

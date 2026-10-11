@@ -944,6 +944,12 @@ namespace RT64 {
         params.aoGain = std::max(envFloat(getenv("WCW_RT_AO_GAIN"), ao.gain), 0.0f);
         params.aoSplit = (envFloat(getenv("WCW_RT_AO_SPLIT"), 0.0f) != 0.0f) ? 1u : 0u;
         params.filterRadius = uint32_t(std::clamp(envFloat(getenv("WCW_RT_FILTER_RADIUS"), 2.0f), 1.0f, 4.0f));
+        params.aoCharacterGain = std::max(envFloat(getenv("WCW_RT_AO_GAIN_CHAR"), ao.characterGain), 0.0f);
+        {
+            static const uint64_t aoCyclePeriodMs = uint64_t(std::max(envFloat(getenv("WCW_RT_AO_CYCLE"), 0.0f), 0.0f) * 1000.0f);
+            const uint64_t unixMs = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+            params.aoCycleOff = WcwLogic::aoCycleOn(unixMs, aoCyclePeriodMs) ? 0u : 1u;
+        }
         params.traceScale = float(traceWidth) / float(outputWidth);
 
         // Trace only this workload's screen footprint (plus a margin for the bilinear upsample

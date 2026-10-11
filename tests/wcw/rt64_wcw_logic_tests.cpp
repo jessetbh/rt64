@@ -83,6 +83,26 @@ TEST_CASE("ao: reach suits the AKI world scale and contrast stays below the blot
     CHECK(aoSettings(uint32_t(AoLevel::Strong), 1).gain > aoSettings(uint32_t(AoLevel::Subtle), 1).gain);
 }
 
+TEST_CASE("ao: Strong puts extra weight on the wrestlers, within the blotch-free range") {
+    // The owner wants the AO to show on the wrestlers; the world (mat, floor) was already about right.
+    const AoSettings strong = aoSettings(uint32_t(AoLevel::Strong), 1);
+    CHECK(strong.characterStrength > strong.strength);
+    CHECK(strong.characterGain > strong.gain);
+    CHECK(strong.characterStrength <= 0.9f);
+    CHECK(strong.characterGain <= 3.0f);
+    const AoSettings subtle = aoSettings(uint32_t(AoLevel::Subtle), 1);
+    CHECK(subtle.characterGain < strong.characterGain);
+}
+
+TEST_CASE("ao cycle: alternates every period on wall-clock boundaries, on first") {
+    CHECK(aoCycleOn(0, 2000));
+    CHECK(aoCycleOn(1999, 2000));
+    CHECK(!aoCycleOn(2000, 2000));
+    CHECK(!aoCycleOn(3999, 2000));
+    CHECK(aoCycleOn(4000, 2000));
+    CHECK(aoCycleOn(123456789, 0));
+}
+
 TEST_CASE("ao: quality only changes the sample count") {
     for (uint32_t level = 1; level <= 2; level++) {
         const AoSettings performance = aoSettings(level, 0);
