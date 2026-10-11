@@ -955,6 +955,13 @@ namespace RT64 {
         params.aoCharacterGain = std::max(envFloat(getenv("WCW_RT_AO_GAIN_CHAR"), ao.characterGain), 0.0f);
         params.noiseMode = (envFloat(getenv("WCW_RT_NOISE"), 1.0f) != 0.0f) ? 1u : 0u;
         params.noiseSplit = (envFloat(getenv("WCW_RT_NOISE_SPLIT"), 0.0f) != 0.0f) ? 1u : 0u;
+        params.shadowSmooth = (envFloat(getenv("WCW_RT_SHADOW_SMOOTH"), 1.0f) != 0.0f) ? 1u : 0u;
+        // WCW_RT_SHADOW_SMOOTH_CYCLE=1: smooth shadows on odd presents only (consecutive-present comparisons).
+        if ((envFloat(getenv("WCW_RT_SHADOW_SMOOTH_CYCLE"), 0.0f) != 0.0f) && (lastPresentId != UINT64_MAX)) {
+            params.shadowSmooth = uint32_t(lastPresentId & 1);
+        }
+        params.shadowSmoothSplit = (envFloat(getenv("WCW_RT_SHADOW_SMOOTH_SPLIT"), 0.0f) != 0.0f) ? 1u : 0u;
+        params.terminatorFade = std::clamp(envFloat(getenv("WCW_RT_TERMINATOR_FADE"), 0.2f), 0.0f, 1.0f);
         {
             static const uint64_t aoCyclePeriodMs = uint64_t(std::max(envFloat(getenv("WCW_RT_AO_CYCLE"), 0.0f), 0.0f) * 1000.0f);
             const uint64_t unixMs = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());

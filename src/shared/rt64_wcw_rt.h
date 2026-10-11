@@ -21,6 +21,8 @@
 #define WCW_RT_MODE_LIGHT_MAP 8
 // Raw ambient occlusion of this frame in grey, not filtered or composited (tuning the AO's look and noise).
 #define WCW_RT_MODE_AO_RAW 9
+// Raw shadow term before AO and filtering, grey (white = lit).
+#define WCW_RT_MODE_SHADOW_RAW 10
 
 // Side of the blue noise tile the trace shader samples (WcwLogic::BlueNoiseSize; a power of two).
 #define WCW_RT_BLUE_NOISE_SIZE 64
@@ -123,6 +125,15 @@ namespace interop {
         uint noiseMode;
         // WCW_RT_NOISE_SPLIT=1: the old noise on the left half of the screen (same-moment comparisons).
         uint noiseSplit;
+        // Shadows on lit (smooth-shaded) draws, i.e. wrestlers: 1 = which side faces a light comes from the interpolated
+        // vertex normals and shadow rays start from the hit lifted onto the vertices' tangent planes, so the edge where
+        // light turns to shadow follows the smooth surface instead of the facets (WCW_RT_SHADOW_SMOOTH=0 turns it off).
+        uint shadowSmooth;
+        // WCW_RT_SHADOW_SMOOTH_SPLIT=1: flat shadows on the left half of the screen (same-moment comparisons).
+        uint shadowSmoothSplit;
+        // With shadowSmooth: a light's ray-traced shadow fades in over this much of the facing cosine past the
+        // terminator, where the game's vertex lighting already darkens the surface (WCW_RT_TERMINATOR_FADE).
+        float terminatorFade;
     };
 
     struct WcwRtCompositeCB {
