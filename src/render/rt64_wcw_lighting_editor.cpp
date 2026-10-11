@@ -351,6 +351,7 @@ namespace RT64 {
                 changed |= edited(ImGui::DragFloat("Range", &p.glows[i][4], 10.0f, 0.0f, 20000.0f), p, WcwLogic::FieldGlows);
                 WcwLogic::syncColorLists(p);
                 changed |= edited(ImGui::ColorEdit3("Color", p.glowColors[i].data(), ImGuiColorEditFlags_Float), p, WcwLogic::FieldGlows);
+                changed |= edited(ImGui::SliderFloat("Flicker", &p.glowFlicker[i], 0.0f, 1.0f), p, WcwLogic::FieldGlows);
                 ImGui::PopID();
             }
 
@@ -358,6 +359,7 @@ namespace RT64 {
                 WcwLogic::syncColorLists(p);
                 p.glows.erase(p.glows.begin() + remove);
                 p.glowColors.erase(p.glowColors.begin() + remove);
+                p.glowFlicker.erase(p.glowFlicker.begin() + remove);
                 p.setFields |= WcwLogic::FieldGlows;
                 changed = true;
             }

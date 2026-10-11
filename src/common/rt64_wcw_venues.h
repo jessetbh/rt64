@@ -80,6 +80,9 @@ namespace RT64::WcwLogic {
         // Parallel to glows: [x, y, z, intensity, range, r, g, b] gives a glow its color (white otherwise; not
         // normalized, so a color also scales the glow's strength).
         std::vector<LightColor> glowColors;
+        // Parallel to glows: flicker amount 0..1 (a 9th value, [..., r, g, b, flicker]): 0 steady, 1 a failing fluorescent
+        // tube that drops out completely in its bursts (glowFlicker), 0.5 dims to half.
+        std::vector<float> glowFlicker;
         // "anchor": "scene": center and explicit lights are offsets from the drawn world geometry's center on X/Z
         // and its floor (lowest point) on Y, so one preset fits rooms placed anywhere in the world.
         bool anchorScene = false;
@@ -126,6 +129,17 @@ namespace RT64::WcwLogic {
 
     // A glow's color (white when it has none).
     LightColor presetGlowColor(const LightPreset &preset, size_t glowIndex);
+
+    // A glow's flicker amount (0 when it has none).
+    float presetGlowFlicker(const LightPreset &preset, size_t glowIndex);
+
+    // A failing fluorescent tube's brightness (0..1) at timeSeconds, deterministic per seed: steady at 1 most of the
+    // time, then a burst of rapid irregular dropouts (50 ms steps) in some 1.5 s windows. Seeds give each tube its own
+    // rhythm.
+    float glowFlicker(double timeSeconds, uint32_t seed);
+
+    // A glow's intensity scale with flicker amount: 1 - amount * (1 - glowFlicker(time, seed)).
+    float glowFlickerScale(double timeSeconds, uint32_t seed, float amount);
 
     // Pads or trims the color lists to the lights and glows (new entries: no own color, white glow), after an edit
     // adds or removes lights or glows.

@@ -53,10 +53,55 @@ namespace RT64::WcwLogic {
         return (glowIndex < preset.glowColors.size()) ? preset.glowColors[glowIndex] : WhiteLight;
     }
 
+    float presetGlowFlicker(const LightPreset &preset, size_t glowIndex) {
+        return (glowIndex < preset.glowFlicker.size()) ? preset.glowFlicker[glowIndex] : 0.0f;
+    }
+
+    static uint32_t flickerHash(uint32_t a, uint32_t b) {
+        uint32_t h = a * 0x9E3779B1u ^ (b + 0x7F4A7C15u + (a << 6) + (a >> 2));
+        h ^= h >> 16;
+        h *= 0x85EBCA6Bu;
+        h ^= h >> 13;
+        h *= 0xC2B2AE35u;
+        h ^= h >> 16;
+        return h;
+    }
+
+    float glowFlicker(double timeSeconds, uint32_t seed) {
+        if (timeSeconds < 0.0) {
+            timeSeconds = 0.0;
+        }
+
+        // 1.5 s windows; about a third of them hold a burst, which covers part of the window.
+        const uint32_t window = uint32_t(timeSeconds / 1.5);
+        const uint32_t windowHash = flickerHash(seed, window);
+        if ((windowHash % 100u) >= 35u) {
+            return 1.0f;
+        }
+
+        const double inWindow = timeSeconds - double(window) * 1.5;
+        const double burstStart = double((windowHash >> 8) % 100u) / 100.0 * 0.9;
+        const double burstLength = 0.25 + double((windowHash >> 16) % 100u) / 100.0 * 0.35;
+        if ((inWindow < burstStart) || (inWindow > burstStart + burstLength)) {
+            return 1.0f;
+        }
+
+        // Inside the burst: 50 ms steps, each off, dim or on.
+        const uint32_t step = uint32_t(timeSeconds * 20.0);
+        const uint32_t stepHash = flickerHash(seed ^ 0xA5A5A5A5u, step) % 100u;
+        return (stepHash < 45u) ? 0.0f : ((stepHash < 65u) ? 0.35f : 1.0f);
+    }
+
+    float glowFlickerScale(double timeSeconds, uint32_t seed, float amount) {
+        amount = std::clamp(amount, 0.0f, 1.0f);
+        return 1.0f - amount * (1.0f - glowFlicker(timeSeconds, seed));
+    }
+
     void syncColorLists(LightPreset &preset) {
         preset.lightColors.resize(preset.lights.size(), preset.color);
         preset.lightOwnColor.resize(preset.lights.size(), 0);
         preset.glowColors.resize(preset.glows.size(), WhiteLight);
+        preset.glowFlicker.resize(preset.glows.size(), 0.0f);
     }
 
     static LightPreset parsePreset(const Json &j, const LightPreset &base) {
@@ -97,9 +142,11 @@ namespace RT64::WcwLogic {
         if (j.contains("glows")) {
             p.glows.clear();
             p.glowColors.clear();
+            p.glowFlicker.clear();
             for (const auto &g : j["glows"]) {
                 p.glows.push_back({ g[0].get<float>(), g[1].get<float>(), g[2].get<float>(), g[3].get<float>(), g[4].get<float>() });
                 p.glowColors.push_back((g.size() >= 8) ? LightColor{ g[5].get<float>(), g[6].get<float>(), g[7].get<float>() } : WhiteLight);
+                p.glowFlicker.push_back((g.size() >= 9) ? std::clamp(g[8].get<float>(), 0.0f, 1.0f) : 0.0f);
             }
         }
 
@@ -260,16 +307,21 @@ namespace RT64::WcwLogic {
 
             j["litAreas"] = a;
         }
-        if (wanted(FieldGlows, (p.glows != base.glows) || (p.glowColors != base.glowColors))) {
+        if (wanted(FieldGlows, (p.glows != base.glows) || (p.glowColors != base.glowColors) || (p.glowFlicker != base.glowFlicker))) {
             Json g = Json::array();
             for (size_t i = 0; i < p.glows.size(); i++) {
                 const auto &glow = p.glows[i];
                 Json entry = Json::array({ number(glow[0]), number(glow[1]), number(glow[2]), number(glow[3]), number(glow[4]) });
                 const LightColor c = presetGlowColor(p, i);
-                if (c != WhiteLight) {
+                const float flicker = presetGlowFlicker(p, i);
+                if ((c != WhiteLight) || (flicker > 0.0f)) {
                     entry.push_back(number(c[0]));
                     entry.push_back(number(c[1]));
                     entry.push_back(number(c[2]));
+                }
+
+                if (flicker > 0.0f) {
+                    entry.push_back(number(flicker));
                 }
 
                 g.push_back(entry);
@@ -326,7 +378,7 @@ namespace RT64::WcwLogic {
         if (!(s & FieldRadius)) { p.radius = d.radius; }
         if (!(s & FieldClearance)) { p.clearance = d.clearance; }
         if (!(s & FieldFalloff)) { p.falloff = d.falloff; }
-        if (!(s & FieldGlows)) { p.glows = d.glows; p.glowColors = d.glowColors; }
+        if (!(s & FieldGlows)) { p.glows = d.glows; p.glowColors = d.glowColors; p.glowFlicker = d.glowFlicker; }
         if (!(s & FieldAnchor)) { p.anchorScene = d.anchorScene; }
         if (!(s & FieldShadow)) { p.shadow = d.shadow; }
         if (!(s & FieldCharacterShadow)) { p.characterShadow = d.characterShadow; }

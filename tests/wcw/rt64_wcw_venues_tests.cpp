@@ -446,3 +446,45 @@ TEST_CASE("lit areas: parse (at most two), inherit from default, and round-trip"
         CHECK_EQ(again.venues[i].setFields, file.venues[i].setFields);
     }
 }
+
+// Flickering glows: a failing fluorescent tube.
+
+TEST_CASE("flicker: deterministic, within 0..1, mostly on, with dropouts") {
+    uint32_t on = 0, off = 0, total = 0;
+    for (double t = 0.0; t < 60.0; t += 0.01, total++) {
+        const float v = glowFlicker(t, 3);
+        CHECK(v >= 0.0f && v <= 1.0f);
+        CHECK_EQ(v, glowFlicker(t, 3));
+        on += (v == 1.0f) ? 1 : 0;
+        off += (v == 0.0f) ? 1 : 0;
+    }
+
+    // A failing tube, not a strobe: on most of the time, but it does drop out within a minute.
+    CHECK(on > total * 7 / 10);
+    CHECK(off > 0u);
+}
+
+TEST_CASE("flicker: amount 0 is steady, tubes get their own rhythm") {
+    bool differ = false;
+    for (double t = 0.0; t < 30.0; t += 0.05) {
+        CHECK_EQ(glowFlickerScale(t, 5, 0.0f), 1.0f);
+        const float half = glowFlickerScale(t, 5, 0.5f);
+        CHECK(half >= 0.5f && half <= 1.0f);
+        differ = differ || (glowFlicker(t, 1) != glowFlicker(t, 2));
+    }
+
+    CHECK(differ);
+}
+
+TEST_CASE("flicker: parsed as a 9th glow value and written back (colors written too)") {
+    const char *text = R"json({
+        "venues": [ { "name": "Hall", "match": ["0000000000000001"],
+            "glows": [[0, 300, 0, 2, 480], [0, 300, 400, 2, 480, 1, 1, 1, 0.8]] } ]
+    })json";
+    const LightPresetFile file = parseLightPresets(text);
+    CHECK_EQ(presetGlowFlicker(file.venues[0], 0), 0.0f);
+    CHECK_NEAR(presetGlowFlicker(file.venues[0], 1), 0.8f, 1e-6f);
+    const LightPresetFile again = parseLightPresets(writeLightPresets(file));
+    CHECK(again.venues[0].glowFlicker == file.venues[0].glowFlicker);
+    CHECK(again.venues[0].glowColors == file.venues[0].glowColors);
+}

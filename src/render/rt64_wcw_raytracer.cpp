@@ -871,11 +871,14 @@ namespace RT64 {
         params.colorSplit = (envFloat(getenv("WCW_RT_COLOR_SPLIT"), 0.0f) != 0.0f) ? 1u : 0u;
         params.glowPadding0 = params.glowPadding1 = params.glowPadding2 = 0.0f;
         params.glowIntensity = { 0.0f, 0.0f, 0.0f, 0.0f };
+        // Flickering glows (WcwLogic::glowFlickerScale) run on the wall clock since the ray tracer started.
+        static const auto flickerStart = std::chrono::steady_clock::now();
+        const double flickerTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - flickerStart).count();
         for (const auto &g : preset.glows) {
             if (params.glowCount < WCW_RT_MAX_GLOWS) {
-                params.glows[params.glowCount] = { origin[0] + g[0], origin[1] + g[1], origin[2] + g[2], std::max(g[4], 1.0f) };
-                params.glowIntensity[params.glowCount] = g[3];
                 const size_t glowIndex = size_t(&g - preset.glows.data());
+                params.glows[params.glowCount] = { origin[0] + g[0], origin[1] + g[1], origin[2] + g[2], std::max(g[4], 1.0f) };
+                params.glowIntensity[params.glowCount] = g[3] * WcwLogic::glowFlickerScale(flickerTime, uint32_t(glowIndex) * 7919u + 17u, WcwLogic::presetGlowFlicker(preset, glowIndex));
                 const std::array<float, 3> glowColor = WcwLogic::presetGlowColor(preset, glowIndex);
                 params.glowColors[params.glowCount] = { std::max(glowColor[0], 0.0f), std::max(glowColor[1], 0.0f), std::max(glowColor[2], 0.0f), 0.0f };
                 params.glowCount++;
