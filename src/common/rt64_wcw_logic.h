@@ -36,7 +36,8 @@ namespace RT64::WcwLogic {
 
     // Ray-traced ambient occlusion
 
-    // The AO looks. There is no AO menu: each quality level picks one (RtPreset::ao).
+    // The AO looks. There is no AO menu: each quality level picks one (RtPreset::ao): none on Performance, Subtle on
+    // Balanced, Strong on Quality and Ultra.
     enum class AoLevel : uint32_t {
         Off = 0,
         Subtle = 1,

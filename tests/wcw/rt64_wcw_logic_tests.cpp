@@ -117,15 +117,23 @@ TEST_CASE("ao cycle: alternates every period on wall-clock boundaries, on first"
 
 // Ray tracing quality presets (the AO menu was folded into them)
 
-TEST_CASE("quality: AO comes with the level (none on Performance, Subtle on Balanced and Quality, Strong on Ultra)") {
+TEST_CASE("quality: AO comes with the level (none on Performance, Subtle on Balanced, Strong on Quality and Ultra)") {
     CHECK_EQ(aoSettings(uint32_t(RtQuality::Performance)).samples, 0u);
     const AoSettings balanced = aoSettings(uint32_t(RtQuality::Balanced));
     const AoSettings quality = aoSettings(uint32_t(RtQuality::Quality));
     const AoSettings ultra = aoSettings(uint32_t(RtQuality::Ultra));
     CHECK(balanced.samples > 0);
     CHECK_EQ(balanced.strength, aoLookSettings(AoLevel::Subtle, 2).strength);
-    CHECK_EQ(quality.strength, balanced.strength);
-    CHECK_EQ(ultra.strength, aoLookSettings(AoLevel::Strong, 2).strength);
+    CHECK_EQ(quality.strength, aoLookSettings(AoLevel::Strong, 2).strength);
+    CHECK_EQ(ultra.strength, quality.strength);
+}
+
+TEST_CASE("quality: Strong AO always gets at least 4 rays (at 2 it mottles)") {
+    for (uint32_t q = 0; q <= uint32_t(RtQuality::Ultra); q++) {
+        if (rtPreset(q).ao == AoLevel::Strong) {
+            CHECK(rtPreset(q).aoSamples >= 4);
+        }
+    }
 }
 
 TEST_CASE("quality: each level traces at least as many rays as the one below") {

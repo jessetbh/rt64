@@ -64,14 +64,15 @@ namespace RT64::WcwLogic {
             preset.aoSamples = 2;
             break;
         case RtQuality::Quality:
+            // The full look: Strong AO. With 4 rays and the separate AO cleanup it reads clean (before that cleanup,
+            // Strong mottled the mat next to the wrestlers).
             preset.samplesPerLight = 2;
-            preset.ao = AoLevel::Subtle;
-            preset.aoSamples = 2;
+            preset.ao = AoLevel::Strong;
+            preset.aoSamples = 4;
             break;
         case RtQuality::Ultra:
         default:
-            // Twice Quality's shadow rays and four times its AO rays: Strong's deeper occlusion only reads clean with
-            // enough rays (at 4 rays it mottled the mat next to the wrestlers).
+            // Quality's look, cleaner: twice its shadow rays and AO rays.
             preset.samplesPerLight = 4;
             preset.ao = AoLevel::Strong;
             preset.aoSamples = 8;
