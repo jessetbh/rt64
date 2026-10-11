@@ -943,6 +943,7 @@ namespace RT64 {
         params.aoSmoothNormals = (envFloat(getenv("WCW_RT_AO_SMOOTH"), 1.0f) != 0.0f) ? 1u : 0u;
         params.aoGain = std::max(envFloat(getenv("WCW_RT_AO_GAIN"), ao.gain), 0.0f);
         params.aoSplit = (envFloat(getenv("WCW_RT_AO_SPLIT"), 0.0f) != 0.0f) ? 1u : 0u;
+        params.filterRadius = uint32_t(std::clamp(envFloat(getenv("WCW_RT_FILTER_RADIUS"), 2.0f), 1.0f, 4.0f));
         params.traceScale = float(traceWidth) / float(outputWidth);
 
         // Trace only this workload's screen footprint (plus a margin for the bilinear upsample

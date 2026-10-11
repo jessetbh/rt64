@@ -15,19 +15,24 @@ namespace RT64::WcwLogic {
         AoSettings settings;
         const uint32_t baseSamples = (quality == 0) ? 1u : 2u;
         switch (AoLevel(std::min(level, uint32_t(AoLevel::Strong)))) {
+        // Radii are in AKI world units (a ring is several hundred across, a wrestler about 150 tall). Wrestlers
+        // are mostly convex, so their occlusion lives in creases and contacts: the gain brings those out, and
+        // a shorter character radius keeps a limb from darkening the whole torso next to it.
         case AoLevel::Subtle:
             settings.samples = baseSamples;
-            settings.strength = 0.5f;
+            settings.strength = 0.55f;
             settings.characterStrength = 0.5f;
-            settings.radius = 25.0f;
-            settings.characterRadius = 25.0f;
+            settings.radius = 60.0f;
+            settings.characterRadius = 35.0f;
+            settings.gain = 1.5f;
             break;
         case AoLevel::Strong:
             settings.samples = baseSamples * 2;
-            settings.strength = 0.85f;
-            settings.characterStrength = 0.85f;
-            settings.radius = 40.0f;
-            settings.characterRadius = 30.0f;
+            settings.strength = 0.75f;
+            settings.characterStrength = 0.7f;
+            settings.radius = 80.0f;
+            settings.characterRadius = 45.0f;
+            settings.gain = 2.0f;
             break;
         case AoLevel::Off:
         default:

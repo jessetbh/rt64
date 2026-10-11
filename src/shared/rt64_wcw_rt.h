@@ -108,7 +108,9 @@ namespace interop {
         float aoGain;
         // WCW_RT_AO_SPLIT=1: no AO on the left half of the screen (same-moment before/after comparisons).
         uint aoSplit;
-        float aoPadding0;
+        // Resolve: radius of the depth-aware tent filter (2 = 5x5). Wider smooths AO and soft shadow grain;
+        // the depth weights keep object edges sharp. WCW_RT_FILTER_RADIUS overrides.
+        uint filterRadius;
         float aoPadding1;
         float aoPadding2;
     };

@@ -62,12 +62,25 @@ TEST_CASE("ao: Strong is stronger, reaches further and samples more than Subtle"
     }
 }
 
-TEST_CASE("ao: wrestlers get the full strength (it used to be halved on characters)") {
+TEST_CASE("ao: wrestlers aren't halved any more (the old 0.5x left their AO invisible)") {
     for (uint32_t level = 1; level <= 2; level++) {
         const AoSettings settings = aoSettings(level, 1);
-        CHECK(settings.characterStrength >= settings.strength);
+        CHECK(settings.characterStrength >= 0.8f * settings.strength);
         CHECK(settings.characterRadius > 0.0f);
+        CHECK(settings.characterRadius <= settings.radius);
     }
+}
+
+TEST_CASE("ao: reach suits the AKI world scale and contrast stays below the blotchy range") {
+    // A 25-40 unit reach only caught surfaces that almost touch (rings are several hundred units across);
+    // a gain of 3 turned sampling noise into dark blotches on the wrestlers.
+    for (uint32_t level = 1; level <= 2; level++) {
+        const AoSettings settings = aoSettings(level, 1);
+        CHECK(settings.radius >= 50.0f);
+        CHECK((settings.gain >= 1.0f) && (settings.gain <= 2.5f));
+    }
+
+    CHECK(aoSettings(uint32_t(AoLevel::Strong), 1).gain > aoSettings(uint32_t(AoLevel::Subtle), 1).gain);
 }
 
 TEST_CASE("ao: quality only changes the sample count") {
