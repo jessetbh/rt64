@@ -183,6 +183,26 @@ TEST_CASE("denoise: AO accumulates longer than shadows, and both keep some histo
     CHECK(d.aoAlpha > 0.0f && d.shadowAlpha < 1.0f);
 }
 
+// Wrestler sheen
+
+TEST_CASE("sheen: highlights and outlines brighten without blowing out") {
+    // The shadow factor is stored up to 2. Neither term alone may double a fully lit wrestler (factor 1), and the
+    // two together (they peak in different places: the highlight faces the light, the outline is the silhouette)
+    // stay close to that ceiling. The owner found 0.3 / 0.35 too faint and 0.65 / 0.7 too much.
+    const SheenSettings s = sheenSettings();
+    CHECK(s.specular > 0.35f && s.specular < 0.65f);
+    CHECK(s.rim > 0.35f && s.rim < 0.7f);
+    CHECK(s.specular + s.rim <= 1.1f);
+}
+
+TEST_CASE("sheen: a glossy highlight and a thin outline, not a wash") {
+    // A low exponent spreads the highlight over the whole lit side (looks like a brightness bump, not shine); a low
+    // rim power brightens the whole body instead of its outline.
+    const SheenSettings s = sheenSettings();
+    CHECK(s.shininess >= 8.0f);
+    CHECK(s.rimPower >= 2.0f);
+}
+
 // Colored light
 
 static float luminance(const std::array<float, 3> &c) {

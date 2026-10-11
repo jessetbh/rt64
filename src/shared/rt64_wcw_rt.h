@@ -23,6 +23,8 @@
 #define WCW_RT_MODE_AO_RAW 9
 // Raw shadow term before AO and filtering, grey (white = lit).
 #define WCW_RT_MODE_SHADOW_RAW 10
+// Wrestler sheen (highlights + backlight) alone, grey on black.
+#define WCW_RT_MODE_SHEEN_RAW 12
 
 // Side of the blue noise tile the trace shader samples (WcwLogic::BlueNoiseSize; a power of two).
 #define WCW_RT_BLUE_NOISE_SIZE 64
@@ -150,6 +152,13 @@ namespace interop {
         uint2 traceEnd;
         // WCW_RT_COLOR_SPLIT=1: white lights and glows on the left half of the screen (same-moment comparisons).
         uint colorSplit;
+        // Wrestler sheen (WcwLogic::sheenSettings): highlight strength and exponent, backlight strength and falloff.
+        float sheenSpecular;
+        float sheenShininess;
+        float sheenRim;
+        float sheenRimPower;
+        // WCW_RT_SHEEN_SPLIT=1: no sheen on the left half of the screen (same-moment comparisons).
+        uint sheenSplit;
     };
 
     struct WcwRtCompositeCB {

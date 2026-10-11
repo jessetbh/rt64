@@ -104,6 +104,16 @@ namespace RT64::WcwLogic {
         return DenoiseSettings();
     }
 
+    SheenSettings sheenSettings() {
+        SheenSettings settings;
+        // Owner pick from live matches: 0.3 / 0.35 barely showed; 0.65 at exponent 8 was too much.
+        settings.specular = 0.5f;
+        settings.shininess = 12.0f;
+        settings.rim = 0.55f;
+        settings.rimPower = 3.0f;
+        return settings;
+    }
+
     std::array<float, 3> normalizedLightColor(float r, float g, float b) {
         r = std::max(r, 0.0f);
         g = std::max(g, 0.0f);
