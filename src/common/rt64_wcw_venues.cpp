@@ -546,10 +546,17 @@ namespace RT64::WcwLogic {
         Target &t = targets[target];
         if (presentId != t.present) {
             t.present = presentId;
-            t.nextPass = 0;
+            t.darkened = false;
+            t.recentMax *= MaxDecay;
         }
 
-        return t.pass.darkenThisPass(presentId, t.nextPass++, meshCount);
+        t.recentMax = std::max(t.recentMax, float(meshCount));
+        if (t.darkened || (float(meshCount) < ArenaShare * t.recentMax)) {
+            return false;
+        }
+
+        t.darkened = true;
+        return true;
     }
 
     bool MissDarkeningPass::darkenThisPass(uint64_t presentId, uint32_t passIndex, size_t meshCount) {

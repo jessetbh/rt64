@@ -216,20 +216,25 @@ namespace RT64::WcwLogic {
         uint32_t streakPass = UINT32_MAX;
     };
 
-    // MissDarkeningPass for every color target, with each target's passes numbered on their own (0, 1, 2... per
-    // target per present). Numbering passes across the whole present flickered the background: when one present
-    // carried both swap targets' frames, the second target's arena pass moved from pass 3 to pass 8, so that frame
-    // and the next had no darkening pass.
+    // Which pass darkens the misses, per color target: once per target per present, on the first pass that traces at
+    // least ArenaShare of the target's recent largest pass (the arena pass: 130-136 meshes in Raw, against 94 for the
+    // pass before it and under 20 for the rest). Choosing by position flickered the crowd: at 60 fps the real and
+    // interpolated frames go to alternating targets with their passes interleaved, and when a present carried both swap
+    // targets' frames the arena pass moved from pass 3 to pass 8, so whole frames had no darkening pass.
     class MissDarkening {
     public:
+        static constexpr float ArenaShare = 0.8f;
+        // The recent maximum decays by this much per present, so a scene change to smaller passes takes over.
+        static constexpr float MaxDecay = 0.98f;
+
         // Called once per traced pass, in order; true for the pass that darkens the misses on this target.
         bool darkenThisPass(const void *target, uint64_t presentId, size_t meshCount);
 
     private:
         struct Target {
             uint64_t present = UINT64_MAX;
-            uint32_t nextPass = 0;
-            MissDarkeningPass pass;
+            bool darkened = false;
+            float recentMax = 0.0f;
         };
 
         std::unordered_map<const void *, Target> targets;

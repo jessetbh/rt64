@@ -488,3 +488,61 @@ TEST_CASE("flicker: parsed as a 9th glow value and written back (colors written 
     CHECK(again.venues[0].glowFlicker == file.venues[0].glowFlicker);
     CHECK(again.venues[0].glowColors == file.venues[0].glowColors);
 }
+
+TEST_CASE("outside darkness: at 60 fps (interleaved targets, presents cutting through frames) every frame darkens once, on the arena pass (crowd flickered)") {
+    // Raw at 60 fps (from the WCW_RT_DARKNESS_LOG): each game frame is 94, 9, 9, 136, 2 meshes, drawn to two targets
+    // (real and interpolated) with their passes interleaved, and presents begin part way through frames, so a target's
+    // 94-mesh pass can be in one present and its arena pass in the next.
+    MissDarkening darkening;
+    const int targets[4] = { 0, 0, 0, 0 };
+    const size_t frame[] = { 94, 9, 9, 136, 2 };
+    uint32_t wrongPass = 0, undarkened = 0, doubled = 0;
+    uint64_t present = 0;
+    uint32_t passInPresent = 0;
+    const uint32_t presentLengths[] = { 7, 10, 6, 9, 11, 8 };
+    uint32_t lengthIndex = 0;
+    for (uint32_t gameFrame = 0; gameFrame < 120; gameFrame++) {
+        const void *pair[2] = { &targets[(gameFrame * 2) % 4], &targets[(gameFrame * 2 + 1) % 4] };
+        uint32_t dark[2] = { 0, 0 };
+        for (size_t meshes : frame) {
+            for (int k = 0; k < 2; k++) {
+                const bool d = darkening.darkenThisPass(pair[k], present, meshes);
+                dark[k] += d ? 1 : 0;
+                wrongPass += ((gameFrame > 1) && d && (meshes != 136)) ? 1 : 0;
+                if (++passInPresent >= presentLengths[lengthIndex]) {
+                    passInPresent = 0;
+                    lengthIndex = (lengthIndex + 1) % 6;
+                    present++;
+                }
+            }
+        }
+
+        if (gameFrame > 1) {
+            for (int k = 0; k < 2; k++) {
+                undarkened += (dark[k] == 0) ? 1 : 0;
+                doubled += (dark[k] > 1) ? 1 : 0;
+            }
+        }
+    }
+
+    CHECK_EQ(undarkened, 0u);
+    CHECK_EQ(doubled, 0u);
+    CHECK_EQ(wrongPass, 0u);
+}
+
+TEST_CASE("outside darkness: a scene change to smaller passes still darkens (the recent maximum decays)") {
+    MissDarkening darkening;
+    const int target = 0;
+    uint64_t present = 0;
+    for (int i = 0; i < 10; i++, present++) {
+        darkening.darkenThisPass(&target, present, 130);
+    }
+
+    // A backstage room: its biggest pass is 40 meshes. It may take a while, but it must darken again.
+    bool darkenedAgain = false;
+    for (int i = 0; i < 200; i++, present++) {
+        darkenedAgain = darkening.darkenThisPass(&target, present, 40);
+    }
+
+    CHECK(darkenedAgain);
+}
