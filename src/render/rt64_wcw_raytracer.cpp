@@ -869,6 +869,14 @@ namespace RT64 {
         };
 
         params.colorSplit = (envFloat(getenv("WCW_RT_COLOR_SPLIT"), 0.0f) != 0.0f) ? 1u : 0u;
+        {
+            const WcwLogic::SheenSettings sheen = WcwLogic::sheenSettings();
+            params.sheenSpecular = std::max(envFloat(getenv("WCW_RT_SHEEN"), sheen.specular), 0.0f);
+            params.sheenShininess = std::max(envFloat(getenv("WCW_RT_SHEEN_SHININESS"), sheen.shininess), 1.0f);
+            params.sheenRim = std::max(envFloat(getenv("WCW_RT_RIM"), sheen.rim), 0.0f);
+            params.sheenRimPower = std::max(envFloat(getenv("WCW_RT_RIM_POWER"), sheen.rimPower), 1.0f);
+            params.sheenSplit = (envFloat(getenv("WCW_RT_SHEEN_SPLIT"), 0.0f) != 0.0f) ? 1u : 0u;
+        }
         params.glowPadding0 = params.glowPadding1 = params.glowPadding2 = 0.0f;
         params.glowIntensity = { 0.0f, 0.0f, 0.0f, 0.0f };
         // Flickering glows (WcwLogic::glowFlickerScale) run on the wall clock since the ray tracer started.
