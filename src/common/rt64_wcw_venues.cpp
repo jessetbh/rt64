@@ -456,6 +456,179 @@ namespace RT64::WcwLogic {
         return best;
     }
 
+    VenueSelector::Change VenueSelector::update(const std::vector<LightPreset> &venues, const std::vector<uint64_t> &textures, double seconds) {
+        std::vector<uint64_t> unique = textures;
+        std::sort(unique.begin(), unique.end());
+        unique.erase(std::unique(unique.begin(), unique.end()), unique.end());
+        for (uint64_t h : unique) {
+            windowCounts[h]++;
+        }
+
+        window.push_back({ seconds, unique });
+        while (!window.empty() && (window.front().seconds <= seconds - WindowSeconds)) {
+            for (uint64_t h : window.front().textures) {
+                auto it = windowCounts.find(h);
+                if ((it != windowCounts.end()) && (--it->second == 0)) {
+                    windowCounts.erase(it);
+                }
+            }
+
+            window.pop_front();
+        }
+
+        // Frames without world textures (a black frame, a 2D screen) don't count as a cut either way, and the cut rules
+        // only run on a frame that drew some: on a 2D screen the last textured frames go stale, and once the window let
+        // go of their venue they kept cutting back to it (World Tour's title screen flipped every 2.4 s).
+        // A frame left over from before a 2D screen doesn't count either: paired with the first frame of World Tour's
+        // DOA arena (which also draws every WCW texture), a WCW-only menu frame cut to WCW for 13 frames.
+        const bool textured = !unique.empty();
+        if (textured) {
+            recentFrames.push_back({ seconds, std::move(unique) });
+            if (recentFrames.size() > CutFrames) {
+                recentFrames.pop_front();
+            }
+        }
+
+        while (!recentFrames.empty() && (recentFrames.front().seconds < seconds - RecentSeconds)) {
+            recentFrames.pop_front();
+        }
+
+        auto seenRecently = [this](uint64_t h) {
+            for (const Frame &f : recentFrames) {
+                if (std::binary_search(f.textures.begin(), f.textures.end(), h)) {
+                    return true;
+                }
+            }
+
+            return false;
+        };
+
+        // The new venue must show on every recent frame (one stray frame isn't a cut); the old one on none of them.
+        auto seenOnEach = [this](uint64_t h) {
+            for (const Frame &f : recentFrames) {
+                if (!std::binary_search(f.textures.begin(), f.textures.end(), h)) {
+                    return false;
+                }
+            }
+
+            return true;
+        };
+
+        recentVenue = (recentFrames.size() == CutFrames) ? bestVenue(venues, seenOnEach, MinScore) : -1;
+        if (activeVenue >= int(venues.size())) {
+            activeVenue = -1;
+        }
+
+        if (cutsEnabled && textured && (recentVenue >= 0) && (recentVenue != activeVenue) &&
+            ((activeVenue < 0) || (venueMatchScore(venues[activeVenue], seenRecently) <= CutActiveMax)))
+        {
+            restartWindow(seconds);
+            activeVenue = recentVenue;
+            candidateVenue = recentVenue;
+            return Change::Cut;
+        }
+
+        if (cutsEnabled && textured && (activeVenue >= 0) && (recentFrames.size() == CutFrames) && (recentVenue < 0) &&
+            (venueMatchScore(venues[activeVenue], seenRecently) == 0.0f))
+        {
+            const std::pair<uint32_t, uint32_t> fresh = recentNew();
+            if ((fresh.first >= NewSceneMin) && (float(fresh.first) >= NewSceneShare * float(fresh.second))) {
+                restartWindow(seconds);
+                activeVenue = -1;
+                candidateVenue = -1;
+                return Change::Cut;
+            }
+        }
+
+        const int best = bestVenue(venues, [this](uint64_t h) { return windowCounts.count(h) > 0; }, MinScore);
+        if (best == activeVenue) {
+            candidateVenue = best;
+            return Change::None;
+        }
+
+        if (best != candidateVenue) {
+            candidateVenue = best;
+            candidateSince = seconds;
+        }
+
+        if (seconds - candidateSince >= HoldSeconds) {
+            activeVenue = best;
+            return Change::Window;
+        }
+
+        return Change::None;
+    }
+
+    void VenueSelector::restartWindow(double seconds) {
+        // The shot before a cut no longer counts: left in the window, its textures would switch back to the old venue
+        // once the hold ran out. (Both recent frames are after the cut: they show almost none of the old venue.)
+        window.clear();
+        windowCounts.clear();
+        for (const Frame &f : recentFrames) {
+            window.push_back({ seconds, f.textures });
+            for (uint64_t h : f.textures) {
+                windowCounts[h]++;
+            }
+        }
+    }
+
+    std::pair<uint32_t, uint32_t> VenueSelector::recentNew() const {
+        if (recentFrames.empty()) {
+            return { 0, 0 };
+        }
+
+        // Textures on every recent frame; new when the window has them only from those frames.
+        uint32_t onEach = 0;
+        uint32_t fresh = 0;
+        for (uint64_t h : recentFrames.back().textures) {
+            bool everywhere = true;
+            for (const Frame &f : recentFrames) {
+                everywhere = everywhere && std::binary_search(f.textures.begin(), f.textures.end(), h);
+            }
+
+            if (!everywhere) {
+                continue;
+            }
+
+            onEach++;
+            auto it = windowCounts.find(h);
+            fresh += ((it != windowCounts.end()) && (it->second <= recentFrames.size())) ? 1 : 0;
+        }
+
+        return { fresh, onEach };
+    }
+
+    std::pair<int, float> VenueSelector::recentLeader(const std::vector<LightPreset> &venues) const {
+        std::pair<int, float> leader = { -1, 0.0f };
+        for (size_t v = 0; v < venues.size(); v++) {
+            const float score = venueMatchScore(venues[v], [this](uint64_t h) {
+                for (const Frame &f : recentFrames) {
+                    if (!std::binary_search(f.textures.begin(), f.textures.end(), h)) {
+                        return false;
+                    }
+                }
+
+                return !recentFrames.empty();
+            });
+
+            if ((leader.first < 0) || (score > leader.second)) {
+                leader = { int(v), score };
+            }
+        }
+
+        return leader;
+    }
+
+    void VenueSelector::reset() {
+        window.clear();
+        windowCounts.clear();
+        recentFrames.clear();
+        activeVenue = -1;
+        recentVenue = -1;
+        candidateVenue = -1;
+        candidateSince = 0.0;
+    }
+
     float outsideDarknessFactor(float receiverDistance, float radius, float edge, float darkness) {
         if ((darkness <= 0.0f) || (receiverDistance <= radius)) {
             return 1.0f;

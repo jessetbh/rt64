@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -197,8 +198,7 @@ namespace RT64 {
         presetFile = WcwLogic::LightPresetFile();
         mode = envMode;
         activeVenue = -1;
-        candidateVenue = -1;
-        candidateFrames = 0;
+        venueSelector.reset();
         presetsEdited = false;
         if (ec) {
             applyPresetFile();
@@ -266,6 +266,11 @@ namespace RT64 {
         }
 
         frameTextureTris.clear();
+        const double presentSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        static const bool venueCuts = (getenv("WCW_RT_VENUE_CUT") == nullptr) || (strcmp(getenv("WCW_RT_VENUE_CUT"), "0") != 0);
+        venueSelector.cutsEnabled = venueCuts;
+        const int recentBefore = venueSelector.recent();
+        const WcwLogic::VenueSelector::Change change = venueSelector.update(venuePresets, hashes, presentSeconds);
         textureHistory.push_back(std::move(hashes));
         if (presentMin[0] <= presentMax[0]) {
             for (uint32_t i = 0; i < 3; i++) {
@@ -294,21 +299,24 @@ namespace RT64 {
             loadPresets(false);
         }
 
-        // Best venue: the largest fraction of its match textures seen in the window (at least half).
-        const int best = WcwLogic::bestVenue(venuePresets, [this](uint64_t h) { return textureCounts.count(h) > 0; });
-
-        // Switch only after the choice held for a few presents (no flapping on cut scenes).
-        if (best != activeVenue) {
-            candidateFrames = (best == candidateVenue) ? (candidateFrames + 1) : 0;
-            candidateVenue = best;
-            if (candidateFrames >= 10) {
-                activeVenue = best;
-                fprintf(stderr, "[wcw rt] venue: %s\n", (best >= 0) ? venuePresets[best].name.c_str() : "default");
-            }
+        // WCW_RT_VENUE_TRACE: when the last frames start pointing to another venue (a camera cut), to time the switch.
+        static const bool venueTrace = getenv("WCW_RT_VENUE_TRACE") != nullptr;
+        auto venueName = [this](int v) { return (v >= 0) ? venuePresets[v].name.c_str() : "default"; };
+        if (venueTrace && (venueSelector.recent() != recentBefore)) {
+            const std::pair<int, float> leader = venueSelector.recentLeader(venuePresets);
+            const std::pair<uint32_t, uint32_t> fresh = venueSelector.recentNew();
+            fprintf(stderr, "[wcw rt] venue seen: %s (present %d, %.3f s; closest %s %.2f; new textures %u of %u)\n", venueName(venueSelector.recent()), int(wcwRtPresentCounter), presentSeconds,
+                venueName(leader.first), leader.second, fresh.first, fresh.second);
         }
-        else {
-            candidateVenue = best;
-            candidateFrames = 0;
+
+        activeVenue = venueSelector.active();
+        if (change != WcwLogic::VenueSelector::Change::None) {
+            // AkiTools' aki-run reads the venue from the last "venue:" line: keep it the bare name.
+            fprintf(stderr, "[wcw rt] venue: %s\n", venueName(activeVenue));
+            if (venueTrace) {
+                fprintf(stderr, "[wcw rt] venue switch: %s (%s, present %d, %.3f s)\n", venueName(activeVenue),
+                    (change == WcwLogic::VenueSelector::Change::Cut) ? "cut" : "window", int(wcwRtPresentCounter), presentSeconds);
+            }
         }
 
         updateRoomPreset();
