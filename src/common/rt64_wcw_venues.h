@@ -263,6 +263,8 @@ namespace RT64::WcwLogic {
         static constexpr double WindowSeconds = 2.0;
         static constexpr double HoldSeconds = 1.0 / 3.0;
         static constexpr uint32_t CutFrames = 2;
+        // Textured frames older than this don't count towards a cut (they are from before a 2D screen or a pause).
+        static constexpr double RecentSeconds = 0.25;
         static constexpr float CutActiveMax = 0.2f;
         static constexpr float MinScore = 0.5f;
         static constexpr float NewSceneShare = 0.8f;
@@ -294,7 +296,7 @@ namespace RT64::WcwLogic {
 
         std::deque<Frame> window;
         std::unordered_map<uint64_t, uint32_t> windowCounts;
-        std::deque<std::vector<uint64_t>> recentFrames;
+        std::deque<Frame> recentFrames;
         int activeVenue = -1;
         int recentVenue = -1;
         int candidateVenue = -1;

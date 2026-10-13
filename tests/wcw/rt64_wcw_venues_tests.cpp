@@ -736,3 +736,24 @@ TEST_CASE("venue switching: a long 2D screen lets the venue go once, without sta
     CHECK_EQ(selector.active(), -1);
     CHECK_EQ(switches, 1);
 }
+
+TEST_CASE("venue switching: a frame from before a 2D screen doesn't pair with the next scene's first frame") {
+    // World Tour: the DOA arena also draws every WCW texture, and the menu before it draws only WCW's. A menu frame
+    // left over from before the VS screen plus the arena's first frame pointed to WCW; the arena is DOA (the later venue
+    // wins the tie when both are fully shown).
+    const std::vector<LightPreset> venues = twoVenues();
+    VenueSelector selector;
+    double t = feed(selector, venues, ArenaA, 0.0, 3.0, 30.0);
+    t = feed(selector, venues, {}, t, 3.0, 30.0);
+    CHECK_EQ(selector.active(), -1);
+    std::vector<uint64_t> both = ArenaA;
+    both.insert(both.end(), ArenaB.begin(), ArenaB.end());
+    bool everA = false;
+    for (int i = 0; i < 30; i++, t += 1.0 / 30.0) {
+        selector.update(venues, both, t);
+        everA = everA || (selector.active() == 0);
+    }
+
+    CHECK(!everA);
+    CHECK_EQ(selector.active(), 1);
+}

@@ -479,17 +479,23 @@ namespace RT64::WcwLogic {
         // Frames without world textures (a black frame, a 2D screen) don't count as a cut either way, and the cut rules
         // only run on a frame that drew some: on a 2D screen the last textured frames go stale, and once the window let
         // go of their venue they kept cutting back to it (World Tour's title screen flipped every 2.4 s).
+        // A frame left over from before a 2D screen doesn't count either: paired with the first frame of World Tour's
+        // DOA arena (which also draws every WCW texture), a WCW-only menu frame cut to WCW for 13 frames.
         const bool textured = !unique.empty();
         if (textured) {
-            recentFrames.push_back(std::move(unique));
+            recentFrames.push_back({ seconds, std::move(unique) });
             if (recentFrames.size() > CutFrames) {
                 recentFrames.pop_front();
             }
         }
 
+        while (!recentFrames.empty() && (recentFrames.front().seconds < seconds - RecentSeconds)) {
+            recentFrames.pop_front();
+        }
+
         auto seenRecently = [this](uint64_t h) {
-            for (const std::vector<uint64_t> &f : recentFrames) {
-                if (std::binary_search(f.begin(), f.end(), h)) {
+            for (const Frame &f : recentFrames) {
+                if (std::binary_search(f.textures.begin(), f.textures.end(), h)) {
                     return true;
                 }
             }
@@ -499,8 +505,8 @@ namespace RT64::WcwLogic {
 
         // The new venue must show on every recent frame (one stray frame isn't a cut); the old one on none of them.
         auto seenOnEach = [this](uint64_t h) {
-            for (const std::vector<uint64_t> &f : recentFrames) {
-                if (!std::binary_search(f.begin(), f.end(), h)) {
+            for (const Frame &f : recentFrames) {
+                if (!std::binary_search(f.textures.begin(), f.textures.end(), h)) {
                     return false;
                 }
             }
@@ -558,9 +564,9 @@ namespace RT64::WcwLogic {
         // once the hold ran out. (Both recent frames are after the cut: they show almost none of the old venue.)
         window.clear();
         windowCounts.clear();
-        for (const std::vector<uint64_t> &f : recentFrames) {
-            window.push_back({ seconds, f });
-            for (uint64_t h : f) {
+        for (const Frame &f : recentFrames) {
+            window.push_back({ seconds, f.textures });
+            for (uint64_t h : f.textures) {
                 windowCounts[h]++;
             }
         }
@@ -574,10 +580,10 @@ namespace RT64::WcwLogic {
         // Textures on every recent frame; new when the window has them only from those frames.
         uint32_t onEach = 0;
         uint32_t fresh = 0;
-        for (uint64_t h : recentFrames.back()) {
+        for (uint64_t h : recentFrames.back().textures) {
             bool everywhere = true;
-            for (const std::vector<uint64_t> &f : recentFrames) {
-                everywhere = everywhere && std::binary_search(f.begin(), f.end(), h);
+            for (const Frame &f : recentFrames) {
+                everywhere = everywhere && std::binary_search(f.textures.begin(), f.textures.end(), h);
             }
 
             if (!everywhere) {
@@ -596,8 +602,8 @@ namespace RT64::WcwLogic {
         std::pair<int, float> leader = { -1, 0.0f };
         for (size_t v = 0; v < venues.size(); v++) {
             const float score = venueMatchScore(venues[v], [this](uint64_t h) {
-                for (const std::vector<uint64_t> &f : recentFrames) {
-                    if (!std::binary_search(f.begin(), f.end(), h)) {
+                for (const Frame &f : recentFrames) {
+                    if (!std::binary_search(f.textures.begin(), f.textures.end(), h)) {
                         return false;
                     }
                 }
