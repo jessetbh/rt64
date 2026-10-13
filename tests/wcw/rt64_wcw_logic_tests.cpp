@@ -533,6 +533,110 @@ TEST_CASE("matrix slots: a stride of 0 disables the pairing") {
     CHECK_EQ(identity.canonical(0x80101040), 0x80101040u);
 }
 
+// HDR output
+
+// The owner's monitor: 455 nits peak, 265 full frame, Windows SDR white 240.
+static const HdrDisplay OwnerHdr = { 455.0f, 265.0f, 240.0f };
+static const HdrDisplay BrightHdr = { 1000.0f, 600.0f, 240.0f };
+static const HdrDisplay Hdr400 = { 400.0f, 400.0f, 300.0f };
+static const HdrCrt CrtOn = { true, 0.3f, false };
+static const HdrCrt CrtBeam = { true, 0.3f, true };
+static const HdrCrt CrtOff = { false, 0.3f, false };
+
+TEST_CASE("hdr mask: unchanged from the original adaptive mask (owner's 150% and 100% logged values)") {
+    // The CRT filter logged 0.55 / gain 1.26 at 360 nits paper white and 0.87 / gain 1.90 at 240 nits.
+    HdrMask at150 = hdrMask(360.0f, 455.0f, 0.3f, false);
+    CHECK_NEAR(at150.strength, 0.55, 0.01);
+    CHECK_NEAR(at150.gain, 1.26, 0.01);
+    HdrMask at100 = hdrMask(240.0f, 455.0f, 0.3f, false);
+    CHECK_NEAR(at100.strength, 0.87, 0.01);
+    CHECK_NEAR(at100.gain, 1.90, 0.01);
+    CHECK_NEAR(at100.beamScale, 1.0, 1e-6);
+}
+
+TEST_CASE("hdr mask: never weaker than the preset, never past full, and the gain keeps the picture as bright as SDR") {
+    for (float paper : { 80.0f, 200.0f, 455.0f, 900.0f }) {
+        for (bool beam : { false, true }) {
+            const HdrMask mask = hdrMask(paper, 455.0f, 0.3f, beam);
+            CHECK(mask.strength >= 0.3f - 1e-6f);
+            CHECK(mask.strength <= 1.0f + 1e-6f);
+            // The stronger mask's light loss times the gain equals the preset's own.
+            CHECK_NEAR((1.0f - mask.strength * 2.0f / 3.0f) * mask.gain, 1.0f - 0.3f * 2.0f / 3.0f, 1e-5);
+            CHECK(mask.beamScale >= 1.0f);
+            CHECK(mask.beamScale <= 4.0f);
+        }
+    }
+
+    // No headroom (paper white at or above peak): the preset as is.
+    CHECK_NEAR(hdrMask(455.0f, 455.0f, 0.3f, false).strength, 0.3, 1e-6);
+    // An unknown peak counts as 1000 nits.
+    CHECK_NEAR(hdrMask(240.0f, 0.0f, 0.3f, false).strength, hdrMask(240.0f, 1000.0f, 0.3f, false).strength, 1e-6);
+}
+
+TEST_CASE("hdr auto: on the owner's monitor with the CRT filter it lands where the owner tuned by eye (80% = 192 nits)") {
+    const float paper = hdrPaperWhite(HdrPicture::Auto, 0.0f, OwnerHdr, CrtOn);
+    CHECK_NEAR(paper, 190.0, 5.0);
+    CHECK(hdrMask(paper, OwnerHdr.peakNits, 0.3f, false).strength > 0.98f);
+    CHECK_EQ(int(hdrAdvice(paper, OwnerHdr, CrtOn)), int(HdrAdvice::Good));
+}
+
+TEST_CASE("hdr auto: without the CRT filter it matches the desktop (Windows SDR white)") {
+    CHECK_NEAR(hdrPaperWhite(HdrPicture::Auto, 0.0f, OwnerHdr, CrtOff), 240.0, 1e-3);
+    CHECK_NEAR(hdrPaperWhite(HdrPicture::Auto, 0.0f, BrightHdr, CrtOff), 240.0, 1e-3);
+    // Windows doesn't report SDR white: 200 nits.
+    CHECK_NEAR(hdrPaperWhite(HdrPicture::Auto, 0.0f, HdrDisplay{ 455.0f, 265.0f, 0.0f }, CrtOff), 200.0, 1e-3);
+}
+
+TEST_CASE("hdr auto: a bright display gets the full mask at desktop brightness, never brighter than the desktop") {
+    const float paper = hdrPaperWhite(HdrPicture::Auto, 0.0f, BrightHdr, CrtOn);
+    CHECK_NEAR(paper, 240.0, 1e-3);
+    CHECK(hdrMask(paper, BrightHdr.peakNits, 0.3f, false).strength > 0.99f);
+}
+
+TEST_CASE("hdr auto: an HDR400 panel with the CRT filter stays at a comfortable brightness instead of chasing the mask") {
+    const float paper = hdrPaperWhite(HdrPicture::Auto, 0.0f, Hdr400, CrtOn);
+    CHECK(paper >= HdrComfortNits - 1e-3f);
+    CHECK(paper <= Hdr400.sdrWhiteNits + 1e-3f);
+}
+
+TEST_CASE("hdr auto: the beam simulator shares the headroom, so Auto holds the comfort floor on the owner's monitor") {
+    CHECK_NEAR(hdrPaperWhite(HdrPicture::Auto, 0.0f, OwnerHdr, CrtBeam), HdrComfortNits, 1e-3);
+    // CRT detail goes as low as its floor for the mask.
+    CHECK_NEAR(hdrPaperWhite(HdrPicture::CrtDetail, 0.0f, OwnerHdr, CrtBeam), HdrCrtDetailFloorNits, 1e-3);
+}
+
+TEST_CASE("hdr picture: Brighter >= Balanced >= CRT detail, on every display") {
+    for (const HdrDisplay &display : { OwnerHdr, BrightHdr, Hdr400, HdrDisplay{} }) {
+        for (const HdrCrt &crt : { CrtOn, CrtBeam, CrtOff }) {
+            const float brighter = hdrPaperWhite(HdrPicture::Brighter, 0.0f, display, crt);
+            const float balanced = hdrPaperWhite(HdrPicture::Balanced, 0.0f, display, crt);
+            const float detail = hdrPaperWhite(HdrPicture::CrtDetail, 0.0f, display, crt);
+            CHECK(brighter >= balanced - 1e-3f);
+            CHECK(balanced >= detail - 1e-3f);
+            CHECK(detail >= HdrMinPaperWhiteNits);
+        }
+    }
+}
+
+TEST_CASE("hdr picture: Custom uses the user's nits, clamped to the valid range") {
+    CHECK_NEAR(hdrPaperWhite(HdrPicture::Custom, 190.0f, OwnerHdr, CrtOn), 190.0, 1e-3);
+    CHECK_NEAR(hdrPaperWhite(HdrPicture::Custom, 10.0f, OwnerHdr, CrtOn), HdrMinPaperWhiteNits, 1e-3);
+    CHECK_NEAR(hdrPaperWhite(HdrPicture::Custom, 5000.0f, OwnerHdr, CrtOn), HdrMaxPaperWhiteNits, 1e-3);
+}
+
+TEST_CASE("hdr advice: the owner's old 150% (360 nits) was brighter than the monitor holds full-screen") {
+    CHECK_EQ(int(hdrAdvice(360.0f, OwnerHdr, CrtOn)), int(HdrAdvice::TooBright));
+    CHECK_EQ(int(hdrAdvice(240.0f, OwnerHdr, CrtOn)), int(HdrAdvice::Good));
+}
+
+TEST_CASE("hdr advice: little headroom with the CRT filter asks for less brightness, and very dim is flagged") {
+    // 1.2x headroom: the mask barely moves.
+    CHECK_EQ(int(hdrAdvice(250.0f, HdrDisplay{ 300.0f, 0.0f, 250.0f }, CrtOn)), int(HdrAdvice::LowHeadroom));
+    // Without the CRT filter headroom doesn't matter.
+    CHECK_EQ(int(hdrAdvice(250.0f, HdrDisplay{ 300.0f, 0.0f, 250.0f }, CrtOff)), int(HdrAdvice::Good));
+    CHECK_EQ(int(hdrAdvice(100.0f, OwnerHdr, CrtOff)), int(HdrAdvice::Dim));
+}
+
 int main() {
     return WcwTest::runAll("rt64 wcw tests");
 }

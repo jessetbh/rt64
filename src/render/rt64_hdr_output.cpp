@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -16,14 +18,12 @@
 #endif
 
 namespace RT64 {
-    // Used when Windows doesn't report an SDR white level.
-    static const float DefaultSdrWhiteNits = 200.0f;
-
     static std::mutex hdrSettingsMutex;
     static HdrOutput::Settings hdrSettings;
-    static float hdrSdrWhiteNits = DefaultSdrWhiteNits;
+    static WcwLogic::HdrDisplay hdrDisplay;
+    static WcwLogic::HdrCrt hdrCrt;
     static std::atomic<bool> hdrActive = false;
-    static std::atomic<float> hdrPaperWhite = DefaultSdrWhiteNits;
+    static std::atomic<float> hdrPaperWhite = WcwLogic::HdrUnknownSdrWhiteNits;
     static std::atomic<float> hdrPeakNits = 0.0f;
 
     static bool envForced() {
@@ -31,14 +31,20 @@ namespace RT64 {
         return (env != nullptr) && (strcmp(env, "force") == 0);
     }
 
-    // Paper white = Windows' SDR content brightness x the user's HDR Brightness. Call with the lock held.
+    // Paper white from the picture choice, the display and the CRT filter (WcwLogic::hdrPaperWhite). Call with the lock held.
     static void updatePaperWhite() {
-        float paperWhite = hdrSdrWhiteNits * std::clamp(hdrSettings.brightness, 0.25f, 4.0f);
+        float paperWhite = WcwLogic::hdrPaperWhite(hdrSettings.picture, hdrSettings.customNits, hdrDisplay, hdrCrt);
         if (const char *env = getenv("WCW_HDR_PAPER")) {
-            paperWhite = float(atof(env));
+            paperWhite = std::clamp(float(atof(env)), WcwLogic::HdrMinPaperWhiteNits, WcwLogic::HdrMaxPaperWhiteNits);
         }
 
-        hdrPaperWhite = std::clamp(paperWhite, 80.0f, 1000.0f);
+        if (std::abs(paperWhite - hdrPaperWhite.load()) > 0.5f) {
+            hdrPaperWhite = paperWhite;
+            if (hdrActive) {
+                fprintf(stderr, "[wcw hdr] Paper white %.0f nits (picture %u, CRT %s, beam %s).\n", paperWhite, uint32_t(hdrSettings.picture),
+                    hdrCrt.on ? "on" : "off", hdrCrt.beam ? "on" : "off");
+            }
+        }
     }
 
     void HdrOutput::setUserSettings(const Settings &settings) {
@@ -153,8 +159,30 @@ namespace RT64 {
         std::scoped_lock lock(hdrSettingsMutex);
         hdrActive = active;
         hdrPeakNits = display.maxLuminance;
-        hdrSdrWhiteNits = (display.sdrWhiteNits > 0.0f) ? display.sdrWhiteNits : DefaultSdrWhiteNits;
+        hdrDisplay.peakNits = display.maxLuminance;
+        hdrDisplay.fullFrameNits = display.maxFullFrameLuminance;
+        hdrDisplay.sdrWhiteNits = display.sdrWhiteNits;
         updatePaperWhite();
+    }
+
+    void HdrOutput::setCrtState(const WcwLogic::HdrCrt &crt) {
+        std::scoped_lock lock(hdrSettingsMutex);
+        if ((crt.on == hdrCrt.on) && (crt.beam == hdrCrt.beam) && (std::abs(crt.baseMaskStrength - hdrCrt.baseMaskStrength) < 1e-4f)) {
+            return;
+        }
+
+        hdrCrt = crt;
+        updatePaperWhite();
+    }
+
+    HdrOutput::Status HdrOutput::status() {
+        std::scoped_lock lock(hdrSettingsMutex);
+        Status status;
+        status.active = hdrActive;
+        status.display = hdrDisplay;
+        status.crt = hdrCrt;
+        status.paperWhiteNits = hdrPaperWhite;
+        return status;
     }
 
     bool HdrOutput::active() {

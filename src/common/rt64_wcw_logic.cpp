@@ -296,6 +296,89 @@ namespace RT64::WcwLogic {
         display += int64_t(viOriginalRate) * frames;
     }
 
+    // HDR output
+
+    // A full-strength mask passes a third of the light: transmission = 1 - strength * HdrMaskLoss.
+    static const float HdrMaskLoss = 2.0f / 3.0f;
+    // Below this paper white the picture reads as dim.
+    static const float HdrDimNits = 120.0f;
+
+    static float hdrPeakOrDefault(float peakNits) {
+        return (peakNits > 0.0f) ? peakNits : HdrUnknownPeakNits;
+    }
+
+    static float hdrSdrWhiteOrDefault(const HdrDisplay &display) {
+        return (display.sdrWhiteNits > 0.0f) ? display.sdrWhiteNits : HdrUnknownSdrWhiteNits;
+    }
+
+    // Headroom (peak / paper white) at which the mask reaches full strength: the preset's transmission over a full
+    // mask's. With the beam simulator the mask gets the square root of the headroom, so it needs the square.
+    static float hdrFullMaskHeadroom(const HdrCrt &crt) {
+        const float base = std::clamp(crt.baseMaskStrength, 0.0f, 1.0f);
+        const float needed = (1.0f - base * HdrMaskLoss) / (1.0f - HdrMaskLoss);
+        return crt.beam ? (needed * needed) : needed;
+    }
+
+    float hdrPaperWhite(HdrPicture picture, float customNits, const HdrDisplay &display, const HdrCrt &crt) {
+        const float brighter = hdrSdrWhiteOrDefault(display);
+        const float fullMask = hdrPeakOrDefault(display.peakNits) / hdrFullMaskHeadroom(crt);
+        const float crtDetail = std::min(std::max(fullMask, HdrCrtDetailFloorNits), brighter);
+        float paperWhite = brighter;
+        switch (picture) {
+        case HdrPicture::Brighter:
+            paperWhite = brighter;
+            break;
+        case HdrPicture::Balanced:
+            paperWhite = std::sqrt(brighter * crtDetail);
+            break;
+        case HdrPicture::CrtDetail:
+            paperWhite = crtDetail;
+            break;
+        case HdrPicture::Custom:
+            paperWhite = customNits;
+            break;
+        case HdrPicture::Auto:
+        default:
+            paperWhite = crt.on ? std::max(crtDetail, std::min(HdrComfortNits, brighter)) : brighter;
+            break;
+        }
+
+        return std::clamp(paperWhite, HdrMinPaperWhiteNits, HdrMaxPaperWhiteNits);
+    }
+
+    HdrMask hdrMask(float paperWhiteNits, float peakNits, float baseMaskStrength, bool beam) {
+        HdrMask mask;
+        const float base = std::clamp(baseMaskStrength, 0.0f, 1.0f);
+        const float headroom = std::max(hdrPeakOrDefault(peakNits) / std::max(paperWhiteNits, 1.0f), 1.0f);
+        const float maskHeadroom = beam ? std::sqrt(headroom) : headroom;
+        const float baseTransmission = 1.0f - base * HdrMaskLoss;
+        mask.strength = std::clamp((1.0f - baseTransmission / maskHeadroom) / HdrMaskLoss, base, 1.0f);
+        mask.gain = baseTransmission / (1.0f - mask.strength * HdrMaskLoss);
+        mask.beamScale = beam ? std::clamp(headroom / mask.gain, 1.0f, 4.0f) : 1.0f;
+        return mask;
+    }
+
+    HdrAdvice hdrAdvice(float paperWhiteNits, const HdrDisplay &display, const HdrCrt &crt) {
+        // 5% slack: displays round their full-frame figure.
+        if ((display.fullFrameNits > 0.0f) && (paperWhiteNits > display.fullFrameNits * 1.05f)) {
+            return HdrAdvice::TooBright;
+        }
+
+        if (crt.on) {
+            // Less than halfway from the preset's own mask to full strength.
+            const float base = std::clamp(crt.baseMaskStrength, 0.0f, 1.0f);
+            if (hdrMask(paperWhiteNits, display.peakNits, base, crt.beam).strength < (base + (1.0f - base) * 0.5f)) {
+                return HdrAdvice::LowHeadroom;
+            }
+        }
+
+        if (paperWhiteNits < HdrDimNits) {
+            return HdrAdvice::Dim;
+        }
+
+        return HdrAdvice::Good;
+    }
+
     bool primeGeneratedTargets(bool primeEnabled, bool generateInterpolatedFrames, bool usingMSAA, uint32_t runLength) {
         return primeEnabled && generateInterpolatedFrames && !usingMSAA && (runLength == 1);
     }
