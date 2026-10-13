@@ -476,8 +476,11 @@ namespace RT64::WcwLogic {
             window.pop_front();
         }
 
-        // Frames without world textures (a black frame, a 2D screen) don't count as a cut either way.
-        if (!unique.empty()) {
+        // Frames without world textures (a black frame, a 2D screen) don't count as a cut either way, and the cut rules
+        // only run on a frame that drew some: on a 2D screen the last textured frames go stale, and once the window let
+        // go of their venue they kept cutting back to it (World Tour's title screen flipped every 2.4 s).
+        const bool textured = !unique.empty();
+        if (textured) {
             recentFrames.push_back(std::move(unique));
             if (recentFrames.size() > CutFrames) {
                 recentFrames.pop_front();
@@ -510,7 +513,7 @@ namespace RT64::WcwLogic {
             activeVenue = -1;
         }
 
-        if (cutsEnabled && (recentVenue >= 0) && (recentVenue != activeVenue) &&
+        if (cutsEnabled && textured && (recentVenue >= 0) && (recentVenue != activeVenue) &&
             ((activeVenue < 0) || (venueMatchScore(venues[activeVenue], seenRecently) <= CutActiveMax)))
         {
             restartWindow(seconds);
@@ -519,7 +522,7 @@ namespace RT64::WcwLogic {
             return Change::Cut;
         }
 
-        if (cutsEnabled && (activeVenue >= 0) && (recentFrames.size() == CutFrames) && (recentVenue < 0) &&
+        if (cutsEnabled && textured && (activeVenue >= 0) && (recentFrames.size() == CutFrames) && (recentVenue < 0) &&
             (venueMatchScore(venues[activeVenue], seenRecently) == 0.0f))
         {
             const std::pair<uint32_t, uint32_t> fresh = recentNew();

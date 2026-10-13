@@ -722,3 +722,17 @@ TEST_CASE("venue switching: a camera swing that hides the venue's textures but k
     t = feed(selector, venues, swing, t, 1.0, 30.0);
     CHECK_EQ(selector.active(), 0);
 }
+
+TEST_CASE("venue switching: a long 2D screen lets the venue go once, without stale frames cutting back to it") {
+    const std::vector<LightPreset> venues = twoVenues();
+    VenueSelector selector;
+    double t = feed(selector, venues, ArenaA, 0.0, 3.0, 30.0);
+    CHECK_EQ(selector.active(), 0);
+    int switches = 0;
+    for (int i = 0; i < 30 * 10; i++, t += 1.0 / 30.0) {
+        switches += (selector.update(venues, {}, t) != VenueSelector::Change::None) ? 1 : 0;
+    }
+
+    CHECK_EQ(selector.active(), -1);
+    CHECK_EQ(switches, 1);
+}
