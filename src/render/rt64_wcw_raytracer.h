@@ -204,9 +204,9 @@ namespace RT64 {
         LightPreset roomPreset;
         void updateRoomPreset();
         std::vector<LightPreset> venuePresets;
+        // The venue whose preset applies (-1: none), chosen by venueSelector once per present.
         int activeVenue = -1;
-        int candidateVenue = -1;
-        uint32_t candidateFrames = 0;
+        WcwLogic::VenueSelector venueSelector;
         std::string presetsPath;
         int64_t presetsStamp = INT64_MIN;
         uint32_t presentCount = 0;

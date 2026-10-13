@@ -546,3 +546,179 @@ TEST_CASE("outside darkness: a scene change to smaller passes still darkens (the
 
     CHECK(darkenedAgain);
 }
+
+// Venue switching (VenueSelector): two venues with their own textures plus a ring texture both list, fed one game frame
+// at a time.
+namespace {
+    const uint64_t Ring = 0x99;
+    const std::vector<uint64_t> ArenaA = { 0xA1, 0xA2, 0xA3, 0xA4, Ring };
+    const std::vector<uint64_t> ArenaB = { 0xB1, 0xB2, 0xB3, 0xB4, Ring };
+
+    std::vector<LightPreset> twoVenues() {
+        std::vector<LightPreset> venues(2);
+        venues[0].name = "A";
+        venues[0].match = ArenaA;
+        venues[1].name = "B";
+        venues[1].match = ArenaB;
+        computeUniqueMatches(venues);
+        return venues;
+    }
+
+    // Feeds frames of one scene for a number of seconds at a game rate; returns the time after the last frame.
+    double feed(VenueSelector &selector, const std::vector<LightPreset> &venues, const std::vector<uint64_t> &textures,
+        double start, double seconds, double rate)
+    {
+        double t = start;
+        for (int i = 0; i < int(seconds * rate + 0.5); i++) {
+            selector.update(venues, textures, t);
+            t += 1.0 / rate;
+        }
+
+        return t;
+    }
+
+    // Seconds from start until the active venue becomes want (feeding textures), or -1 within the limit.
+    double timeUntil(VenueSelector &selector, const std::vector<LightPreset> &venues, const std::vector<uint64_t> &textures,
+        int want, double start, double rate, double limit = 10.0)
+    {
+        for (double t = start; t < start + limit; t += 1.0 / rate) {
+            selector.update(venues, textures, t);
+            if (selector.active() == want) {
+                return t - start + 1.0 / rate;
+            }
+        }
+
+        return -1.0;
+    }
+}
+
+TEST_CASE("venue switching: a camera cut to another venue switches after two frames, not when the old shot ages out") {
+    const std::vector<LightPreset> venues = twoVenues();
+    // Both directions: from the earlier venue in the file to the later one, and back.
+    for (int from = 0; from < 2; from++) {
+        const int to = 1 - from;
+        VenueSelector selector;
+        const double t = feed(selector, venues, from ? ArenaB : ArenaA, 0.0, 3.0, 30.0);
+        CHECK_EQ(selector.active(), from);
+        CHECK_NEAR(timeUntil(selector, venues, to ? ArenaB : ArenaA, to, t, 30.0), 2.0 / 30.0, 1e-6);
+    }
+
+    // Before cuts were detected the old shot kept its full score for the whole window, so a cut to a venue earlier in
+    // the file (ties go to the later one) came over two seconds late. (To a later venue it took the hold, 0.33 s.)
+    VenueSelector windowOnly;
+    windowOnly.cutsEnabled = false;
+    const double t2 = feed(windowOnly, venues, ArenaB, 0.0, 3.0, 30.0);
+    CHECK(timeUntil(windowOnly, venues, ArenaA, 0, t2, 30.0) > VenueSelector::WindowSeconds);
+}
+
+TEST_CASE("venue switching: the cut reports itself, and the old shot can't switch back once the hold runs out") {
+    const std::vector<LightPreset> venues = twoVenues();
+    VenueSelector selector;
+    double t = feed(selector, venues, ArenaA, 0.0, 3.0, 30.0);
+    CHECK(selector.update(venues, ArenaB, t) == VenueSelector::Change::None);
+    CHECK(selector.update(venues, ArenaB, t + 1.0 / 30.0) == VenueSelector::Change::Cut);
+    t += 2.0 / 30.0;
+    bool stayed = true;
+    for (int i = 0; i < 120; i++, t += 1.0 / 30.0) {
+        stayed = stayed && (selector.update(venues, ArenaB, t) == VenueSelector::Change::None) && (selector.active() == 1);
+    }
+
+    CHECK(stayed);
+}
+
+TEST_CASE("venue switching: a close-up showing only the shared ring texture keeps the venue") {
+    const std::vector<LightPreset> venues = twoVenues();
+    VenueSelector selector;
+    double t = feed(selector, venues, ArenaA, 0.0, 3.0, 30.0);
+    t = feed(selector, venues, { Ring }, t, 1.5, 30.0);
+    CHECK_EQ(selector.active(), 0);
+    // Half of the venue's own textures: still the same venue.
+    t = feed(selector, venues, { 0xA1, 0xA2, Ring }, t, 3.0, 30.0);
+    CHECK_EQ(selector.active(), 0);
+}
+
+TEST_CASE("venue switching: a cut to an unmatched scene with few textures waits for the window, at the same time at any game rate") {
+    const std::vector<LightPreset> venues = twoVenues();
+    // Fewer new textures than NewSceneMin: too little to call it a new scene.
+    const std::vector<uint64_t> unmatched = { 0xC1, 0xC2 };
+    double delays[2];
+    const double rates[2] = { 30.0, 60.0 };
+    for (int r = 0; r < 2; r++) {
+        VenueSelector selector;
+        const double t = feed(selector, venues, ArenaA, 0.0, 3.0, rates[r]);
+        delays[r] = timeUntil(selector, venues, unmatched, -1, t, rates[r]);
+        CHECK(delays[r] >= VenueSelector::WindowSeconds);
+        CHECK(delays[r] <= VenueSelector::WindowSeconds + VenueSelector::HoldSeconds + 2.0 / rates[r]);
+    }
+
+    CHECK_NEAR(delays[0], delays[1], 2.0 / 30.0);
+}
+
+TEST_CASE("venue switching: frames without world textures neither make nor break a cut") {
+    const std::vector<LightPreset> venues = twoVenues();
+    VenueSelector selector;
+    double t = feed(selector, venues, ArenaA, 0.0, 3.0, 30.0);
+    t = feed(selector, venues, {}, t, 0.5, 30.0);
+    CHECK_EQ(selector.active(), 0);
+    selector.update(venues, ArenaB, t);
+    selector.update(venues, {}, t + 1.0 / 30.0);
+    CHECK_EQ(selector.active(), 0);
+    selector.update(venues, ArenaB, t + 2.0 / 30.0);
+    CHECK_EQ(selector.active(), 1);
+}
+
+TEST_CASE("venue switching: from no venue, a matched scene takes over after two frames") {
+    const std::vector<LightPreset> venues = twoVenues();
+    VenueSelector selector;
+    double t = feed(selector, venues, { 0xC1 }, 0.0, 1.0, 30.0);
+    CHECK_EQ(selector.active(), -1);
+    CHECK_NEAR(timeUntil(selector, venues, ArenaA, 0, t, 30.0), 2.0 / 30.0, 1e-6);
+}
+
+namespace {
+    // A wide shot of venue A: its own textures, the ring, and floor/barrier textures no venue lists.
+    std::vector<uint64_t> wideShotA() {
+        std::vector<uint64_t> t = ArenaA;
+        for (uint64_t h = 0xF1; h <= 0xF6; h++) {
+            t.push_back(h);
+        }
+
+        return t;
+    }
+}
+
+TEST_CASE("venue switching: a cut to a new unmatched scene goes back to no venue after two frames") {
+    const std::vector<LightPreset> venues = twoVenues();
+    VenueSelector selector;
+    const double t = feed(selector, venues, wideShotA(), 0.0, 3.0, 30.0);
+    CHECK_EQ(selector.active(), 0);
+    std::vector<uint64_t> elsewhere;
+    for (uint64_t h = 0xD0; h < 0xD0 + VenueSelector::NewSceneMin; h++) {
+        elsewhere.push_back(h);
+    }
+
+    CHECK_NEAR(timeUntil(selector, venues, elsewhere, -1, t, 30.0), 2.0 / 30.0, 1e-6);
+
+    VenueSelector windowOnly;
+    windowOnly.cutsEnabled = false;
+    const double t2 = feed(windowOnly, venues, wideShotA(), 0.0, 3.0, 30.0);
+    CHECK(timeUntil(windowOnly, venues, elsewhere, -1, t2, 30.0) > VenueSelector::WindowSeconds);
+}
+
+TEST_CASE("venue switching: a camera swing that hides the venue's textures but keeps the ring and floor keeps the venue") {
+    const std::vector<LightPreset> venues = twoVenues();
+    VenueSelector selector;
+    double t = feed(selector, venues, wideShotA(), 0.0, 3.0, 30.0);
+    // The other side of the arena: eight textures not drawn before, plus the ring and floor from the wide shot.
+    std::vector<uint64_t> swing = { Ring };
+    for (uint64_t h = 0xF1; h <= 0xF6; h++) {
+        swing.push_back(h);
+    }
+
+    for (uint64_t h = 0xE0; h < 0xE8; h++) {
+        swing.push_back(h);
+    }
+
+    t = feed(selector, venues, swing, t, 1.0, 30.0);
+    CHECK_EQ(selector.active(), 0);
+}

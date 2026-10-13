@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <string>
 #include <utility>
@@ -238,6 +239,66 @@ namespace RT64::WcwLogic {
         };
 
         std::unordered_map<const void *, Target> targets;
+    };
+
+    // Which venue's lighting applies, from the world textures each game frame draws (update() once per present, which
+    // is once per game frame: interpolated frames don't come through here). Two ways to switch:
+    // - Window: a venue's score counts its match textures drawn in the last WindowSeconds; the best venue (at least
+    //   MinScore, -1 for none) must hold for HoldSeconds before it takes over. This rides out close-ups that show few
+    //   of a venue's textures. On its own it made every camera cut late: the old venue's textures stay in the window
+    //   with a full score, so the new venue took over only once they aged out, about 70 game frames (2.3 s at 30) after
+    //   the cut. The No Mercy intro cuts faster than that, so most shots were lit with the previous shot's rig.
+    // - Cut: when each of the last CutFrames frames that drew world textures shows another venue (score at least
+    //   MinScore) and together they show at most CutActiveMax of the active venue's textures, the camera cut there:
+    //   switch at once.
+    // - Cut to an unmatched scene: when no venue matches the last CutFrames frames, they show none of the active
+    //   venue's textures, and nearly all the textures they share (at least NewSceneShare, and NewSceneMin of them) were
+    //   drawn nowhere else in the window, the camera cut to a new scene: back to no venue at once. A close-up or a
+    //   camera swing inside a venue still shows textures from the frames before it (the ring, the floor), so it waits
+    //   for the window as before. Without this the No Mercy intro lit its Raw ring shots (no rig recognizes them) with
+    //   the Backlash entrance rig for 2.3 s.
+    // The window and hold are in seconds (they were 60 and 10 presents), so they don't depend on the game's rate.
+    class VenueSelector {
+    public:
+        static constexpr double WindowSeconds = 2.0;
+        static constexpr double HoldSeconds = 1.0 / 3.0;
+        static constexpr uint32_t CutFrames = 2;
+        static constexpr float CutActiveMax = 0.2f;
+        static constexpr float MinScore = 0.5f;
+        static constexpr float NewSceneShare = 0.8f;
+        static constexpr uint32_t NewSceneMin = 8;
+
+        enum class Change { None, Window, Cut };
+
+        // One game frame's world textures (any order, duplicates allowed) at a time in seconds. Returns how the active
+        // venue changed, if it did.
+        Change update(const std::vector<LightPreset> &venues, const std::vector<uint64_t> &textures, double seconds);
+        void reset();
+        int active() const { return activeVenue; }
+        // The venue the last CutFrames frames point to on their own (-1: none), for logs.
+        int recent() const { return recentVenue; }
+        // For logs: the venue with the highest score on the last frames alone, at any score (-1: no venues).
+        std::pair<int, float> recentLeader(const std::vector<LightPreset> &venues) const;
+        // For logs: of the textures on each of the last frames, how many were drawn nowhere else in the window, of how many.
+        std::pair<uint32_t, uint32_t> recentNew() const;
+        // false: switch only through the window (the behavior before cuts were detected; WCW_RT_VENUE_CUT=0).
+        bool cutsEnabled = true;
+
+    private:
+        void restartWindow(double seconds);
+
+        struct Frame {
+            double seconds;
+            std::vector<uint64_t> textures;
+        };
+
+        std::deque<Frame> window;
+        std::unordered_map<uint64_t, uint32_t> windowCounts;
+        std::deque<std::vector<uint64_t>> recentFrames;
+        int activeVenue = -1;
+        int recentVenue = -1;
+        int candidateVenue = -1;
+        double candidateSince = 0.0;
     };
 
     std::vector<uint64_t> newVenueMatch(const std::vector<std::pair<uint64_t, uint32_t>> &stableTextures,
