@@ -266,9 +266,20 @@ namespace RT64 {
                 // Wait until the other queue has stopped using the interpolated color targets.
                 std::unique_lock<std::mutex> interpolatedLock(ext.sharedResources->interpolatedMutex);
                 InterpolatedFrameCounters &curFrameCounters = ext.sharedResources->interpolatedFrames[ext.sharedResources->interpolatedFramesIndex];
-                ext.sharedResources->interpolatedCondition.wait(interpolatedLock, [&]() {
+                // [wcw fix] Bounded, like the other waits on these counters: the present thread can be waiting for
+                // this very workload (waitForWorkloadId) before it presents the remaining frames, and an unbounded
+                // wait deadlocked both (the game froze on changing the aspect ratio, resolution or MSAA with frame
+                // interpolation on). Frames still unpresented after the bound are dropped: the targets are about to be
+                // rebuilt anyway, and the present lock below keeps the destruction out of any present in progress.
+                const bool wcwDrained = ext.sharedResources->interpolatedCondition.wait_for(interpolatedLock, RT64::wcwCoherentWaitBound(), [&]() {
                     return curFrameCounters.presented >= curFrameCounters.available;
                 });
+
+                if (!wcwDrained) {
+                    curFrameCounters.available = curFrameCounters.presented;
+                    curFrameCounters.skipped = true;
+                    ext.sharedResources->interpolatedCondition.notify_all();
+                }
             }
 
             // [wcw fix] Also wait for the present thread to finish the present it is in: with frame interpolation
