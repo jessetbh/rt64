@@ -471,6 +471,8 @@ namespace RT64 {
             appliedVersion = version;
             settings = next;
             if (!settings.enabled || (backend == CrtBackend::None)) {
+                // [wcw hdr] HDR Picture's Auto goes back to desktop brightness without the filter.
+                HdrOutput::setCrtState(WcwLogic::HdrCrt());
                 return;
             }
 
@@ -586,34 +588,38 @@ namespace RT64 {
             return hdrStage.texture.get();
         }
 
-        // [wcw hdr] Adaptive phosphor mask. A full-strength mask passes roughly a third of the light, so
-        // in SDR the presets use a weak mask plus guest's brightness boost. With HDR, the display's
-        // headroom above paper white (peak / paper white) pays for a stronger mask: the mask is raised
-        // as far as the headroom allows and the compose pass multiplies the light back in, so the
-        // picture is never dimmer than in SDR. Full strength from about 3x headroom (a 1000-nit display
-        // at ~330 nits paper white). WCW_HDR_MASK=<0..1> forces the strength.
+        // [wcw hdr] Adaptive phosphor mask (WcwLogic::hdrMask): the display's headroom above paper white pays for a
+        // stronger mask and the compose pass multiplies the light back in, so the picture is never dimmer than in SDR.
+        // The filter's state goes to HdrOutput first: Auto and CRT detail set paper white from it.
+        // WCW_HDR_MASK=<0..1> forces the strength.
         void updateHdrMask() {
+            const bool beamOn = settings.beamSimulator && (beamRatio > 0.0);
+            if (baseMaskStrength >= 0.0f) {
+                HdrOutput::setCrtState({ true, baseMaskStrength, beamOn });
+            }
+
             if (!HdrOutput::active() || (baseMaskStrength < 0.0f)) {
                 hdrGain = 1.0f;
                 return;
             }
 
-            const float MaskLoss = 2.0f / 3.0f;
             const float paperWhite = HdrOutput::paperWhiteNits();
-            const float peak = (HdrOutput::peakNits() > 0.0f) ? HdrOutput::peakNits() : 1000.0f;
-            const float headroom = std::max(peak / paperWhite, 1.0f);
-            // With the beam simulator on, the mask and the beam share the headroom evenly.
-            const bool beamOn = settings.beamSimulator && (beamRatio > 0.0);
-            const float maskHeadroom = beamOn ? std::sqrt(headroom) : headroom;
-            const float baseTransmission = 1.0f - baseMaskStrength * MaskLoss;
-            float strength = std::clamp((1.0f - baseTransmission / maskHeadroom) / MaskLoss, baseMaskStrength, 1.0f);
+            const float peak = HdrOutput::peakNits();
+            const WcwLogic::HdrMask mask = WcwLogic::hdrMask(paperWhite, peak, baseMaskStrength, beamOn);
+            float strength = mask.strength;
             static const float envMask = getenv("WCW_HDR_MASK") ? float(atof(getenv("WCW_HDR_MASK"))) : -1.0f;
             if (envMask >= 0.0f) {
                 strength = std::clamp(envMask, 0.0f, 1.0f);
             }
 
-            hdrGain = baseTransmission / (1.0f - strength * MaskLoss);
-            beamHdrScale = beamOn ? std::clamp(headroom / hdrGain, 1.0f, 4.0f) : 1.0f;
+            hdrGain = mask.gain;
+            beamHdrScale = mask.beamScale;
+            if (envMask >= 0.0f) {
+                const float headroom = std::max(((peak > 0.0f) ? peak : WcwLogic::HdrUnknownPeakNits) / paperWhite, 1.0f);
+                hdrGain = (1.0f - baseMaskStrength * 2.0f / 3.0f) / (1.0f - strength * 2.0f / 3.0f);
+                beamHdrScale = beamOn ? std::clamp(headroom / hdrGain, 1.0f, 4.0f) : 1.0f;
+            }
+
             if (beamOn && beamChain.ready() && (std::abs(beamHdrScale - appliedBeamHdrScale) > 0.005f)) {
                 // The beam's input is scaled down so it can run at full brightness (GAIN_VS_BLUR 1.0).
                 setParameter(beamChain, "INPUT_SCALE", 1.0f / beamHdrScale);
@@ -621,6 +627,7 @@ namespace RT64 {
                 appliedBeamHdrScale = beamHdrScale;
                 fprintf(stderr, "[wcw hdr] Beam simulator HDR scale %.2f.\n", beamHdrScale);
             }
+
             if (std::abs(strength - appliedMaskStrength) > 0.005f) {
                 setParameter(guestChain, "maskstr", strength);
                 appliedMaskStrength = strength;

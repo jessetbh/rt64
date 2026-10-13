@@ -206,6 +206,80 @@ namespace RT64::WcwLogic {
         void skip(uint32_t viOriginalRate, uint32_t frames);
     };
 
+    // HDR output
+
+    // The menu's HDR Picture choices. Each sets paper white (the brightness of SDR white: the game picture and menus).
+    // The headroom above it (display peak / paper white) is what the CRT filter spends on a stronger phosphor mask.
+    enum class HdrPicture : uint32_t {
+        // Brighter with the CRT filter off; CrtDetail (but no dimmer than HdrComfortNits) with it on.
+        Auto = 0,
+        // Windows' SDR content brightness: as bright as the desktop.
+        Brighter = 1,
+        // Halfway (geometric mean) between Brighter and CrtDetail.
+        Balanced = 2,
+        // Dim enough that the CRT mask reaches full strength.
+        CrtDetail = 3,
+        // The user's own paper white, in nits.
+        Custom = 4
+    };
+
+    // What the display reports. 0 = unknown.
+    struct HdrDisplay {
+        float peakNits = 0.0f;
+        float fullFrameNits = 0.0f;
+        // Windows' "SDR content brightness".
+        float sdrWhiteNits = 0.0f;
+    };
+
+    // The CRT filter's state: on, its preset's own mask strength (guest-advanced "maskstr"), and whether the beam
+    // simulator shares the headroom.
+    struct HdrCrt {
+        bool on = false;
+        float baseMaskStrength = 0.3f;
+        bool beam = false;
+    };
+
+    constexpr float HdrMinPaperWhiteNits = 80.0f;
+    constexpr float HdrMaxPaperWhiteNits = 1000.0f;
+    // Assumed when the display doesn't report its peak / Windows doesn't report its SDR white.
+    constexpr float HdrUnknownPeakNits = 1000.0f;
+    constexpr float HdrUnknownSdrWhiteNits = 200.0f;
+    // Auto with the CRT filter doesn't go dimmer than this for a stronger mask; CRT detail doesn't go below the floor.
+    constexpr float HdrComfortNits = 160.0f;
+    constexpr float HdrCrtDetailFloorNits = 100.0f;
+
+    // Paper white in nits for a choice, between HdrMinPaperWhiteNits and HdrMaxPaperWhiteNits. Custom only clamps
+    // customNits to that range.
+    float hdrPaperWhite(HdrPicture picture, float customNits, const HdrDisplay &display, const HdrCrt &crt);
+
+    // The CRT filter's adaptive phosphor mask. A full-strength mask passes about a third of the light, so in SDR the
+    // presets use a weak mask; with HDR the headroom pays for a stronger one and gain multiplies the light back in,
+    // so the picture is never dimmer than in SDR. With the beam simulator, mask and beam share the headroom evenly.
+    struct HdrMask {
+        float strength = 0.0f;
+        // Brightness multiplier that makes up for the stronger mask.
+        float gain = 1.0f;
+        // The beam simulator's share of the headroom (1 = none).
+        float beamScale = 1.0f;
+    };
+
+    HdrMask hdrMask(float paperWhiteNits, float peakNits, float baseMaskStrength, bool beam);
+
+    // What the settings readout tells the user.
+    enum class HdrAdvice : uint32_t {
+        // Fine as is.
+        Good = 0,
+        // Brighter than the display can hold across the whole screen (its full-frame brightness): the monitor dims
+        // big bright scenes (No Mercy's white ring mat) and the picture pumps.
+        TooBright = 1,
+        // With the CRT filter: the mask can't get much stronger than in SDR. Lower the brightness.
+        LowHeadroom = 2,
+        // Dimmer than a comfortable picture.
+        Dim = 3
+    };
+
+    HdrAdvice hdrAdvice(float paperWhiteNits, const HdrDisplay &display, const HdrCrt &crt);
+
     // Generated-frame priming: copying the game's buffer into a run's generated targets happens once per run, before
     // its first layer draws the blended frame. Priming after the blend applied translucent full-screen layers
     // (fades) twice; priming every layer replaced the earlier layers' draws with the blend (Revenge flicker).
