@@ -280,6 +280,53 @@ namespace RT64::WcwLogic {
 
     HdrAdvice hdrAdvice(float paperWhiteNits, const HdrDisplay &display, const HdrCrt &crt);
 
+    // HDR highlights: light the ray-traced composite adds past SDR white (glows, lit areas on No Mercy's white mat)
+    // clips in the UNORM color target. An emissive buffer keeps what was lost and the HDR output adds it above paper
+    // white. Light here is linear, in paper-white units (1 = paper white).
+
+    // Brightest a highlight gets, as a multiple of paper white, whatever the display's headroom.
+    constexpr float HdrHighlightMaxCeiling = 4.0f;
+    // Below this headroom highlights are off: the display can't show them.
+    constexpr float HdrHighlightMinCeiling = 1.1f;
+    // Full-frame brightness assumed when the display doesn't report it, as a fraction of its peak.
+    constexpr float HdrUnknownFullFrameFraction = 0.5f;
+    // After the frame limiter dims the highlights they come back over about this long (seconds). Dimming is immediate.
+    constexpr float HdrHighlightReleaseSeconds = 0.5f;
+
+    struct HdrHighlights {
+        bool enabled = false;
+        // Brightest highlight (>= 1).
+        float ceiling = 1.0f;
+        // The frame's average brightness the display holds without dimming (its full-frame figure).
+        float frameLimit = 0.0f;
+    };
+
+    // Highlights need the option on and headroom, and the CRT filter off (with it on, the mask spends the headroom).
+    HdrHighlights hdrHighlights(bool optionOn, float paperWhiteNits, const HdrDisplay &display, bool crtOn);
+
+    // One channel's light lost to clipping: 'encoded' is the sRGB-encoded color before the composite, 'factor' the
+    // composite's multiply (up to 2). The target keeps min(encoded * factor, 1); this is the rest of the extended sRGB
+    // curve above it, linear. 0 when nothing clipped.
+    float hdrHighlightExcess(float encoded, float factor);
+
+    // Gate on the SDR picture's channel when presenting: 1 at white (where the composite clipped), 0 below 0.96.
+    // Something drawn over a glow after the composite (the HUD) isn't white there, so the glow doesn't show through.
+    float hdrHighlightGate(float sdrChannel);
+
+    // Light added above paper white for an excess luminance: slope 1 at 0, easing toward ceiling - 1 (no hard clip).
+    float hdrHighlightShoulder(float excess, float ceiling);
+
+    // Full-frame limiter: scales the highlights down so the frame's average stays within the display's full-frame
+    // brightness (above it the monitor dims the whole picture and it pumps). Dims at once, recovers over
+    // HdrHighlightReleaseSeconds.
+    struct HdrHighlightLimiter {
+        float scale = 1.0f;
+
+        // baseMean: the SDR picture's average luminance; addedMean: the highlights' average at scale 1 (both from a
+        // GPU reduction a few frames late). seconds: time since the last update. Returns the new scale.
+        float update(float baseMean, float addedMean, float frameLimit, float seconds);
+    };
+
     // Generated-frame priming: copying the game's buffer into a run's generated targets happens once per run, before
     // its first layer draws the blended frame. Priming after the blend applied translucent full-screen layers
     // (fades) twice; priming every layer replaced the earlier layers' draws with the blend (Revenge flicker).

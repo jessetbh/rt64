@@ -637,6 +637,109 @@ TEST_CASE("hdr advice: little headroom with the CRT filter asks for less brightn
     CHECK_EQ(int(hdrAdvice(100.0f, OwnerHdr, CrtOff)), int(HdrAdvice::Dim));
 }
 
+// HDR highlights
+
+TEST_CASE("hdr highlights: ceiling is the display's headroom, capped, and off without headroom or with the CRT filter") {
+    // Owner's monitor at desktop brightness: 455 / 240.
+    const HdrHighlights owner = hdrHighlights(true, 240.0f, OwnerHdr, false);
+    CHECK(owner.enabled);
+    CHECK_NEAR(owner.ceiling, 455.0 / 240.0, 1e-4);
+    CHECK_NEAR(owner.frameLimit, 265.0 / 240.0, 1e-4);
+    // A 1000-nit display isn't spent all on one glow.
+    CHECK_NEAR(hdrHighlights(true, 240.0f, BrightHdr, false).ceiling, HdrHighlightMaxCeiling, 1e-6);
+    // The CRT filter's mask spends the headroom; the option off; paper white at the peak.
+    CHECK(!hdrHighlights(true, 240.0f, OwnerHdr, true).enabled);
+    CHECK(!hdrHighlights(false, 240.0f, OwnerHdr, false).enabled);
+    CHECK(!hdrHighlights(true, 455.0f, OwnerHdr, false).enabled);
+    CHECK_NEAR(hdrHighlights(false, 240.0f, OwnerHdr, false).ceiling, 1.0, 1e-6);
+    // Unknown peak counts as 1000 nits, unknown full-frame as half the peak.
+    const HdrHighlights unknown = hdrHighlights(true, 200.0f, HdrDisplay{}, false);
+    CHECK_NEAR(unknown.ceiling, HdrHighlightMaxCeiling, 1e-6);
+    CHECK_NEAR(unknown.frameLimit, 500.0 / 200.0, 1e-4);
+}
+
+TEST_CASE("hdr highlights: no highlight is brighter than the display's peak, on any display and paper white") {
+    for (const HdrDisplay &display : { OwnerHdr, BrightHdr, Hdr400, HdrDisplay{} }) {
+        const float peak = (display.peakNits > 0.0f) ? display.peakNits : HdrUnknownPeakNits;
+        for (float paper : { 80.0f, 160.0f, 240.0f, 400.0f }) {
+            const HdrHighlights highlights = hdrHighlights(true, paper, display, false);
+            const float brightest = paper * (1.0f + hdrHighlightShoulder(1000.0f, highlights.ceiling));
+            CHECK(brightest <= peak * 1.0001f);
+        }
+    }
+}
+
+TEST_CASE("hdr highlights: excess is zero unless the composite pushed the channel past white") {
+    CHECK_EQ(hdrHighlightExcess(0.4f, 2.0f), 0.0f);
+    CHECK_EQ(hdrHighlightExcess(1.0f, 1.0f), 0.0f);
+    CHECK_EQ(hdrHighlightExcess(1.0f, 0.5f), 0.0f);
+    CHECK_EQ(hdrHighlightExcess(0.0f, 2.0f), 0.0f);
+    CHECK_EQ(hdrHighlightExcess(-1.0f, 2.0f), 0.0f);
+    // White doubled: extended sRGB at 2.0, ~4.95x paper white, so ~3.95 lost.
+    CHECK_NEAR(hdrHighlightExcess(1.0f, 2.0f), std::pow(2.055 / 1.055, 2.4) - 1.0, 1e-4);
+    // Grows with the factor and with the color.
+    float last = 0.0f;
+    for (float factor = 1.0f; factor <= 2.0f; factor += 0.125f) {
+        const float excess = hdrHighlightExcess(0.8f, factor);
+        CHECK(excess >= last);
+        last = excess;
+    }
+
+    CHECK(hdrHighlightExcess(0.9f, 1.5f) > hdrHighlightExcess(0.7f, 1.5f));
+}
+
+TEST_CASE("hdr highlights: the gate passes only white, so a HUD drawn over a glow hides it") {
+    CHECK_EQ(hdrHighlightGate(1.0f), 1.0f);
+    CHECK_EQ(hdrHighlightGate(0.9f), 0.0f);
+    CHECK_EQ(hdrHighlightGate(0.0f), 0.0f);
+    CHECK_NEAR(hdrHighlightGate(0.98f), 0.5, 1e-4);
+}
+
+TEST_CASE("hdr highlights: shoulder follows small excess, eases below the ceiling, and is zero without headroom") {
+    CHECK_NEAR(hdrHighlightShoulder(0.01f, 2.0f), 0.01, 1e-4);
+    CHECK_EQ(hdrHighlightShoulder(0.0f, 2.0f), 0.0f);
+    CHECK_EQ(hdrHighlightShoulder(-1.0f, 2.0f), 0.0f);
+    CHECK_EQ(hdrHighlightShoulder(3.0f, 1.0f), 0.0f);
+    float last = 0.0f;
+    for (float excess = 0.0f; excess <= 8.0f; excess += 0.25f) {
+        const float added = hdrHighlightShoulder(excess, 1.9f);
+        CHECK(added >= last);
+        CHECK(added <= excess + 1e-6f);
+        CHECK(added < 0.9f);
+        last = added;
+    }
+}
+
+TEST_CASE("hdr highlights: the limiter dims at once when glows would push the white mat past full-frame brightness") {
+    const HdrHighlights owner = hdrHighlights(true, 240.0f, OwnerHdr, false);
+    HdrHighlightLimiter limiter;
+    // White mat filling most of the screen (mean 0.95 of paper white) plus 0.5 of highlights: room for 0.154.
+    const float dimmed = limiter.update(0.95f, 0.5f, owner.frameLimit, 1.0f / 60.0f);
+    CHECK_NEAR(dimmed, (owner.frameLimit - 0.95f) / 0.5f, 1e-4);
+    // Already over the limit without highlights: none.
+    CHECK_EQ(limiter.update(1.2f, 0.5f, owner.frameLimit, 1.0f / 60.0f), 0.0f);
+    // Recovers gradually, not in one frame (no pumping), and fully within a couple of seconds.
+    const float oneFrame = limiter.update(0.3f, 0.1f, owner.frameLimit, 1.0f / 60.0f);
+    CHECK(oneFrame > 0.0f);
+    CHECK(oneFrame < 0.1f);
+    for (int i = 0; i < 180; i++) {
+        limiter.update(0.3f, 0.1f, owner.frameLimit, 1.0f / 60.0f);
+    }
+
+    CHECK(limiter.scale > 0.99f);
+    CHECK(limiter.scale <= 1.0f);
+}
+
+TEST_CASE("hdr highlights: the limiter leaves highlights alone when there are none or they fit") {
+    HdrHighlightLimiter limiter;
+    CHECK_EQ(limiter.update(1.5f, 0.0f, 1.1f, 1.0f / 60.0f), 1.0f);
+    CHECK_EQ(limiter.update(0.2f, 0.05f, 1.1f, 1.0f / 60.0f), 1.0f);
+    // A zero-time update doesn't move a dimmed scale.
+    limiter.update(1.0f, 1.0f, 1.1f, 1.0f / 60.0f);
+    const float held = limiter.scale;
+    CHECK_EQ(limiter.update(0.2f, 0.05f, 1.1f, 0.0f), held);
+}
+
 int main() {
     return WcwTest::runAll("rt64 wcw tests");
 }
