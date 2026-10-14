@@ -254,6 +254,10 @@ namespace RT64 {
         // (full resolution, 2, Subtle AO), 3 Ultra (full resolution, 4, Strong AO with 8 rays). WCW_RT forces it on;
         // WCW_RT_SCALE / WCW_RT_SAMPLES / WCW_RT_AO_SAMPLES and the WCW_RT_AO* look overrides override the level.
         static void setUserSettings(bool enabled, uint32_t quality);
+        // The menu's Venue Lighting option (WcwLogic::VenueLighting: 0 Full, 1 Subtle, 2 Off), applied to the active
+        // preset in activePresetCopy. WCW_RT_VENUE_LIGHTING overrides it.
+        static void setVenueLighting(uint32_t level);
+        static uint32_t venueLighting();
         // True when ray tracing should run this frame (WCW_RT or the menu option). The camera
         // hand-off in rt64_rsp.cpp follows it, so Off keeps the original rendering.
         static bool active();

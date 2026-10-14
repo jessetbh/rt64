@@ -134,6 +134,23 @@ namespace RT64::WcwLogic {
     // A glow's flicker amount (0 when it has none).
     float presetGlowFlicker(const LightPreset &preset, size_t glowIndex);
 
+    // The graphics menu's Venue Lighting option: how strongly a venue's tuned look applies. The tuned rigs are bold
+    // (outside darkness 0.55-0.65 in No Mercy's arenas), and some players find arenas too dark.
+    enum class VenueLighting : uint32_t {
+        // The preset as tuned.
+        Full = 0,
+        // Outside darkness and glows at SubtleVenueLighting of their strength.
+        Subtle = 1,
+        // Neutral lighting: no outside darkness, no glows, white light. The lights stay where the preset puts them
+        // and keep their shadow strengths, so the ray-traced shadows and AO are unchanged.
+        Off = 2
+    };
+
+    constexpr float SubtleVenueLighting = 0.5f;
+
+    // The preset as it applies at a Venue Lighting level (out-of-range levels apply as Full).
+    LightPreset applyVenueLighting(const LightPreset &preset, VenueLighting level);
+
     // A failing fluorescent tube's brightness (0 or 1) at timeSeconds, deterministic per seed: on almost all the time,
     // blinking off one to three times (70 ms each) every few seconds. Seeds give each tube its own rhythm.
     float glowFlicker(double timeSeconds, uint32_t seed);

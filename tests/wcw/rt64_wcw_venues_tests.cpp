@@ -757,3 +757,83 @@ TEST_CASE("venue switching: a frame from before a 2D screen doesn't pair with th
     CHECK(!everA);
     CHECK_EQ(selector.active(), 1);
 }
+
+// Venue Lighting option
+
+static LightPreset tunedArena() {
+    LightPreset p;
+    p.name = "Raw";
+    p.outsideDarkness = 0.6f;
+    p.outsideEdge = 400.0f;
+    p.shadow = 0.7f;
+    p.characterShadow = 0.4f;
+    p.color = { 1.0f, 0.9f, 0.75f };
+    p.keyColor = { 1.0f, 0.8f, 0.7f };
+    p.fillColor = { 0.8f, 0.9f, 1.0f };
+    p.lights = { { 0.0f, 500.0f, 0.0f, 1.0f }, { 200.0f, 500.0f, 0.0f, 0.5f } };
+    p.lightColors = { { 1.0f, 0.5f, 0.5f }, WhiteLight };
+    p.lightOwnColor = { 1, 0 };
+    p.glows = { { 0.0f, 300.0f, -900.0f, 2.0f, 400.0f }, { 50.0f, 100.0f, 900.0f, 1.0f, 200.0f } };
+    p.glowColors = { { 1.0f, 0.2f, 0.2f }, WhiteLight };
+    p.glowFlicker = { 0.0f, 1.0f };
+    p.litAreas = { { 0.0f, -1200.0f, 300.0f, 200.0f } };
+    return p;
+}
+
+TEST_CASE("venue lighting: Full keeps the tuned preset") {
+    const LightPreset p = tunedArena();
+    const LightPreset full = applyVenueLighting(p, VenueLighting::Full);
+    CHECK_NEAR(full.outsideDarkness, 0.6f, 1e-6f);
+    CHECK_EQ(full.glows.size(), size_t(2));
+    CHECK_NEAR(full.glows[0][3], 2.0f, 1e-6f);
+    CHECK(full.keyColor == p.keyColor);
+    CHECK(full.lightColors == p.lightColors);
+}
+
+TEST_CASE("venue lighting: Subtle halves the outside darkness and the glows, nothing else (arenas too dark)") {
+    const LightPreset p = tunedArena();
+    const LightPreset subtle = applyVenueLighting(p, VenueLighting::Subtle);
+    CHECK_NEAR(subtle.outsideDarkness, 0.6f * SubtleVenueLighting, 1e-6f);
+    CHECK_EQ(subtle.glows.size(), size_t(2));
+    CHECK_NEAR(subtle.glows[0][3], 2.0f * SubtleVenueLighting, 1e-6f);
+    CHECK_NEAR(subtle.glows[1][3], 1.0f * SubtleVenueLighting, 1e-6f);
+    // Glow places, ranges, colors and flicker stay.
+    CHECK_NEAR(subtle.glows[0][2], -900.0f, 1e-6f);
+    CHECK_NEAR(subtle.glows[0][4], 400.0f, 1e-6f);
+    CHECK(subtle.glowColors == p.glowColors);
+    CHECK(subtle.glowFlicker == p.glowFlicker);
+    // Lights, colors, shadows and the darkness ramp are untouched.
+    CHECK(subtle.lights == p.lights);
+    CHECK(subtle.keyColor == p.keyColor);
+    CHECK_NEAR(subtle.outsideEdge, 400.0f, 1e-6f);
+    CHECK_NEAR(subtle.shadow, 0.7f, 1e-6f);
+}
+
+TEST_CASE("venue lighting: Off is neutral light but keeps the rig, so RT shadows and AO stay") {
+    const LightPreset p = tunedArena();
+    const LightPreset off = applyVenueLighting(p, VenueLighting::Off);
+    CHECK_EQ(off.outsideDarkness, 0.0f);
+    CHECK(off.glows.empty());
+    CHECK(off.glowColors.empty());
+    CHECK(off.glowFlicker.empty());
+    CHECK(off.color == WhiteLight);
+    CHECK(off.keyColor == WhiteLight);
+    CHECK(off.fillColor == WhiteLight);
+    // Every light's effective color is white, also the one with its own color.
+    for (size_t i = 0; i < off.lights.size(); i++) {
+        CHECK(presetLightColor(off, i) == WhiteLight);
+    }
+
+    // Same lights in the same places, same shadow strengths and receiver radius.
+    CHECK(off.lights == p.lights);
+    CHECK_NEAR(off.shadow, 0.7f, 1e-6f);
+    CHECK_NEAR(off.characterShadow, 0.4f, 1e-6f);
+    CHECK_NEAR(off.radius, p.radius, 1e-6f);
+}
+
+TEST_CASE("venue lighting: an unknown level applies as Full") {
+    const LightPreset p = tunedArena();
+    const LightPreset odd = applyVenueLighting(p, VenueLighting(7));
+    CHECK_NEAR(odd.outsideDarkness, 0.6f, 1e-6f);
+    CHECK_EQ(odd.glows.size(), size_t(2));
+}

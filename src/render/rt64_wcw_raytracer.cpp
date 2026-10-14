@@ -45,6 +45,7 @@ namespace RT64 {
 
     static std::atomic<bool> wcwRtUserEnabled = false;
     static std::atomic<uint32_t> wcwRtUserQuality = 1;
+    static std::atomic<uint32_t> wcwRtVenueLighting = uint32_t(WcwLogic::VenueLighting::Full);
 
     void WcwRaytracer::setUserSettings(bool enabled, uint32_t quality) {
         wcwRtUserEnabled = enabled;
@@ -60,6 +61,15 @@ namespace RT64 {
 
     uint32_t WcwRaytracer::userQuality() {
         return wcwRtUserQuality;
+    }
+
+    void WcwRaytracer::setVenueLighting(uint32_t level) {
+        wcwRtVenueLighting = std::min(level, uint32_t(WcwLogic::VenueLighting::Off));
+    }
+
+    uint32_t WcwRaytracer::venueLighting() {
+        static const char *envText = getenv("WCW_RT_VENUE_LIGHTING");
+        return (envText != nullptr) ? std::min(uint32_t(atoi(envText)), uint32_t(WcwLogic::VenueLighting::Off)) : wcwRtVenueLighting.load();
     }
 
     WcwRaytracer::WcwRaytracer(RenderDevice *device, RenderShaderFormat shaderFormat) {
@@ -250,7 +260,7 @@ namespace RT64 {
 
     WcwRaytracer::LightPreset WcwRaytracer::activePresetCopy() {
         const std::lock_guard<std::recursive_mutex> lock(presetsMutex);
-        return activePreset();
+        return WcwLogic::applyVenueLighting(activePreset(), WcwLogic::VenueLighting(venueLighting()));
     }
 
     void WcwRaytracer::finishPresent() {

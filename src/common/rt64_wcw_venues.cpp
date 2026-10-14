@@ -57,6 +57,41 @@ namespace RT64::WcwLogic {
         return (glowIndex < preset.glowFlicker.size()) ? preset.glowFlicker[glowIndex] : 0.0f;
     }
 
+    LightPreset applyVenueLighting(const LightPreset &preset, VenueLighting level) {
+        LightPreset result = preset;
+        switch (level) {
+        case VenueLighting::Subtle:
+            result.outsideDarkness *= SubtleVenueLighting;
+            for (auto &glow : result.glows) {
+                glow[3] *= SubtleVenueLighting;
+            }
+
+            break;
+        case VenueLighting::Off:
+            result.outsideDarkness = 0.0f;
+            result.glows.clear();
+            result.glowColors.clear();
+            result.glowFlicker.clear();
+            result.color = WhiteLight;
+            result.keyColor = WhiteLight;
+            result.fillColor = WhiteLight;
+            for (LightColor &c : result.lightColors) {
+                c = WhiteLight;
+            }
+
+            for (uint8_t &own : result.lightOwnColor) {
+                own = 0;
+            }
+
+            break;
+        case VenueLighting::Full:
+        default:
+            break;
+        }
+
+        return result;
+    }
+
     static uint32_t flickerHash(uint32_t a, uint32_t b) {
         uint32_t h = a * 0x9E3779B1u ^ (b + 0x7F4A7C15u + (a << 6) + (a >> 2));
         h ^= h >> 16;
