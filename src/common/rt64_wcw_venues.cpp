@@ -5,6 +5,7 @@
 #include "rt64_wcw_venues.h"
 
 #include <algorithm>
+#include <cfloat>
 #include <cinttypes>
 #include <cmath>
 #include <cstdio>
@@ -21,7 +22,8 @@ namespace RT64::WcwLogic {
             { "lights", FieldLights }, { "size", FieldSize }, { "radius", FieldRadius }, { "clearance", FieldClearance },
             { "falloff", FieldFalloff }, { "glows", FieldGlows }, { "anchor", FieldAnchor }, { "shadow", FieldShadow },
             { "characterShadow", FieldCharacterShadow }, { "outsideDarkness", FieldOutsideDarkness }, { "outsideEdge", FieldOutsideEdge },
-            { "color", FieldColor }, { "keyColor", FieldKeyColor }, { "fillColor", FieldFillColor }, { "litAreas", FieldLitAreas }
+            { "color", FieldColor }, { "keyColor", FieldKeyColor }, { "fillColor", FieldFillColor }, { "litAreas", FieldLitAreas },
+            { "emissive", FieldEmissive }, { "spots", FieldSpots }, { "crowdFalloff", FieldCrowdFalloff }, { "crowdDistance", FieldCrowdDistance }
         };
 
         uint32_t fields = 0;
@@ -166,6 +168,63 @@ namespace RT64::WcwLogic {
                 }
             }
         }
+
+        p.crowdFalloff = std::clamp(j.value("crowdFalloff", p.crowdFalloff), 0.0f, 1.0f);
+        p.crowdDistance = std::max(j.value("crowdDistance", p.crowdDistance), 0.0f);
+        if (j.contains("emissive")) {
+            p.emissive.clear();
+            for (const auto &e : j["emissive"]) {
+                if (!e.is_array() || (e.size() < 3) || !e[0].is_string()) {
+                    continue;
+                }
+
+                EmissiveTexture t;
+                t.hash = strtoull(e[0].get<std::string>().c_str(), nullptr, 16);
+                t.intensity = std::max(e[1].get<float>(), 0.0f);
+                t.range = std::max(e[2].get<float>(), 0.0f);
+                if (e.size() >= 6) {
+                    t.color = { e[3].get<float>(), e[4].get<float>(), e[5].get<float>() };
+                }
+
+                if (e.size() >= 7) {
+                    t.maxGlows = uint32_t(std::clamp(e[6].get<float>(), 1.0f, float(MaxEmissiveGlows)));
+                }
+
+                p.emissive.push_back(t);
+            }
+        }
+
+        if (j.contains("spots")) {
+            p.spots.clear();
+            for (const auto &a : j["spots"]) {
+                if (!a.is_array() || (a.size() < 10)) {
+                    continue;
+                }
+
+                SpotLight s;
+                for (uint32_t i = 0; i < 3; i++) {
+                    s.position[i] = a[i].get<float>();
+                }
+
+                s.yaw = a[3].get<float>();
+                s.pitch = a[4].get<float>();
+                s.cone = std::clamp(a[5].get<float>(), 1.0f, 179.0f);
+                s.sweep = std::max(a[6].get<float>(), 0.0f);
+                s.period = std::max(a[7].get<float>(), 0.0f);
+                s.intensity = std::max(a[8].get<float>(), 0.0f);
+                s.range = std::max(a[9].get<float>(), 0.0f);
+                if (a.size() >= 13) {
+                    s.color = { a[10].get<float>(), a[11].get<float>(), a[12].get<float>() };
+                }
+
+                if (a.size() >= 14) {
+                    s.phase = a[13].get<float>();
+                }
+
+                p.spots.push_back(s);
+            }
+        }
+
         p.anchorScene = (j.value("anchor", std::string(p.anchorScene ? "scene" : "world")) == "scene");
         if (j.contains("lights")) {
             p.lights.clear();
@@ -311,6 +370,50 @@ namespace RT64::WcwLogic {
 
             j["litAreas"] = a;
         }
+
+        field("crowdFalloff", FieldCrowdFalloff, p.crowdFalloff, base.crowdFalloff);
+        field("crowdDistance", FieldCrowdDistance, p.crowdDistance, base.crowdDistance);
+        if (wanted(FieldEmissive, p.emissive != base.emissive)) {
+            Json e = Json::array();
+            for (const EmissiveTexture &t : p.emissive) {
+                Json entry = Json::array({ Json(formatTextureHash(t.hash)), number(t.intensity), number(t.range) });
+                if ((t.color != WhiteLight) || (t.maxGlows != 1)) {
+                    entry.push_back(number(t.color[0]));
+                    entry.push_back(number(t.color[1]));
+                    entry.push_back(number(t.color[2]));
+                }
+
+                if (t.maxGlows != 1) {
+                    entry.push_back(t.maxGlows);
+                }
+
+                e.push_back(entry);
+            }
+
+            j["emissive"] = e;
+        }
+
+        if (wanted(FieldSpots, p.spots != base.spots)) {
+            Json a = Json::array();
+            for (const SpotLight &s : p.spots) {
+                Json entry = Json::array({ number(s.position[0]), number(s.position[1]), number(s.position[2]), number(s.yaw), number(s.pitch),
+                    number(s.cone), number(s.sweep), number(s.period), number(s.intensity), number(s.range) });
+                if ((s.color != WhiteLight) || (s.phase != 0.0f)) {
+                    entry.push_back(number(s.color[0]));
+                    entry.push_back(number(s.color[1]));
+                    entry.push_back(number(s.color[2]));
+                }
+
+                if (s.phase != 0.0f) {
+                    entry.push_back(number(s.phase));
+                }
+
+                a.push_back(entry);
+            }
+
+            j["spots"] = a;
+        }
+
         if (wanted(FieldGlows, (p.glows != base.glows) || (p.glowColors != base.glowColors) || (p.glowFlicker != base.glowFlicker))) {
             Json g = Json::array();
             for (size_t i = 0; i < p.glows.size(); i++) {
@@ -389,6 +492,10 @@ namespace RT64::WcwLogic {
         if (!(s & FieldOutsideDarkness)) { p.outsideDarkness = d.outsideDarkness; }
         if (!(s & FieldOutsideEdge)) { p.outsideEdge = d.outsideEdge; }
         if (!(s & FieldLitAreas)) { p.litAreas = d.litAreas; }
+        if (!(s & FieldEmissive)) { p.emissive = d.emissive; }
+        if (!(s & FieldSpots)) { p.spots = d.spots; }
+        if (!(s & FieldCrowdFalloff)) { p.crowdFalloff = d.crowdFalloff; }
+        if (!(s & FieldCrowdDistance)) { p.crowdDistance = d.crowdDistance; }
         syncColorLists(p);
     }
 
@@ -670,6 +777,186 @@ namespace RT64::WcwLogic {
         }
 
         return 1.0f - std::min(darkness, 1.0f) * ramp;
+    }
+
+    float outsideLightAt(float x, float z, float centerX, float centerZ, float radius, float edge, float darkness,
+        const std::vector<std::array<float, 4>> &litAreas, float crowdFalloff, float crowdDistance)
+    {
+        darkness = std::clamp(darkness, 0.0f, 1.0f);
+        crowdFalloff = std::clamp(crowdFalloff, 0.0f, 1.0f);
+        if ((darkness <= 0.0f) && (crowdFalloff <= 0.0f)) {
+            return 1.0f;
+        }
+
+        const float ringDistance = std::hypot(x - centerX, z - centerZ);
+        float ramp = darknessRamp(ringDistance, radius, edge);
+        for (size_t i = 0; (i < litAreas.size()) && (i < MaxLitAreas); i++) {
+            const auto &a = litAreas[i];
+            ramp = std::min(ramp, darknessRamp(std::hypot(x - a[0], z - a[1]), a[2], a[3]));
+        }
+
+        // The crowd falloff starts where the outside darkness is full: a darkness ramp from radius + edge.
+        const float crowd = crowdFalloff * darknessRamp(ringDistance, radius + std::max(edge, 0.0f), crowdDistance);
+        return 1.0f - std::min((darkness + crowd) * ramp, 1.0f);
+    }
+
+    std::vector<GlowLight> emissiveGlows(const EmissiveTexture &texture, const std::vector<EmissiveDraw> &draws) {
+        struct Box {
+            float min[3];
+            float max[3];
+        };
+
+        auto merge = [](Box &into, const float min[3], const float max[3]) {
+            for (uint32_t i = 0; i < 3; i++) {
+                into.min[i] = std::min(into.min[i], min[i]);
+                into.max[i] = std::max(into.max[i], max[i]);
+            }
+        };
+
+        auto centerDistance2 = [](const Box &a, const Box &b) {
+            float d2 = 0.0f;
+            for (uint32_t i = 0; i < 3; i++) {
+                const float d = (a.min[i] + a.max[i] - b.min[i] - b.max[i]) * 0.5f;
+                d2 += d * d;
+            }
+
+            return d2;
+        };
+
+        const size_t maxGlows = std::clamp(texture.maxGlows, 1u, MaxEmissiveGlows);
+        std::vector<Box> boxes;
+        for (const EmissiveDraw &d : draws) {
+            if (d.hash != texture.hash) {
+                continue;
+            }
+
+            if ((maxGlows == 1) && !boxes.empty()) {
+                merge(boxes[0], d.min, d.max);
+            }
+            else {
+                Box b;
+                std::copy(d.min, d.min + 3, b.min);
+                std::copy(d.max, d.max + 3, b.max);
+                boxes.push_back(b);
+            }
+        }
+
+        // More draws than glows: merge the two with the nearest centres until they fit (a sign row's neighbours pair up).
+        while (boxes.size() > maxGlows) {
+            size_t bestA = 0, bestB = 1;
+            float bestD2 = FLT_MAX;
+            for (size_t a = 0; a < boxes.size(); a++) {
+                for (size_t b = a + 1; b < boxes.size(); b++) {
+                    const float d2 = centerDistance2(boxes[a], boxes[b]);
+                    if (d2 < bestD2) {
+                        bestD2 = d2;
+                        bestA = a;
+                        bestB = b;
+                    }
+                }
+            }
+
+            merge(boxes[bestA], boxes[bestB].min, boxes[bestB].max);
+            boxes.erase(boxes.begin() + bestB);
+        }
+
+        std::vector<GlowLight> glows;
+        for (const Box &b : boxes) {
+            GlowLight g;
+            float diagonal2 = 0.0f;
+            for (uint32_t i = 0; i < 3; i++) {
+                g.position[i] = (b.min[i] + b.max[i]) * 0.5f;
+                diagonal2 += (b.max[i] - b.min[i]) * (b.max[i] - b.min[i]);
+            }
+
+            g.range = std::max((texture.range > 0.0f) ? texture.range : 2.0f * std::sqrt(diagonal2), 1.0f);
+            g.intensity = texture.intensity;
+            g.color = { std::max(texture.color[0], 0.0f), std::max(texture.color[1], 0.0f), std::max(texture.color[2], 0.0f) };
+            glows.push_back(g);
+        }
+
+        return glows;
+    }
+
+    static constexpr double Pi = 3.14159265358979323846;
+    static constexpr float DegreesToRadians = float(Pi / 180.0);
+
+    void spotDirection(const SpotLight &spot, double timeSeconds, float direction[3]) {
+        float yaw = spot.yaw;
+        if (spot.period > 0.0f) {
+            const double cycle = timeSeconds / double(spot.period) + double(spot.phase);
+            yaw += 0.5f * spot.sweep * float(std::sin(2.0 * Pi * (cycle - std::floor(cycle))));
+        }
+
+        const float yawRadians = yaw * DegreesToRadians;
+        const float pitchRadians = spot.pitch * DegreesToRadians;
+        direction[0] = std::sin(yawRadians) * std::cos(pitchRadians);
+        direction[1] = -std::sin(pitchRadians);
+        direction[2] = std::cos(yawRadians) * std::cos(pitchRadians);
+    }
+
+    float spotConeFactor(float cosAngle, float cosCone) {
+        if (cosCone <= -1.0f) {
+            return 1.0f;
+        }
+
+        const float inner = cosCone + (1.0f - cosCone) * SpotEdge;
+        if (inner <= cosCone) {
+            return (cosAngle >= cosCone) ? 1.0f : 0.0f;
+        }
+
+        const float t = std::clamp((cosAngle - cosCone) / (inner - cosCone), 0.0f, 1.0f);
+        return t * t * (3.0f - 2.0f * t);
+    }
+
+    uint32_t glowFlickerSeed(size_t glowIndex) {
+        return uint32_t(glowIndex) * 7919u + 17u;
+    }
+
+    std::vector<GlowLight> packGlowLights(const LightPreset &preset, const float origin[3], const std::vector<EmissiveDraw> &draws,
+        double timeSeconds, size_t maxCount)
+    {
+        auto clampColor = [](const LightColor &c) { return LightColor{ std::max(c[0], 0.0f), std::max(c[1], 0.0f), std::max(c[2], 0.0f) }; };
+        std::vector<GlowLight> lights;
+        for (size_t i = 0; (i < preset.glows.size()) && (lights.size() < maxCount); i++) {
+            const auto &g = preset.glows[i];
+            GlowLight light;
+            for (uint32_t k = 0; k < 3; k++) {
+                light.position[k] = origin[k] + g[k];
+            }
+
+            light.range = std::max(g[4], 1.0f);
+            light.intensity = g[3] * glowFlickerScale(timeSeconds, glowFlickerSeed(i), presetGlowFlicker(preset, i));
+            light.color = clampColor(presetGlowColor(preset, i));
+            lights.push_back(light);
+        }
+
+        for (size_t i = 0; (i < preset.spots.size()) && (lights.size() < maxCount); i++) {
+            const SpotLight &s = preset.spots[i];
+            GlowLight light;
+            for (uint32_t k = 0; k < 3; k++) {
+                light.position[k] = origin[k] + s.position[k];
+            }
+
+            light.range = std::max(s.range, 1.0f);
+            light.intensity = s.intensity;
+            light.color = clampColor(s.color);
+            spotDirection(s, timeSeconds, light.direction);
+            light.cosCone = std::cos(0.5f * std::clamp(s.cone, 1.0f, 179.0f) * DegreesToRadians);
+            lights.push_back(light);
+        }
+
+        for (const EmissiveTexture &t : preset.emissive) {
+            for (const GlowLight &g : emissiveGlows(t, draws)) {
+                if (lights.size() >= maxCount) {
+                    return lights;
+                }
+
+                lights.push_back(g);
+            }
+        }
+
+        return lights;
     }
 
     float missFloorDistance(const float origin[3], const float direction[3], float floorY, float centerX, float centerZ) {
