@@ -379,6 +379,68 @@ namespace RT64::WcwLogic {
         return HdrAdvice::Good;
     }
 
+    HdrHighlights hdrHighlights(bool optionOn, float paperWhiteNits, const HdrDisplay &display, bool crtOn) {
+        HdrHighlights highlights;
+        const float paperWhite = std::max(paperWhiteNits, 1.0f);
+        const float peak = hdrPeakOrDefault(display.peakNits);
+        const float fullFrame = (display.fullFrameNits > 0.0f) ? display.fullFrameNits : (peak * HdrUnknownFullFrameFraction);
+        highlights.frameLimit = fullFrame / paperWhite;
+        const float ceiling = std::min(peak / paperWhite, HdrHighlightMaxCeiling);
+        if (optionOn && !crtOn && (ceiling >= HdrHighlightMinCeiling)) {
+            highlights.enabled = true;
+            highlights.ceiling = ceiling;
+        }
+
+        return highlights;
+    }
+
+    static float srgbToLinearExtended(float encoded) {
+        return (encoded <= 0.04045f) ? (encoded / 12.92f) : std::pow((encoded + 0.055f) / 1.055f, 2.4f);
+    }
+
+    float hdrHighlightExcess(float encoded, float factor) {
+        const float value = std::max(encoded, 0.0f) * std::max(factor, 0.0f);
+        if (!(value > 1.0f)) {
+            return 0.0f;
+        }
+
+        return srgbToLinearExtended(value) - 1.0f;
+    }
+
+    float hdrHighlightGate(float sdrChannel) {
+        return std::clamp((sdrChannel - 0.96f) / 0.04f, 0.0f, 1.0f);
+    }
+
+    float hdrHighlightShoulder(float excess, float ceiling) {
+        const float room = ceiling - 1.0f;
+        if (!(excess > 0.0f) || !(room > 0.0f)) {
+            return 0.0f;
+        }
+
+        return room * (1.0f - std::exp(-excess / room));
+    }
+
+    float HdrHighlightLimiter::update(float baseMean, float addedMean, float frameLimit, float seconds) {
+        float target = 1.0f;
+        if (addedMean > 1e-4f) {
+            target = std::clamp((frameLimit - baseMean) / addedMean, 0.0f, 1.0f);
+        }
+
+        if (!(target == target)) {
+            target = 0.0f;
+        }
+
+        if (target < scale) {
+            scale = target;
+        }
+        else if (seconds > 0.0f) {
+            scale += (target - scale) * (1.0f - std::exp(-seconds / HdrHighlightReleaseSeconds));
+        }
+
+        scale = std::clamp(scale, 0.0f, 1.0f);
+        return scale;
+    }
+
     bool primeGeneratedTargets(bool primeEnabled, bool generateInterpolatedFrames, bool usingMSAA, uint32_t runLength) {
         return primeEnabled && generateInterpolatedFrames && !usingMSAA && (runLength == 1);
     }
