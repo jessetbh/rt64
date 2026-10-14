@@ -285,6 +285,16 @@ namespace RT64::WcwLogic {
     // (fades) twice; priming every layer replaced the earlier layers' draws with the blend (Revenge flicker).
     bool primeGeneratedTargets(bool primeEnabled, bool generateInterpolatedFrames, bool usingMSAA, uint32_t runLength);
 
+    // Multi-layer runs that end early
+
+    // A run's generated frame waits for the run's expected number of layers; a run that ends shorter is published
+    // when the next run starts. When it is also shorter than the run before it, the game drew only part of its
+    // usual layers this frame (Revenge's attract mode: 1 of 3, 3 of 5), and the generated frame lacks the rest:
+    // a one-present flash (a missing overlay or darkening layer, ~15-20% luminance). Such a run's generated frame
+    // is dropped and the real frame shows for the whole game frame, as at 30 fps. A run as long as the previous
+    // one is the scene's steady structure (fewer layers than the recent maximum) and is published.
+    bool publishShortRun(uint32_t runLength, uint32_t previousRunLength);
+
     // Matrix identity across frames
 
     // AKI engines double-buffer their uploaded matrices: an object's matrix alternates between two slots 'stride'
