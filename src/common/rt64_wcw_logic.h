@@ -285,6 +285,25 @@ namespace RT64::WcwLogic {
     // (fades) twice; priming every layer replaced the earlier layers' draws with the blend (Revenge flicker).
     bool primeGeneratedTargets(bool primeEnabled, bool generateInterpolatedFrames, bool usingMSAA, uint32_t runLength);
 
+    // Widescreen (Aspect Ratio = Expand)
+
+    // Whether a framebuffer pass draws the whole screen, so Expand aspect-corrects it (the pass's 2D keeps its proportions
+    // in a widened frame) instead of stretching it. True when the pass's scissor (in framebuffer pixels) has the
+    // framebuffer's own pixel ratio (within 10%), or when it spans the framebuffer's full width and at least its height.
+    // The second case: RT64 sizes a framebuffer from what was drawn so far, so No Mercy's story-mode screens (480x240)
+    // measured 480x196 or 480x198 in some passes and 480x240 in others. The ratio test alone flipped between them, and
+    // the dialog text was drawn at one width for a few seconds and then jumped to another.
+    bool framebufferPassCoversScreen(int32_t scissorWidth, int32_t scissorHeight, int32_t fbWidth, int32_t fbHeight);
+
+    // A G_MWO_POINT_XYSCREEN vertex modify (value: x in the high 16 bits, y in the low 16 bits, signed quarter pixels of
+    // the N64 screen) as it must land in an Expand frame. Transformed vertices of an aspect-adjusted projection get their
+    // screen x compressed toward their viewport's center (the projection's x scale times projRatioScale), and the wide
+    // viewport then spreads them back to their original proportions. A modify sets the screen position directly, so it
+    // skipped the compression and came out stretched by the widening: No Mercy's story-mode flow lines and the hub's
+    // panel text moved away from the boxes they belong to. x' = viewportCenterX + (x - viewportCenterX) * projRatioScale;
+    // y unchanged. projRatioScale 1 (Original, or a projection Expand leaves alone) returns the value unchanged.
+    uint32_t modifiedScreenXYForAspect(uint32_t value, float viewportCenterX, float projRatioScale);
+
     // Matrix identity across frames
 
     // AKI engines double-buffer their uploaded matrices: an object's matrix alternates between two slots 'stride'

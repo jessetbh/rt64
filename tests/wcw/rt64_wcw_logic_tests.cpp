@@ -637,6 +637,68 @@ TEST_CASE("hdr advice: little headroom with the CRT filter asks for less brightn
     CHECK_EQ(int(hdrAdvice(100.0f, OwnerHdr, CrtOff)), int(HdrAdvice::Dim));
 }
 
+// Widescreen
+
+TEST_CASE("widescreen: a pass whose scissor matches its framebuffer covers the screen (both pixel aspects)") {
+    CHECK(framebufferPassCoversScreen(320, 240, 320, 240));
+    CHECK(framebufferPassCoversScreen(480, 240, 480, 240));
+}
+
+TEST_CASE("widescreen: No Mercy's story screens (480x240 scissor, fb measured 480x196) cover the screen (dialog text jumped)") {
+    CHECK(framebufferPassCoversScreen(480, 240, 480, 196));
+    CHECK(framebufferPassCoversScreen(480, 240, 480, 198));
+}
+
+TEST_CASE("widescreen: a sub-rectangle of another shape doesn't (split screen, a texture rendered into part of it)") {
+    CHECK(!framebufferPassCoversScreen(240, 240, 480, 240));
+    CHECK(!framebufferPassCoversScreen(480, 120, 480, 240));
+    CHECK(!framebufferPassCoversScreen(64, 64, 480, 240));
+}
+
+TEST_CASE("widescreen: the ratio test is unchanged (a same-shape scissor counts, as before)") {
+    CHECK(framebufferPassCoversScreen(64, 32, 480, 240));
+    CHECK(framebufferPassCoversScreen(300, 240, 320, 240));
+}
+
+TEST_CASE("widescreen: empty or unknown sizes don't cover the screen") {
+    CHECK(!framebufferPassCoversScreen(0, 240, 480, 240));
+    CHECK(!framebufferPassCoversScreen(480, 240, 0, 0));
+}
+
+static uint32_t packXY(float x, float y) {
+    return (uint32_t(uint16_t(int16_t(std::lround(x * 4.0f)))) << 16) | uint32_t(uint16_t(int16_t(std::lround(y * 4.0f))));
+}
+
+static float unpackX(uint32_t v) {
+    return float(int16_t((v >> 16) & 0xFFFF)) / 4.0f;
+}
+
+TEST_CASE("widescreen: a game-set screen position is compressed like transformed vertices (story flow lines were stretched)") {
+    // 480-wide N64 screen, viewport centered at 240, Expand 16:9 (projRatioScale 0.75): a flow-line end at x = 338 lands
+    // 98 * 0.75 from the center, as the boxes it joins do; y stays.
+    const uint32_t v = modifiedScreenXYForAspect(packXY(338.0f, 61.25f), 240.0f, 0.75f);
+    CHECK(std::abs(unpackX(v) - (240.0f + 98.0f * 0.75f)) <= 0.25f);
+    CHECK((v & 0xFFFF) == (packXY(338.0f, 61.25f) & 0xFFFF));
+}
+
+TEST_CASE("widescreen: the viewport center and both sides follow the same rule") {
+    CHECK(unpackX(modifiedScreenXYForAspect(packXY(240.0f, 0.0f), 240.0f, 0.75f)) == 240.0f);
+    CHECK(std::abs(unpackX(modifiedScreenXYForAspect(packXY(40.0f, 0.0f), 240.0f, 0.75f)) - 90.0f) <= 0.25f);
+    // A viewport centered elsewhere (AKI's menus use a 3x screen viewport, still centered on the screen; others may not).
+    CHECK(std::abs(unpackX(modifiedScreenXYForAspect(packXY(100.0f, 0.0f), 60.0f, 0.5f)) - 80.0f) <= 0.25f);
+}
+
+TEST_CASE("widescreen: at Original (ratio 1) a modify is untouched, bit for bit") {
+    for (uint32_t v : { packXY(338.0f, 61.25f), packXY(-12.75f, 239.5f), 0xFFFF8000u, 0x7FFF0001u }) {
+        CHECK(modifiedScreenXYForAspect(v, 240.0f, 1.0f) == v);
+    }
+}
+
+TEST_CASE("widescreen: negative screen x and the int16 range survive the conversion") {
+    CHECK(std::abs(unpackX(modifiedScreenXYForAspect(packXY(-100.0f, 5.0f), 240.0f, 0.75f)) - (240.0f - 340.0f * 0.75f)) <= 0.25f);
+    CHECK(unpackX(modifiedScreenXYForAspect(packXY(8000.0f, 0.0f), 0.0f, 2.0f)) == 8191.75f);
+}
+
 int main() {
     return WcwTest::runAll("rt64 wcw tests");
 }

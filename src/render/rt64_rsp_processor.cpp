@@ -50,7 +50,10 @@ namespace RT64 {
 
         const uint32_t modifyCount = drawData.modifyCount();
         modifyCB.modifyCount = modifyCount;
-        modifySet->setBuffer(modifySet->srcModifyPos, p.drawBuffers->modifyPosUintsBuffer.get(), p.drawBuffers->modifyPosUintsBuffer.getView(0));
+        // [wcw fix] The ProjectionProcessor's aspect-adjusted copy when Expand changed a modify (see DrawData).
+        const bool useAdjusted = drawData.modifyPosAdjusted && (p.drawBuffers->modifyPosUintsAdjustedBuffer.get() != nullptr);
+        BufferPair &modifyPair = useAdjusted ? p.drawBuffers->modifyPosUintsAdjustedBuffer : p.drawBuffers->modifyPosUintsBuffer;
+        modifySet->setBuffer(modifySet->srcModifyPos, modifyPair.get(), modifyPair.getView(0));
         modifySet->setBuffer(modifySet->screenPos, p.outputBuffers->screenPosBuffer.buffer.get(), RenderBufferStructuredView(sizeof(float) * 4));
     }
 

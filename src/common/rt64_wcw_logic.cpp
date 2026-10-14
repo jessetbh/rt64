@@ -383,6 +383,32 @@ namespace RT64::WcwLogic {
         return primeEnabled && generateInterpolatedFrames && !usingMSAA && (runLength == 1);
     }
 
+    bool framebufferPassCoversScreen(int32_t scissorWidth, int32_t scissorHeight, int32_t fbWidth, int32_t fbHeight) {
+        if ((scissorWidth <= 0) || (scissorHeight <= 0) || (fbWidth <= 0) || (fbHeight <= 0)) {
+            return false;
+        }
+
+        const float SimilarityPercentage = 0.1f;
+        const float scissorRatio = float(scissorWidth) / float(scissorHeight);
+        const float fbPixelRatio = float(fbWidth) / float(fbHeight);
+        if (std::abs((scissorRatio / fbPixelRatio) - 1.0f) < SimilarityPercentage) {
+            return true;
+        }
+
+        return (scissorWidth == fbWidth) && (scissorHeight >= fbHeight);
+    }
+
+    uint32_t modifiedScreenXYForAspect(uint32_t value, float viewportCenterX, float projRatioScale) {
+        if (projRatioScale == 1.0f) {
+            return value;
+        }
+
+        const float x = float(int16_t((value >> 16) & 0xFFFF)) / 4.0f;
+        const float adjusted = viewportCenterX + (x - viewportCenterX) * projRatioScale;
+        const long quarters = std::clamp(std::lround(adjusted * 4.0f), long(INT16_MIN), long(INT16_MAX));
+        return (uint32_t(uint16_t(int16_t(quarters))) << 16) | (value & 0xFFFF);
+    }
+
     MatrixSlotIdentity::MatrixSlotIdentity(uint32_t stride) : stride(stride) { }
 
     uint32_t MatrixSlotIdentity::canonical(uint32_t address) {
