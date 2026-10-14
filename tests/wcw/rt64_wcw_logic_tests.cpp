@@ -163,6 +163,39 @@ TEST_CASE("quality: trace resolution at 1080p and 4K") {
     CHECK_EQ(rtTraceScale(rtPreset(2), 2160), 1.0f);
 }
 
+TEST_CASE("quality: a supersampled target traces at no more than the output size") {
+    // Supersampling 2x at a 1080p window renders a 2400-line target (5x 240, times 2) that presents as 1200 lines.
+    // Quality and Ultra trace those 1200 lines, not all 2400 (4x the rays for shadows nobody can see sharper).
+    CHECK_NEAR(rtTraceScale(rtPreset(2), 2400, 2), 0.5f, 1e-6f);
+    CHECK_NEAR(rtTraceScale(rtPreset(3), 2400, 2), 0.5f, 1e-6f);
+    // The line caps still apply when they're lower: Performance traces 720 of the 2400 lines, Balanced 1080.
+    CHECK_NEAR(rtTraceScale(rtPreset(0), 2400, 2), 720.0f / 2400.0f, 1e-6f);
+    CHECK_NEAR(rtTraceScale(rtPreset(1), 2400, 2), 1080.0f / 2400.0f, 1e-6f);
+    // Without supersampling nothing changes.
+    CHECK_EQ(rtTraceScale(rtPreset(2), 1200, 1), 1.0f);
+    CHECK_EQ(rtTraceScale(rtPreset(2), 1200, 0), 1.0f);
+    CHECK_EQ(rtTraceScale(rtPreset(2), 1200), 1.0f);
+}
+
+TEST_CASE("resolution: Auto renders the window's whole multiple of 240, times the supersampling") {
+    CHECK_EQ(windowResolutionMultiplier(1080, 240, 1), 5.0f);
+    CHECK_EQ(windowResolutionMultiplier(1080, 240, 2), 10.0f);
+    CHECK_EQ(windowResolutionMultiplier(720, 240, 1), 3.0f);
+    CHECK_EQ(windowResolutionMultiplier(720, 240, 2), 6.0f);
+    CHECK_EQ(windowResolutionMultiplier(2160, 240, 2), 18.0f);
+    // A window shorter than the game still renders at 1x (2x supersampled).
+    CHECK_EQ(windowResolutionMultiplier(200, 240, 1), 1.0f);
+    CHECK_EQ(windowResolutionMultiplier(200, 240, 2), 2.0f);
+    // No swap chain yet, and a bad downsample value, fall back to 1x.
+    CHECK_EQ(windowResolutionMultiplier(0, 240, 1), 1.0f);
+    CHECK_EQ(windowResolutionMultiplier(0, 240, 2), 2.0f);
+    CHECK_EQ(windowResolutionMultiplier(1080, 240, 0), 5.0f);
+    // The presented size (render scale / downsample) is the same with and without supersampling.
+    for (uint32_t h : { 480u, 720u, 1080u, 1440u, 2160u }) {
+        CHECK_EQ(windowResolutionMultiplier(h, 240, 2) / 2.0f, windowResolutionMultiplier(h, 240, 1));
+    }
+}
+
 TEST_CASE("quality: out-of-range levels clamp to Ultra") {
     CHECK_EQ(rtPreset(9).samplesPerLight, rtPreset(uint32_t(RtQuality::Ultra)).samplesPerLight);
     CHECK_EQ(aoSettings(9).samples, aoSettings(uint32_t(RtQuality::Ultra)).samples);

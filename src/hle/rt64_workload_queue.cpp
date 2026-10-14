@@ -195,13 +195,10 @@ namespace RT64 {
         const auto resolutionMode = ext.sharedResources->userConfig.resolution;
         switch (resolutionMode) {
         case UserConfiguration::Resolution::WindowIntegerScale:
-            if (ext.sharedResources->swapChainHeight > 0) {
-                resolutionMultiplier = std::max(float((ext.sharedResources->swapChainHeight + referenceHeight - 1) / referenceHeight), 1.0f);
-            }
-            else {
-                resolutionMultiplier = 1.0f;
-            }
-
+            // [wcw] Times the downsample multiplier: Supersampling at Auto renders above the window size and
+            // box-filters back down (upstream left downsampling to Manual resolution).
+            resolutionMultiplier = WcwLogic::windowResolutionMultiplier(ext.sharedResources->swapChainHeight, referenceHeight,
+                uint32_t(std::max(ext.sharedResources->userConfig.downsampleMultiplier, 1)));
             break;
         case UserConfiguration::Resolution::Manual:
             resolutionMultiplier = float(ext.sharedResources->userConfig.resolutionMultiplier);

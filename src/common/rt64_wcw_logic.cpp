@@ -82,13 +82,26 @@ namespace RT64::WcwLogic {
         return preset;
     }
 
-    float rtTraceScale(const RtPreset &preset, uint32_t targetHeight) {
+    float rtTraceScale(const RtPreset &preset, uint32_t targetHeight, uint32_t downsampleMultiplier) {
         float scale = preset.scale;
         if ((preset.maxLines > 0.0f) && (targetHeight > 0)) {
             scale = std::min(scale, preset.maxLines / float(targetHeight));
         }
 
+        if (downsampleMultiplier > 1) {
+            scale = std::min(scale, 1.0f / float(downsampleMultiplier));
+        }
+
         return scale;
+    }
+
+    float windowResolutionMultiplier(uint32_t windowHeight, uint32_t referenceHeight, uint32_t downsampleMultiplier) {
+        float multiplier = 1.0f;
+        if ((windowHeight > 0) && (referenceHeight > 0)) {
+            multiplier = std::max(float((windowHeight + referenceHeight - 1) / referenceHeight), 1.0f);
+        }
+
+        return multiplier * float(std::max(downsampleMultiplier, 1u));
     }
 
     AoSettings aoSettings(uint32_t quality) {
