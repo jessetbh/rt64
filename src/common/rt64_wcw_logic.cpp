@@ -12,6 +12,17 @@ namespace RT64::WcwLogic {
         return (frameCounter >= builtFrame) && ((frameCounter - builtFrame) <= ShadowCasterStaleFrames);
     }
 
+    bool keepBlobShadow(float blobX, float blobZ, float centerX, float centerZ, float receiverRadius) {
+        if (receiverRadius <= 0.0f) {
+            return false;
+        }
+
+        const float dx = blobX - centerX;
+        const float dz = blobZ - centerZ;
+        const float keepRadius = receiverRadius * BlobShadowKeepFraction;
+        return (dx * dx + dz * dz) >= (keepRadius * keepRadius);
+    }
+
     AoSettings aoLookSettings(AoLevel level, uint32_t samples) {
         AoSettings settings;
         if (samples == 0) {

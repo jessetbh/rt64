@@ -493,6 +493,10 @@ namespace RT64 {
         return supported && active() && (mode == WCW_RT_MODE_SHADOW) && !keepBlobs;
     }
 
+    bool WcwRaytracer::keepsBlobShadow(float x, float z) const {
+        return WcwLogic::keepBlobShadow(x, z, receiverCenter[0], receiverCenter[1], receiverRadius);
+    }
+
     void WcwRaytracer::beginScene(const hlslpp::float4x4 &view, const hlslpp::float4x4 &proj, const RenderViewport &viewport,
         const RenderBuffer *worldPosBuffer, uint64_t worldPosSize, const RenderBuffer *worldNormBuffer, uint64_t worldNormSize,
         const RenderBuffer *faceIndicesBuffer, uint64_t faceIndicesSize,

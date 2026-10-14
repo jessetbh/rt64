@@ -104,7 +104,9 @@ namespace RT64 {
     // Screen-space overlays (intro art, entrance videos, select-screen backgrounds) are also
     // small blended quads, but their world positions collapse to a point: require a real
     // footprint on the floor so they are kept.
-    static bool wcwIsBlobShadow(const DrawData &drawData, uint32_t faceIndicesStart, uint32_t triangleCount, const interop::OtherMode &otherMode, uint64_t textureHash) {
+    // blobCenter receives the draw's world X/Z center (only when it is a blob).
+    static bool wcwIsBlobShadow(const DrawData &drawData, uint32_t faceIndicesStart, uint32_t triangleCount, const interop::OtherMode &otherMode, uint64_t textureHash,
+        float blobCenter[2]) {
         if ((triangleCount == 0) || (triangleCount > 16) || !wcwBlendsWithMemory(otherMode)) {
             return false;
         }
@@ -144,6 +146,11 @@ namespace RT64 {
                 fprintf(stderr, "[wcw rt] blob miss present %d: tex %016llX tris %u y %.1f..%.1f x %.1f..%.1f z %.1f..%.1f\n", int(wcwRtPresentCounter), (unsigned long long)(textureHash),
                     triangleCount, minPos[1], maxPos[1], minPos[0], maxPos[0], minPos[2], maxPos[2]);
             }
+        }
+
+        if (blob) {
+            blobCenter[0] = (minPos[0] + maxPos[0]) * 0.5f;
+            blobCenter[1] = (minPos[2] + maxPos[2]) * 0.5f;
         }
 
         return blob;
@@ -2027,16 +2034,19 @@ namespace RT64 {
                 else 
 #           endif
                 {
-                    // [wcw rt] With ray-traced shadows on, the game's blob shadows are not drawn.
+                    // [wcw rt] With ray-traced shadows on, the game's blob shadows are not drawn, except past the receiver
+                    // radius, where no shadow rays are cast (WcwLogic::keepBlobShadow): wrestlers out there had no shadow.
                     uint64_t wcwBlobTexture = 0;
                     if ((call.callDesc.textureOn != 0) && (call.callDesc.tileCount > 0)) {
                         const DrawCallTile &wcwTile = drawData.callTiles[call.callDesc.tileIndex];
                         wcwBlobTexture = wcwTile.tileCopyUsed ? 0 : wcwTile.tmemHashOrID;
                     }
 
+                    float wcwBlobCenter[2] = {};
                     bool wcwSkipBlob = (wcwRaytracer != nullptr) && wcwRaytracer->replacesBlobShadows() && (proj.type == Projection::Type::Perspective) &&
                         (instanceDrawCall.type == InstanceDrawCall::Type::IndexedTriangles) &&
-                        wcwIsBlobShadow(drawData, call.meshDesc.faceIndicesStart, call.callDesc.triangleCount, call.callDesc.otherMode, wcwBlobTexture);
+                        wcwIsBlobShadow(drawData, call.meshDesc.faceIndicesStart, call.callDesc.triangleCount, call.callDesc.otherMode, wcwBlobTexture, wcwBlobCenter) &&
+                        !wcwRaytracer->keepsBlobShadow(wcwBlobCenter[0], wcwBlobCenter[1]);
 
                     // Split screen: keep the blobs on the left (original) half.
                     if (wcwSkipBlob && WcwRaytracer::splitScreen() && (p.fbStorage->colorTarget != nullptr)) {

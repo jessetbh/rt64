@@ -267,6 +267,9 @@ namespace RT64 {
         bool wantsScene() const;
         // Shadow mode drops the game's blob shadows (WCW_RT_KEEP_BLOBS=1 keeps them).
         bool replacesBlobShadows() const;
+        // Whether the game's blob shadow centered at (x, z) is still drawn: past the receiver radius, where no shadow
+        // rays are cast (WcwLogic::keepBlobShadow). Uses the current scene's receiver.
+        bool keepsBlobShadow(float x, float z) const;
         // WCW_RT_SPLIT: ray tracing only on the right half of the screen (before/after comparisons).
         static bool splitScreen();
         // The Lighting editor's split toggle (-1: WCW_RT_SPLIT decides).

@@ -25,6 +25,16 @@ namespace RT64::WcwLogic {
     // Whether a scene last built on game frame builtFrame still casts shadows on game frame frameCounter.
     bool shadowCasterFresh(uint64_t frameCounter, uint64_t builtFrame);
 
+    // The trace casts shadow and AO rays only within the receiver radius of the lights' center, fading them out over
+    // the radius' last 15%. Where the rays fade out, the game's blob shadow takes over: a blob is still drawn from the
+    // middle of that fade outward. Ray-traced shadows replaced every blob, so wrestlers past the radius (ringside, the
+    // ramp, backstage) had no shadow at all.
+    constexpr float BlobShadowKeepFraction = 0.925f;
+
+    // Whether the game's blob shadow centered at (blobX, blobZ) is still drawn with ray-traced shadows on. A radius
+    // of 0 means rays everywhere: no blob is kept.
+    bool keepBlobShadow(float blobX, float blobZ, float centerX, float centerZ, float receiverRadius);
+
     // Ray tracing quality presets
 
     // The menu's Ray Tracing Quality levels.

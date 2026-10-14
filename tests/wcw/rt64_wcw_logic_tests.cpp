@@ -37,6 +37,38 @@ TEST_CASE("shadow casters survive every render of a game frame at 120 fps (shado
     }
 }
 
+TEST_CASE("blob shadows: wrestlers past the receiver radius keep the game's shadow (they had none with RT on)") {
+    // Ring at the origin, radius 650: a wrestler at the barricade (800 out) or on the ramp keeps his blob.
+    CHECK(keepBlobShadow(800.0f, 0.0f, 0.0f, 0.0f, 650.0f));
+    CHECK(keepBlobShadow(0.0f, -1200.0f, 0.0f, 0.0f, 650.0f));
+    CHECK(keepBlobShadow(500.0f, 500.0f, 0.0f, 0.0f, 650.0f));
+}
+
+TEST_CASE("blob shadows: inside the receiver radius ray-traced shadows replace them") {
+    CHECK(!keepBlobShadow(0.0f, 0.0f, 0.0f, 0.0f, 650.0f));
+    CHECK(!keepBlobShadow(300.0f, -200.0f, 0.0f, 0.0f, 650.0f));
+    // Where the traced shadow is still above half strength (its fade runs from 85% to 100% of the radius).
+    CHECK(!keepBlobShadow(650.0f * 0.9f, 0.0f, 0.0f, 0.0f, 650.0f));
+}
+
+TEST_CASE("blob shadows: the handover sits in the middle of the trace's fade-out") {
+    const float r = 650.0f;
+    CHECK(!keepBlobShadow(r * 0.85f, 0.0f, 0.0f, 0.0f, r));
+    CHECK(keepBlobShadow(r * 0.93f, 0.0f, 0.0f, 0.0f, r));
+    CHECK(keepBlobShadow(r, 0.0f, 0.0f, 0.0f, r));
+}
+
+TEST_CASE("blob shadows: measured from the lights' center, not the world origin (rooms anchored to the scene)") {
+    // A backstage room centered at (3000, -2000), radius 400.
+    CHECK(!keepBlobShadow(3100.0f, -2050.0f, 3000.0f, -2000.0f, 400.0f));
+    CHECK(keepBlobShadow(3500.0f, -2000.0f, 3000.0f, -2000.0f, 400.0f));
+    CHECK(keepBlobShadow(0.0f, 0.0f, 3000.0f, -2000.0f, 400.0f));
+}
+
+TEST_CASE("blob shadows: radius 0 traces everywhere, so no blob is kept") {
+    CHECK(!keepBlobShadow(5000.0f, 5000.0f, 0.0f, 0.0f, 0.0f));
+}
+
 // Ray-traced ambient occlusion
 
 TEST_CASE("ao: Off traces no occlusion rays") {
