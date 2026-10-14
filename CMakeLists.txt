@@ -455,6 +455,7 @@ if (RT64_WCW_TESTS AND NOT CMAKE_CROSSCOMPILING)
     add_executable(rt64_wcw_tests
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_logic_tests.cpp"
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_venues_tests.cpp"
+        "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_sharp_texel_tests.cpp"
         "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_logic.cpp"
         "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_venues.cpp"
     )
