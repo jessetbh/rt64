@@ -117,6 +117,14 @@ namespace RT64 {
     static uint32_t wcwHfrTimeouts = 0;
 
     void PresentQueue::threadPresent(const Present &present, bool &swapChainValid) {
+        // [wcw] After device loss the swap chain can't be resized or presented (its buffers may already be released);
+        // stop presenting while the application quits (plume::wcwDeviceLostFlag).
+        if (plume::wcwDeviceLostFlag().load()) {
+            swapChainValid = false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+            return;
+        }
+
         FramebufferManager &fbManager = ext.sharedResources->framebufferManager;
         RenderTargetManager &targetManager = ext.sharedResources->renderTargetManager;
         const bool usingMSAA = (targetManager.multisampling.sampleCount > 1);
