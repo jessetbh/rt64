@@ -659,7 +659,7 @@ namespace RT64 {
             scratchFbChangePool.reset();
             fbManager.resetOperations();
             if (framebufferRenderer->wcwRaytracer != nullptr) {
-                framebufferRenderer->wcwRaytracer->beginWorkload(workload.presentId);
+                framebufferRenderer->wcwRaytracer->beginWorkload(workload.presentId, curFrameWeight);
             }
 
             framebufferRenderer->resetFramebuffers(ext.workloadGraphicsWorker, ubershadersVisible, workload.extended.ditherNoiseStrength, targetManager.multisampling);

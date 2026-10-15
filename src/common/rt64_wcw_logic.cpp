@@ -12,6 +12,44 @@ namespace RT64::WcwLogic {
         return (frameCounter >= builtFrame) && ((frameCounter - builtFrame) <= ShadowCasterStaleFrames);
     }
 
+    TraceArea traceArea(bool darkenMisses, float outsideDarkness) {
+        if (outsideDarkness <= 0.0f) {
+            return TraceArea::Receivers;
+        }
+
+        return darkenMisses ? TraceArea::FullScreen : TraceArea::Geometry;
+    }
+
+    bool generatedFrame(float curFrameWeight) {
+        return curFrameWeight < (1.0f - 1e-4f);
+    }
+
+    bool traceRender(bool generated, bool haveTrace, uint32_t reusesSinceTrace) {
+        return !generated || !haveTrace || (reusesSinceTrace >= MaxGeneratedReuse);
+    }
+
+    bool reusableTrace(bool traced, uint64_t tracedSignature, uint64_t signature, bool tracedDarkened, bool darkens) {
+        return traced && (tracedSignature == signature) && (tracedDarkened == darkens);
+    }
+
+    uint64_t passSignature(const uint32_t *triangleCounts, size_t count) {
+        // FNV-1a over the count and the triangle counts.
+        uint64_t hash = 14695981039346656037ULL;
+        auto mix = [&hash](uint64_t value) {
+            for (uint32_t i = 0; i < 8; i++) {
+                hash ^= (value >> (i * 8)) & 0xFF;
+                hash *= 1099511628211ULL;
+            }
+        };
+
+        mix(count);
+        for (size_t i = 0; i < count; i++) {
+            mix(triangleCounts[i]);
+        }
+
+        return hash;
+    }
+
     AoSettings aoLookSettings(AoLevel level, uint32_t samples) {
         AoSettings settings;
         if (samples == 0) {

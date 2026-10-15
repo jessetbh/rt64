@@ -37,6 +37,105 @@ TEST_CASE("shadow casters survive every render of a game frame at 120 fps (shado
     }
 }
 
+TEST_CASE("trace area: only the pass that darkens the misses traces full screen (No Mercy arenas ran at ~7 fps)") {
+    // A No Mercy arena frame with outside darkness: the arena pass darkens the misses, the ring, wrestler and
+    // small passes don't, and must stay within their geometry instead of tracing the whole target.
+    CHECK(traceArea(true, 0.55f) == TraceArea::FullScreen);
+    CHECK(traceArea(false, 0.55f) == TraceArea::Geometry);
+}
+
+TEST_CASE("trace area: without outside darkness, passes trace only their receivers") {
+    CHECK(traceArea(false, 0.0f) == TraceArea::Receivers);
+    // darkenMisses alone (no darkness to apply) doesn't widen the pass.
+    CHECK(traceArea(true, 0.0f) == TraceArea::Receivers);
+}
+
+TEST_CASE("generated frames: the real frame (current weight 1) is not generated, interpolated ones are") {
+    CHECK(!generatedFrame(1.0f));
+    CHECK(generatedFrame(0.5f));
+    CHECK(generatedFrame(0.25f));
+    CHECK(generatedFrame(0.75f));
+    CHECK(generatedFrame(0.0f));
+}
+
+TEST_CASE("generated frames: only the real frame traces at 60 and 120 fps (every displayed frame traced: ~6 fps)") {
+    // Replays a pass through the interpolation weights of a few game frames and counts its traces.
+    for (uint32_t targetRate : { 60u, 120u }) {
+        InterpolationTicks ticks;
+        bool haveTrace = false;
+        uint32_t reuses = 0, traces = 0, displayed = 0;
+        const uint32_t gameFrames = 10;
+        for (uint32_t g = 0; g < gameFrames; g++) {
+            const uint32_t frames = ticks.beginGameFrame(targetRate, 30, 0);
+            for (uint32_t f = 0; f < frames; f++) {
+                const FrameWeights weights = ticks.advance(targetRate, 30);
+                displayed++;
+                if (traceRender(generatedFrame(weights.cur), haveTrace, reuses)) {
+                    traces++;
+                    haveTrace = true;
+                    reuses = 0;
+                }
+                else {
+                    reuses++;
+                }
+            }
+        }
+
+        CHECK_EQ(displayed, gameFrames * (targetRate / 30));
+        // One trace per game frame; the very first generated frame traces too, having nothing to reuse.
+        CHECK(traces <= gameFrames + 1);
+        CHECK(traces >= gameFrames);
+    }
+}
+
+TEST_CASE("generated frames: a pass with no trace yet traces, even on a generated frame") {
+    CHECK(traceRender(true, false, 0));
+    CHECK(traceRender(false, false, 0));
+    CHECK(traceRender(false, true, 0));
+    CHECK(!traceRender(true, true, 0));
+}
+
+TEST_CASE("generated frames: shadows don't freeze when real frames are skipped under load") {
+    // 120 fps: 3 generated frames between real ones reuse the trace; a 4th in a row (the real frame was skipped)
+    // traces again.
+    CHECK(!traceRender(true, true, 1));
+    CHECK(!traceRender(true, true, 2));
+    CHECK(traceRender(true, true, MaxGeneratedReuse));
+    CHECK(traceRender(true, true, MaxGeneratedReuse + 5));
+}
+
+TEST_CASE("generated frames: two passes sharing a slot don't reuse each other's trace (generated frames ~5% darker)") {
+    // Two No Mercy passes of similar scenes map to one slot. On the real frame each traces in turn, so the slot
+    // holds the second pass's trace; on a generated frame the first pass must trace, not composite that trace.
+    const uint32_t passA[] = { 12, 40, 2, 2, 600 };
+    const uint32_t passB[] = { 12, 40, 2, 2, 598 };
+    const uint64_t slotTrace = passSignature(passB, 5);
+    CHECK(passSignature(passA, 5) != slotTrace);
+    CHECK(traceRender(true, passSignature(passA, 5) == slotTrace, 0));
+    CHECK(!traceRender(true, passSignature(passB, 5) == slotTrace, 0));
+}
+
+TEST_CASE("generated frames: a trace is reused only with the same outside darkness choice (misses darkened twice)") {
+    // The arena pass darkened the misses on the real frame's target. On a generated target it is again the
+    // darkening pass: reuse. If that target picked another pass to darken, the arena trace (darkness baked in)
+    // must not be composited, or the misses darken twice.
+    CHECK(reusableTrace(true, 7, 7, true, true));
+    CHECK(reusableTrace(true, 7, 7, false, false));
+    CHECK(!reusableTrace(true, 7, 7, true, false));
+    CHECK(!reusableTrace(true, 7, 7, false, true));
+    CHECK(!reusableTrace(true, 7, 8, true, true));
+    CHECK(!reusableTrace(false, 7, 7, true, true));
+}
+
+TEST_CASE("generated frames: a pass's signature is stable across the renders of a game frame") {
+    const uint32_t pass[] = { 24, 8, 8, 130 };
+    CHECK_EQ(passSignature(pass, 4), passSignature(pass, 4));
+    // Order and count matter: the same draws in another order, or one draw fewer, are another pass.
+    const uint32_t reordered[] = { 8, 24, 8, 130 };
+    CHECK(passSignature(pass, 4) != passSignature(reordered, 4));
+    CHECK(passSignature(pass, 4) != passSignature(pass, 3));
+}
+
 // Ray-traced ambient occlusion
 
 TEST_CASE("ao: Off traces no occlusion rays") {
