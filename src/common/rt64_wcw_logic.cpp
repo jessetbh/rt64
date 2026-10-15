@@ -12,6 +12,44 @@ namespace RT64::WcwLogic {
         return (frameCounter >= builtFrame) && ((frameCounter - builtFrame) <= ShadowCasterStaleFrames);
     }
 
+    TraceArea traceArea(bool darkenMisses, float outsideDarkness) {
+        if (outsideDarkness <= 0.0f) {
+            return TraceArea::Receivers;
+        }
+
+        return darkenMisses ? TraceArea::FullScreen : TraceArea::Geometry;
+    }
+
+    bool generatedFrame(float curFrameWeight) {
+        return curFrameWeight < (1.0f - 1e-4f);
+    }
+
+    bool traceRender(bool generated, bool haveTrace, uint32_t reusesSinceTrace) {
+        return !generated || !haveTrace || (reusesSinceTrace >= MaxGeneratedReuse);
+    }
+
+    bool reusableTrace(bool traced, uint64_t tracedSignature, uint64_t signature, bool tracedDarkened, bool darkens) {
+        return traced && (tracedSignature == signature) && (tracedDarkened == darkens);
+    }
+
+    uint64_t passSignature(const uint32_t *triangleCounts, size_t count) {
+        // FNV-1a over the count and the triangle counts.
+        uint64_t hash = 14695981039346656037ULL;
+        auto mix = [&hash](uint64_t value) {
+            for (uint32_t i = 0; i < 8; i++) {
+                hash ^= (value >> (i * 8)) & 0xFF;
+                hash *= 1099511628211ULL;
+            }
+        };
+
+        mix(count);
+        for (size_t i = 0; i < count; i++) {
+            mix(triangleCounts[i]);
+        }
+
+        return hash;
+    }
+
     AoSettings aoLookSettings(AoLevel level, uint32_t samples) {
         AoSettings settings;
         if (samples == 0) {
@@ -385,6 +423,32 @@ namespace RT64::WcwLogic {
 
     bool primeGeneratedTargets(bool primeEnabled, bool generateInterpolatedFrames, bool usingMSAA, uint32_t runLength) {
         return primeEnabled && generateInterpolatedFrames && !usingMSAA && (runLength == 1);
+    }
+
+    bool framebufferPassCoversScreen(int32_t scissorWidth, int32_t scissorHeight, int32_t fbWidth, int32_t fbHeight) {
+        if ((scissorWidth <= 0) || (scissorHeight <= 0) || (fbWidth <= 0) || (fbHeight <= 0)) {
+            return false;
+        }
+
+        const float SimilarityPercentage = 0.1f;
+        const float scissorRatio = float(scissorWidth) / float(scissorHeight);
+        const float fbPixelRatio = float(fbWidth) / float(fbHeight);
+        if (std::abs((scissorRatio / fbPixelRatio) - 1.0f) < SimilarityPercentage) {
+            return true;
+        }
+
+        return (scissorWidth == fbWidth) && (scissorHeight >= fbHeight);
+    }
+
+    uint32_t modifiedScreenXYForAspect(uint32_t value, float viewportCenterX, float projRatioScale) {
+        if (projRatioScale == 1.0f) {
+            return value;
+        }
+
+        const float x = float(int16_t((value >> 16) & 0xFFFF)) / 4.0f;
+        const float adjusted = viewportCenterX + (x - viewportCenterX) * projRatioScale;
+        const long quarters = std::clamp(std::lround(adjusted * 4.0f), long(INT16_MIN), long(INT16_MAX));
+        return (uint32_t(uint16_t(int16_t(quarters))) << 16) | (value & 0xFFFF);
     }
 
     MatrixSlotIdentity::MatrixSlotIdentity(uint32_t stride) : stride(stride) { }
