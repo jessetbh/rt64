@@ -56,6 +56,9 @@ namespace RT64 {
         drawData.lookAtIndices.clear();
         drawData.faceIndices.clear();
         drawData.modifyPosUints.clear();
+        drawData.projRatioScales.clear();
+        drawData.modifyPosUintsAdjusted.clear();
+        drawData.modifyPosAdjusted = false;
         drawData.rdpParams.clear();
         drawData.extraParams.clear();
         drawData.renderParams.clear();
