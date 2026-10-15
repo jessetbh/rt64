@@ -37,6 +37,60 @@ TEST_CASE("shadow casters survive every render of a game frame at 120 fps (shado
     }
 }
 
+// Multi-layer runs that end early
+
+// Replays a sequence of run lengths through the workload queue's publishing: a run's generated frame waits for
+// the longest of the last 8 runs; a run that ends shorter is published when the next run starts, if
+// publishShortRun allows. Returns, per run, whether its generated frame was shown.
+static std::vector<bool> replayRuns(const std::vector<uint32_t> &lengths) {
+    std::vector<bool> shown;
+    std::vector<uint32_t> history;
+    uint32_t previous = 0;
+    for (uint32_t length : lengths) {
+        uint32_t expected = 1;
+        for (size_t i = (history.size() > 8) ? history.size() - 8 : 0; i < history.size(); i++) {
+            expected = std::max(expected, history[i]);
+        }
+
+        shown.push_back((length >= expected) || publishShortRun(length, previous));
+        history.push_back(length);
+        previous = length;
+    }
+
+    return shown;
+}
+
+TEST_CASE("short runs: a run cut short after longer runs drops its generated frame (Revenge attract flashes)") {
+    // Run lengths from Revenge's attract mode (WCW_RUN_LOG, 60 fps). Both cut-short runs flashed in the flicker
+    // log: a 1-layer run after 3-layer runs (generated 55.9 against real 48.6) and a 3-layer run after a 5-layer
+    // one (generated 6.4 against real 8.2).
+    const std::vector<bool> a = replayRuns({ 3, 3, 3, 3, 3, 3, 3, 3, 1, 1, 1, 1 });
+    CHECK(!a[8]);
+    const std::vector<bool> b = replayRuns({ 3, 3, 3, 3, 3, 3, 3, 5, 3, 3, 3, 3 });
+    CHECK(!b[8]);
+}
+
+TEST_CASE("short runs: a scene's steady layer count keeps its generated frames") {
+    // After the first cut-short run, the scene keeps 1 (or 3) layers: those runs match the previous one and are
+    // shown, though still shorter than the recent maximum.
+    const std::vector<bool> a = replayRuns({ 3, 3, 3, 3, 3, 3, 3, 3, 1, 1, 1, 1 });
+    CHECK(a[9] && a[10] && a[11]);
+    const std::vector<bool> b = replayRuns({ 3, 3, 3, 3, 3, 3, 3, 5, 3, 3, 3, 3 });
+    CHECK(b[9] && b[10] && b[11]);
+    for (bool s : replayRuns({ 3, 3, 3, 3, 3, 3, 3, 3, 3, 3 })) {
+        CHECK(s);
+    }
+}
+
+TEST_CASE("short runs: publishShortRun") {
+    CHECK(!publishShortRun(1, 3));
+    CHECK(!publishShortRun(3, 5));
+    CHECK(publishShortRun(3, 3));
+    CHECK(publishShortRun(4, 3));
+    // No previous run yet.
+    CHECK(publishShortRun(1, 0));
+}
+
 TEST_CASE("trace area: only the pass that darkens the misses traces full screen (No Mercy arenas ran at ~7 fps)") {
     // A No Mercy arena frame with outside darkness: the arena pass darkens the misses, the ring, wrestler and
     // small passes don't, and must stay within their geometry instead of tracing the whole target.

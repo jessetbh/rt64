@@ -417,6 +417,10 @@ namespace RT64::WcwLogic {
         return HdrAdvice::Good;
     }
 
+    bool publishShortRun(uint32_t runLength, uint32_t previousRunLength) {
+        return runLength >= previousRunLength;
+    }
+
     bool primeGeneratedTargets(bool primeEnabled, bool generateInterpolatedFrames, bool usingMSAA, uint32_t runLength) {
         return primeEnabled && generateInterpolatedFrames && !usingMSAA && (runLength == 1);
     }
