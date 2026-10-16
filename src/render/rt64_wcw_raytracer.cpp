@@ -769,7 +769,7 @@ namespace RT64 {
         // WCW_RT_SCALE the whole scale.
         WcwLogic::RtPreset qualityPreset = WcwLogic::rtPreset(quality);
         qualityPreset.maxLines = envFloat(getenv("WCW_RT_MAX_LINES"), qualityPreset.maxLines);
-        const float frameScale = std::clamp(envFloat(getenv("WCW_RT_SCALE"), WcwLogic::rtTraceScale(qualityPreset, colorTarget->height)), 0.1f, 1.0f);
+        const float frameScale = std::clamp(envFloat(getenv("WCW_RT_SCALE"), WcwLogic::rtTraceScale(qualityPreset, colorTarget->height, colorTarget->downsampleMultiplier)), 0.1f, 1.0f);
         const uint32_t presetSamples = qualityPreset.samplesPerLight;
 
         // Re-enabled after being off: the histories are stale.

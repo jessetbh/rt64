@@ -127,8 +127,17 @@ namespace RT64::WcwLogic {
     // The preset for a quality level; levels past Ultra clamp to Ultra.
     RtPreset rtPreset(uint32_t quality);
 
-    // The trace resolution relative to a color target targetHeight lines tall.
-    float rtTraceScale(const RtPreset &preset, uint32_t targetHeight);
+    // The trace resolution relative to a color target targetHeight lines tall. A supersampled target (rendered at
+    // downsampleMultiplier times the output size, then box-filtered down) traces at no more than the output size:
+    // the soft, temporally resolved shadows gain nothing from the extra samples, and they'd cost 4x the rays.
+    float rtTraceScale(const RtPreset &preset, uint32_t targetHeight, uint32_t downsampleMultiplier = 1);
+
+    // Resolution
+
+    // The render scale at Auto (WindowIntegerScale) resolution: the smallest whole multiple of referenceHeight that
+    // covers the window, times downsampleMultiplier (Supersampling: render that much larger and box-filter it back
+    // down, so the presented image still fits the window). A window not created yet counts as 1x.
+    float windowResolutionMultiplier(uint32_t windowHeight, uint32_t referenceHeight, uint32_t downsampleMultiplier);
 
     // The AO parameters for a quality level.
     AoSettings aoSettings(uint32_t quality);
