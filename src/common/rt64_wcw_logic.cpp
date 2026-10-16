@@ -310,6 +310,54 @@ namespace RT64::WcwLogic {
         return havePreviousPresent && (targetRate > 0) && (targetRate > viOriginalRate) && !beamActive;
     }
 
+    bool holdPresentsToGameRate(uint32_t displayRate, uint32_t targetRate, uint32_t viOriginalRate, bool beamActive) {
+        return (viOriginalRate > 0) && (displayRate > 0) && ((displayRate * 2) >= (viOriginalRate * 3)) && (targetRate <= viOriginalRate) && !beamActive;
+    }
+
+    uint32_t GameRatePacer::pacingRate(uint32_t displayRate, uint32_t targetRate, uint32_t viOriginalRate, bool beamActive) {
+        const bool paceable = holdPresentsToGameRate(displayRate, targetRate, viOriginalRate, beamActive);
+        if (paceable && (viOriginalRate >= pacedRate)) {
+            pacedRate = viOriginalRate;
+            stalePresents = 0;
+            return pacedRate;
+        }
+
+        // A missing, too fast or slower reading: keep the paced rate for a few presents.
+        if ((pacedRate > 0) && (stalePresents < GameRateDropoutPresents) && holdPresentsToGameRate(displayRate, targetRate, pacedRate, beamActive)) {
+            stalePresents++;
+            return pacedRate;
+        }
+
+        // The change lasted: a new rate, or no pacing.
+        if (paceable) {
+            pacedRate = viOriginalRate;
+            stalePresents = 0;
+            return pacedRate;
+        }
+
+        reset();
+        return 0;
+    }
+
+    std::chrono::steady_clock::time_point GameRatePacer::target(std::chrono::steady_clock::time_point now, uint32_t rate) {
+        const auto period = std::chrono::microseconds(1000000 / std::max(rate, 1u));
+        const auto step = period - std::chrono::microseconds(GameRateSlackUs);
+        std::chrono::steady_clock::time_point t = now;
+        if (haveGrid && ((grid + step) > now) && (((grid + step) - now) < period)) {
+            t = grid + step;
+        }
+
+        haveGrid = true;
+        grid = t;
+        return t;
+    }
+
+    void GameRatePacer::reset() {
+        haveGrid = false;
+        pacedRate = 0;
+        stalePresents = 0;
+    }
+
     uint32_t framesPerGameFrame(uint32_t targetRate, uint32_t viOriginalRate, uint32_t capOverride) {
         if (capOverride > 0) {
             return capOverride;
