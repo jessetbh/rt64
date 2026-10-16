@@ -12,6 +12,44 @@ namespace RT64::WcwLogic {
         return (frameCounter >= builtFrame) && ((frameCounter - builtFrame) <= ShadowCasterStaleFrames);
     }
 
+    TraceArea traceArea(bool darkenMisses, float outsideDarkness) {
+        if (outsideDarkness <= 0.0f) {
+            return TraceArea::Receivers;
+        }
+
+        return darkenMisses ? TraceArea::FullScreen : TraceArea::Geometry;
+    }
+
+    bool generatedFrame(float curFrameWeight) {
+        return curFrameWeight < (1.0f - 1e-4f);
+    }
+
+    bool traceRender(bool generated, bool haveTrace, uint32_t reusesSinceTrace) {
+        return !generated || !haveTrace || (reusesSinceTrace >= MaxGeneratedReuse);
+    }
+
+    bool reusableTrace(bool traced, uint64_t tracedSignature, uint64_t signature, bool tracedDarkened, bool darkens) {
+        return traced && (tracedSignature == signature) && (tracedDarkened == darkens);
+    }
+
+    uint64_t passSignature(const uint32_t *triangleCounts, size_t count) {
+        // FNV-1a over the count and the triangle counts.
+        uint64_t hash = 14695981039346656037ULL;
+        auto mix = [&hash](uint64_t value) {
+            for (uint32_t i = 0; i < 8; i++) {
+                hash ^= (value >> (i * 8)) & 0xFF;
+                hash *= 1099511628211ULL;
+            }
+        };
+
+        mix(count);
+        for (size_t i = 0; i < count; i++) {
+            mix(triangleCounts[i]);
+        }
+
+        return hash;
+    }
+
     AoSettings aoLookSettings(AoLevel level, uint32_t samples) {
         AoSettings settings;
         if (samples == 0) {
@@ -82,13 +120,26 @@ namespace RT64::WcwLogic {
         return preset;
     }
 
-    float rtTraceScale(const RtPreset &preset, uint32_t targetHeight) {
+    float rtTraceScale(const RtPreset &preset, uint32_t targetHeight, uint32_t downsampleMultiplier) {
         float scale = preset.scale;
         if ((preset.maxLines > 0.0f) && (targetHeight > 0)) {
             scale = std::min(scale, preset.maxLines / float(targetHeight));
         }
 
+        if (downsampleMultiplier > 1) {
+            scale = std::min(scale, 1.0f / float(downsampleMultiplier));
+        }
+
         return scale;
+    }
+
+    float windowResolutionMultiplier(uint32_t windowHeight, uint32_t referenceHeight, uint32_t downsampleMultiplier) {
+        float multiplier = 1.0f;
+        if ((windowHeight > 0) && (referenceHeight > 0)) {
+            multiplier = std::max(float((windowHeight + referenceHeight - 1) / referenceHeight), 1.0f);
+        }
+
+        return multiplier * float(std::max(downsampleMultiplier, 1u));
     }
 
     AoSettings aoSettings(uint32_t quality) {
@@ -379,8 +430,38 @@ namespace RT64::WcwLogic {
         return HdrAdvice::Good;
     }
 
+    bool publishShortRun(uint32_t runLength, uint32_t previousRunLength) {
+        return runLength >= previousRunLength;
+    }
+
     bool primeGeneratedTargets(bool primeEnabled, bool generateInterpolatedFrames, bool usingMSAA, uint32_t runLength) {
         return primeEnabled && generateInterpolatedFrames && !usingMSAA && (runLength == 1);
+    }
+
+    bool framebufferPassCoversScreen(int32_t scissorWidth, int32_t scissorHeight, int32_t fbWidth, int32_t fbHeight) {
+        if ((scissorWidth <= 0) || (scissorHeight <= 0) || (fbWidth <= 0) || (fbHeight <= 0)) {
+            return false;
+        }
+
+        const float SimilarityPercentage = 0.1f;
+        const float scissorRatio = float(scissorWidth) / float(scissorHeight);
+        const float fbPixelRatio = float(fbWidth) / float(fbHeight);
+        if (std::abs((scissorRatio / fbPixelRatio) - 1.0f) < SimilarityPercentage) {
+            return true;
+        }
+
+        return (scissorWidth == fbWidth) && (scissorHeight >= fbHeight);
+    }
+
+    uint32_t modifiedScreenXYForAspect(uint32_t value, float viewportCenterX, float projRatioScale) {
+        if (projRatioScale == 1.0f) {
+            return value;
+        }
+
+        const float x = float(int16_t((value >> 16) & 0xFFFF)) / 4.0f;
+        const float adjusted = viewportCenterX + (x - viewportCenterX) * projRatioScale;
+        const long quarters = std::clamp(std::lround(adjusted * 4.0f), long(INT16_MIN), long(INT16_MAX));
+        return (uint32_t(uint16_t(int16_t(quarters))) << 16) | (value & 0xFFFF);
     }
 
     MatrixSlotIdentity::MatrixSlotIdentity(uint32_t stride) : stride(stride) { }
@@ -408,5 +489,95 @@ namespace RT64::WcwLogic {
 
         identities.emplace(address, id);
         return id;
+    }
+
+    std::vector<HudAnchor> hudAnchors(const std::vector<HudBox> &boxes, float screenLeft, float screenRight) {
+        const size_t n = boxes.size();
+        std::vector<HudAnchor> anchors(n, HudAnchor::Centre);
+        const float width = screenRight - screenLeft;
+        if ((n == 0) || (n > HudMaxBoxes) || !(width > 0.0f)) {
+            return anchors;
+        }
+
+        // Group boxes closer than the gap (union-find).
+        std::vector<size_t> parent(n);
+        for (size_t i = 0; i < n; i++) {
+            parent[i] = i;
+        }
+
+        auto root = [&](size_t i) {
+            while (parent[i] != i) {
+                parent[i] = parent[parent[i]];
+                i = parent[i];
+            }
+
+            return i;
+        };
+
+        const float gap = HudElementGap * width;
+        for (size_t i = 0; i < n; i++) {
+            for (size_t j = i + 1; j < n; j++) {
+                const HudBox &a = boxes[i];
+                const HudBox &b = boxes[j];
+                const bool near = (a.left - gap <= b.right) && (b.left - gap <= a.right) && (a.top - gap <= b.bottom) && (b.top - gap <= a.bottom);
+                if (near) {
+                    parent[root(i)] = root(j);
+                }
+            }
+        }
+
+        // Each element's horizontal extent.
+        std::vector<float> elementLeft(n, 0.0f), elementRight(n, 0.0f);
+        std::vector<bool> elementSeen(n, false);
+        for (size_t i = 0; i < n; i++) {
+            const size_t r = root(i);
+            if (!elementSeen[r]) {
+                elementSeen[r] = true;
+                elementLeft[r] = boxes[i].left;
+                elementRight[r] = boxes[i].right;
+            }
+            else {
+                elementLeft[r] = std::min(elementLeft[r], boxes[i].left);
+                elementRight[r] = std::max(elementRight[r], boxes[i].right);
+            }
+        }
+
+        const float centre = (screenLeft + screenRight) / 2.0f;
+        for (size_t i = 0; i < n; i++) {
+            const size_t r = root(i);
+            const float left = elementLeft[r];
+            const float right = elementRight[r];
+            const bool crossesCentre = (left < centre) && (right > centre);
+            const bool nearCentre = std::abs((left + right) / 2.0f - centre) <= (HudCentreBand * width);
+            if (crossesCentre || nearCentre) {
+                anchors[i] = HudAnchor::Centre;
+            }
+            else {
+                anchors[i] = (right <= centre) ? HudAnchor::Left : HudAnchor::Right;
+            }
+        }
+
+        return anchors;
+    }
+
+    bool hudPlacementActive(float centredWidthFraction, float placement) {
+        return (placement > 0.0f) && (centredWidthFraction < 0.999f) && (centredWidthFraction > 0.0f);
+    }
+
+    float hudShiftNdc(HudAnchor anchor, float centredWidthFraction, float placement) {
+        if (!hudPlacementActive(centredWidthFraction, placement)) {
+            return 0.0f;
+        }
+
+        const float shift = (1.0f - centredWidthFraction) * std::min(placement, 1.0f);
+        switch (anchor) {
+        case HudAnchor::Left:
+            return -shift;
+        case HudAnchor::Right:
+            return shift;
+        case HudAnchor::Centre:
+        default:
+            return 0.0f;
+        }
     }
 };

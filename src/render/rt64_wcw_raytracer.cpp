@@ -166,7 +166,8 @@ namespace RT64 {
         blueNoiseBuffer->unmap();
     }
 
-    void WcwRaytracer::beginWorkload(uint64_t presentId) {
+    void WcwRaytracer::beginWorkload(uint64_t presentId, float curFrameWeight) {
+        generatedRender = WcwLogic::generatedFrame(curFrameWeight);
         if (presentId != lastPresentId) {
             finishPresent();
             lastPresentId = presentId;
@@ -501,6 +502,8 @@ namespace RT64 {
         boundsViewProj = hlslpp::mul(view, proj);
         boundsMin[0] = boundsMin[1] = FLT_MAX;
         boundsMax[0] = boundsMax[1] = -FLT_MAX;
+        geometryMin[0] = geometryMin[1] = FLT_MAX;
+        geometryMax[0] = geometryMax[1] = -FLT_MAX;
         boundsFullScreen = false;
         if (presetsStamp == INT64_MIN) {
             loadPresets(true);
@@ -568,7 +571,8 @@ namespace RT64 {
         }
 
         // Triangles entirely outside the receiver radius only need primary rays where other
-        // geometry is traced anyway: they don't widen the rect.
+        // geometry is traced anyway: they don't widen the receiver rect (only the geometry rect).
+        bool receiver = true;
         if (receiverRadius > 0.0f) {
             float minX = FLT_MAX, maxX = -FLT_MAX, minZ = FLT_MAX, maxZ = -FLT_MAX;
             for (uint32_t i = 0; i < 3; i++) {
@@ -580,9 +584,7 @@ namespace RT64 {
 
             const float dx = std::max({ minX - receiverCenter[0], 0.0f, receiverCenter[0] - maxX });
             const float dz = std::max({ minZ - receiverCenter[1], 0.0f, receiverCenter[1] - maxZ });
-            if ((dx * dx + dz * dz) > (receiverRadius * receiverRadius)) {
-                return;
-            }
+            receiver = (dx * dx + dz * dz) <= (receiverRadius * receiverRadius);
         }
 
         // Clip the triangle against the near plane (w > NearW) so vertices behind the camera
@@ -605,10 +607,16 @@ namespace RT64 {
             const float w = c.w;
             const float px = viewport.x + (float(c.x) / w * 0.5f + 0.5f) * viewport.width;
             const float py = viewport.y + (0.5f - float(c.y) / w * 0.5f) * viewport.height;
-            boundsMin[0] = std::min(boundsMin[0], px);
-            boundsMin[1] = std::min(boundsMin[1], py);
-            boundsMax[0] = std::max(boundsMax[0], px);
-            boundsMax[1] = std::max(boundsMax[1], py);
+            geometryMin[0] = std::min(geometryMin[0], px);
+            geometryMin[1] = std::min(geometryMin[1], py);
+            geometryMax[0] = std::max(geometryMax[0], px);
+            geometryMax[1] = std::max(geometryMax[1], py);
+            if (receiver) {
+                boundsMin[0] = std::min(boundsMin[0], px);
+                boundsMin[1] = std::min(boundsMin[1], py);
+                boundsMax[0] = std::max(boundsMax[0], px);
+                boundsMax[1] = std::max(boundsMax[1], py);
+            }
         };
 
         for (uint32_t i = 0; i < 3; i++) {
@@ -761,7 +769,7 @@ namespace RT64 {
         // WCW_RT_SCALE the whole scale.
         WcwLogic::RtPreset qualityPreset = WcwLogic::rtPreset(quality);
         qualityPreset.maxLines = envFloat(getenv("WCW_RT_MAX_LINES"), qualityPreset.maxLines);
-        const float frameScale = std::clamp(envFloat(getenv("WCW_RT_SCALE"), WcwLogic::rtTraceScale(qualityPreset, colorTarget->height)), 0.1f, 1.0f);
+        const float frameScale = std::clamp(envFloat(getenv("WCW_RT_SCALE"), WcwLogic::rtTraceScale(qualityPreset, colorTarget->height, colorTarget->downsampleMultiplier)), 0.1f, 1.0f);
         const uint32_t presetSamples = qualityPreset.samplesPerLight;
 
         // Re-enabled after being off: the histories are stale.
@@ -831,6 +839,33 @@ namespace RT64 {
 
             pipelineDesc.renderTargetBlend[0].renderTargetWriteMask = uint8_t(RenderColorWriteEnable::RED) | uint8_t(RenderColorWriteEnable::GREEN) | uint8_t(RenderColorWriteEnable::BLUE);
             compositePipeline = device->createGraphicsPipeline(pipelineDesc);
+        }
+
+        // Frame interpolation: a generated frame composites this pass's latest trace instead of tracing again
+        // (WcwLogic::traceRender). WCW_RT_TRACE_GENERATED=1 traces every displayed frame (the old cost).
+        static const bool traceGenerated = getenv("WCW_RT_TRACE_GENERATED") != nullptr;
+        passTriangleCounts.clear();
+        for (const RenderBottomLevelASMesh &mesh : meshes) {
+            passTriangleCounts.push_back(mesh.indexCount / 3);
+        }
+
+        const uint64_t signature = WcwLogic::passSignature(passTriangleCounts.data(), passTriangleCounts.size());
+        // Outside darkness: which pass darkens the misses is decided for every pass, traced or not, so each
+        // target gets exactly one (WcwLogic::MissDarkening).
+        const bool darkenMisses = missDarkening.darkenThisPass(colorTarget, lastPresentId, meshes.size());
+        const bool haveTrace = WcwLogic::reusableTrace(slot.tracedPresent != UINT64_MAX, slot.tracedSignature, signature, slot.tracedDarkened, darkenMisses);
+        if (!traceGenerated && !WcwLogic::traceRender(generatedRender, haveTrace, slot.reusesSinceTrace)) {
+            memcpy(traceRect, slot.tracedRect, sizeof(traceRect));
+            traceRectEmpty = (traceRect[2] <= traceRect[0]) || (traceRect[3] <= traceRect[1]);
+            compositeSet->setTexture(0, slot.output.get(), RenderTextureLayout::SHADER_READ);
+            slot.reusesSinceTrace++;
+            generatedReuses++;
+            return;
+        }
+
+        if (generatedRender && !traceGenerated) {
+            const uint32_t reason = (slot.tracedPresent == UINT64_MAX) ? 0 : ((slot.tracedSignature != signature) ? 1 : ((slot.tracedDarkened != darkenMisses) ? 2 : 3));
+            generatedTraces[reason]++;
         }
 
         // Parameters.
@@ -995,7 +1030,6 @@ namespace RT64 {
                 params.litAreaCount += used ? 1u : 0u;
             }
         }
-        const bool darkenMisses = missDarkening.darkenThisPass(colorTarget, lastPresentId, meshes.size());
         params.darkenMisses = ((outsideDarkness > 0.0f) && darkenMisses) ? 1u : 0u;
 
         {
@@ -1008,20 +1042,25 @@ namespace RT64 {
             }
         }
 
-        // Trace only this workload's screen footprint (plus a margin for the bilinear upsample
-        // and the resolve filters' neighborhoods); the whole screen with outside darkness.
+        // Trace only this workload's screen footprint (plus a margin for the bilinear upsample and the resolve
+        // filters' neighborhoods): WcwLogic::traceArea. WCW_RT_FULL_TRACE=1 traces every pass full screen (the old cost).
+        static const bool fullTrace = getenv("WCW_RT_FULL_TRACE") != nullptr;
         const float margin = float(std::max({ 3u, params.shadowFilterRadius + 1, params.aoFilterRadius + 1, params.filterRadius + 1 }));
-        if (boundsFullScreen || (outsideDarkness > 0.0f)) {
+        const WcwLogic::TraceArea area = WcwLogic::traceArea(darkenMisses, outsideDarkness);
+        if (boundsFullScreen || (area == WcwLogic::TraceArea::FullScreen) || (fullTrace && (outsideDarkness > 0.0f))) {
             traceRect[0] = traceRect[1] = 0;
             traceRect[2] = traceWidth;
             traceRect[3] = traceHeight;
         }
         else {
             const float scale = params.traceScale;
-            traceRect[0] = uint32_t(std::clamp(std::floor(boundsMin[0] * scale) - margin, 0.0f, float(traceWidth)));
-            traceRect[1] = uint32_t(std::clamp(std::floor(boundsMin[1] * scale) - margin, 0.0f, float(traceHeight)));
-            traceRect[2] = uint32_t(std::clamp(std::ceil(boundsMax[0] * scale) + margin, 0.0f, float(traceWidth)));
-            traceRect[3] = uint32_t(std::clamp(std::ceil(boundsMax[1] * scale) + margin, 0.0f, float(traceHeight)));
+            const bool geometry = (area == WcwLogic::TraceArea::Geometry);
+            const float *rectMin = geometry ? geometryMin : boundsMin;
+            const float *rectMax = geometry ? geometryMax : boundsMax;
+            traceRect[0] = uint32_t(std::clamp(std::floor(rectMin[0] * scale) - margin, 0.0f, float(traceWidth)));
+            traceRect[1] = uint32_t(std::clamp(std::floor(rectMin[1] * scale) - margin, 0.0f, float(traceHeight)));
+            traceRect[2] = uint32_t(std::clamp(std::ceil(rectMax[0] * scale) + margin, 0.0f, float(traceWidth)));
+            traceRect[3] = uint32_t(std::clamp(std::ceil(rectMax[1] * scale) + margin, 0.0f, float(traceHeight)));
         }
 
         traceRectEmpty = (traceRect[2] <= traceRect[0]) || (traceRect[3] <= traceRect[1]);
@@ -1043,6 +1082,9 @@ namespace RT64 {
         slot.tracedViewProj = viewProj;
         memcpy(slot.tracedRect, traceRect, sizeof(traceRect));
         slot.tracedMeshes = uint32_t(meshes.size());
+        slot.reusesSinceTrace = 0;
+        slot.tracedSignature = signature;
+        slot.tracedDarkened = darkenMisses;
 
         params.traceOffset = { traceRect[0], traceRect[1] };
         params.traceEnd = { traceRect[2], traceRect[3] };
@@ -1215,10 +1257,13 @@ namespace RT64 {
         fullScreenSum += timingFullScreen ? 1 : 0;
         timingWritten = 0;
         if (++count == 300) {
-            fprintf(stderr, "[wcw rt gpu] per traced workload avg: build=%.3f trace=%.3f resolve=%.3f composite=%.3f ms, build->composite span=%.3f (max %.3f) ms; %llu meshes (%llu alpha-tested), %llu tris, %llu trace px of %u lines, %llu full-screen, %u traces reused (300 workloads)\n",
+            fprintf(stderr, "[wcw rt gpu] per traced workload avg: build=%.3f trace=%.3f resolve=%.3f composite=%.3f ms, build->composite span=%.3f (max %.3f) ms; %llu meshes (%llu alpha-tested), %llu tris, %llu trace px of %u lines, %llu full-screen, %u traces reused, %u generated frames reused a trace, traced %u/%u/%u/%u (none/other pass/darkening/stale) (300 workloads)\n",
                 sums[0] / count, sums[1] / count, sums[2] / count, sums[3] / count, sums[4] / count, maxTotal,
-                (unsigned long long)(meshSum / count), (unsigned long long)(alphaSum / count), (unsigned long long)(triangleSum / count), (unsigned long long)(pixelSum / count), timingTraceHeight, (unsigned long long)fullScreenSum, reusedTraces);
+                (unsigned long long)(meshSum / count), (unsigned long long)(alphaSum / count), (unsigned long long)(triangleSum / count), (unsigned long long)(pixelSum / count), timingTraceHeight, (unsigned long long)fullScreenSum, reusedTraces, generatedReuses,
+                generatedTraces[0], generatedTraces[1], generatedTraces[2], generatedTraces[3]);
+            memset(generatedTraces, 0, sizeof(generatedTraces));
             reusedTraces = 0;
+            generatedReuses = 0;
             memset(sums, 0, sizeof(sums));
             maxTotal = 0.0;
             triangleSum = meshSum = alphaSum = pixelSum = fullScreenSum = 0;

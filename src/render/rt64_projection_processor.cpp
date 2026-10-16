@@ -5,6 +5,7 @@
 #include "rt64_projection_processor.h"
 
 #include "common/rt64_math.h"
+#include "common/rt64_wcw_logic.h"
 #include "hle/rt64_workload_queue.h"
 
 namespace RT64 {
@@ -39,6 +40,7 @@ namespace RT64 {
             drawData.prevViewTransforms = drawData.viewTransforms;
             drawData.prevProjTransforms = drawData.projTransforms;
             drawData.prevViewProjTransforms = drawData.viewProjTransforms;
+            drawData.projRatioScales.assign(drawData.viewProjTransforms.size(), 1.0f);
         }
 
         for (size_t s = 0; s < p.curFrame->perspectiveScenes.size(); s++) {
@@ -47,6 +49,39 @@ namespace RT64 {
 
         for (size_t s = 0; s < p.curFrame->orthographicScenes.size(); s++) {
             processScene(p, p.curFrame->orthographicScenes[s], s);
+        }
+
+        // [wcw fix] Screen-position modifies (G_MWO_POINT_XYSCREEN) bypass the projection, so give them the same x
+        // compression as their projection got (WcwLogic::modifiedScreenXYForAspect), from the unmodified values every
+        // frame (this runs for every displayed frame; the source is never changed).
+        for (uint32_t w : p.curFrame->workloads) {
+            Workload &workload = p.workloadQueue->workloads[w];
+            DrawData &drawData = workload.drawData;
+            drawData.modifyPosAdjusted = false;
+            drawData.modifyPosUintsAdjusted = drawData.modifyPosUints;
+            for (size_t i = 0; (i + 1) < drawData.modifyPosUintsAdjusted.size(); i += 2) {
+                const uint32_t key = drawData.modifyPosUintsAdjusted[i];
+                if ((key & 0x1) != 0) {
+                    continue;
+                }
+
+                const uint32_t vertexIndex = key >> 1;
+                if (vertexIndex >= drawData.viewProjIndices.size()) {
+                    continue;
+                }
+
+                const uint32_t transformsIndex = drawData.viewProjIndices[vertexIndex];
+                if ((transformsIndex >= drawData.projRatioScales.size()) || (transformsIndex >= drawData.rspViewports.size())) {
+                    continue;
+                }
+
+                const float ratio = drawData.projRatioScales[transformsIndex];
+                if (ratio != 1.0f) {
+                    drawData.modifyPosUintsAdjusted[i + 1] = WcwLogic::modifiedScreenXYForAspect(drawData.modifyPosUintsAdjusted[i + 1],
+                        drawData.rspViewports[transformsIndex].translate.x, ratio);
+                    drawData.modifyPosAdjusted = true;
+                }
+            }
         }
     }
 
@@ -99,6 +134,9 @@ namespace RT64 {
             }
  
             float projRatioScale = adjustAspectRatio ? (1.0f / p.aspectRatioScale) : 1.0f;
+            if (proj.transformsIndex < drawData.projRatioScales.size()) {
+                drawData.projRatioScales[proj.transformsIndex] = projRatioScale; // [wcw fix] for the screen-position modifies
+            }
             interop::float4x4 &viewMatrix = drawData.modViewTransforms[proj.transformsIndex];
             interop::float4x4 &projMatrix = drawData.modProjTransforms[proj.transformsIndex];
             interop::float4x4 &viewProjMatrix = drawData.modViewProjTransforms[proj.transformsIndex];
@@ -156,6 +194,10 @@ namespace RT64 {
             DrawBuffers &drawBuffers = workload.drawBuffers;
             std::pair<size_t, size_t> uploadRange = { 0, drawData.viewProjTransforms.size() };
             uploads.emplace_back(BufferUploader::Upload{ drawData.modViewProjTransforms.data(), uploadRange, sizeof(interop::float4x4), RenderBufferFlag::STORAGE, { }, &drawBuffers.viewProjTransformsBuffer });
+            if (drawData.modifyPosAdjusted) {
+                std::pair<size_t, size_t> modifyRange = { 0, drawData.modifyPosUintsAdjusted.size() };
+                uploads.emplace_back(BufferUploader::Upload{ drawData.modifyPosUintsAdjusted.data(), modifyRange, sizeof(uint32_t), RenderBufferFlag::FORMATTED, { RenderFormat::R32_UINT }, &drawBuffers.modifyPosUintsAdjustedBuffer });
+            }
         }
 
         bufferUploader->submit(p.worker, uploads);

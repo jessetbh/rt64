@@ -11,6 +11,7 @@
 #include "shared/rt64_other_mode.h"
 #include "shared/rt64_render_flags.h"
 #include "shared/rt64_render_params.h"
+#include "shared/rt64_wcw_sharp_texel.h"
 
 #define SIMULATE_LOW_PRECISION 1
 #define FIX_UPSCALING_PRECISION 1
@@ -213,7 +214,18 @@ float4 sampleTextureLevel(const RDPTile rdpTile, const GPUTile gpuTile, bool fil
     }
 }
 
+// [wcw] "2D Texture Edges: Smooth" applies to this draw: the option is on and the RDP point-samples the texture
+// (the user's bilinear choice, linearFiltering, already smooths everything).
+bool wcwSmoothPointTexture(OtherMode otherMode, RenderFlags renderFlags) {
+    const bool pointSampled = (otherMode.textFilt() == G_TF_POINT) || (otherMode.cycleType() == G_CYC_COPY);
+    return (FrParams.wcwSmooth2DEdges != 0) && pointSampled && !renderFlagLinearFiltering(renderFlags);
+}
+
 float4 sampleTexture(OtherMode otherMode, RenderFlags renderFlags, float2 inputUV, float2 ddxUVx, float2 ddyUVy, const RDPTile rdpTile, const GPUTile gpuTile, bool nextPixelBug) {
+    // [wcw] Sharp bilinear for point-sampled art (not for texture packs, mipmapped tiles or coverage-in-alpha
+    // framebuffer textures, whose alpha must stay exact).
+    const bool smoothEdges = wcwSmoothPointTexture(otherMode, renderFlags) && !gpuTileFlagHighRes(gpuTile.flags) &&
+        !gpuTileFlagHasMipmaps(gpuTile.flags) && !gpuTileFlagAlphaIsCvg(gpuTile.flags);
     const bool texturePerspective = (otherMode.textPersp() == G_TP_PERSP);
     const bool applyCorrection = (!texturePerspective && !renderFlagRect(renderFlags));
 
@@ -222,7 +234,8 @@ float4 sampleTexture(OtherMode otherMode, RenderFlags renderFlags, float2 inputU
     float2 uvCoord = inputUV * perspCorrectionMod * float2(rdpTile.shifts, rdpTile.shiftt);
 
 #if SIMULATE_LOW_PRECISION
-    if (!gpuTileFlagHighRes(gpuTile.flags)) {
+    // [wcw] Not for smoothed edges: the seam ramp needs sub-texel precision.
+    if (!gpuTileFlagHighRes(gpuTile.flags) && !smoothEdges) {
         // Simulates the lower precision of the hardware's coordinate interpolation.
         // This is not simulated if a texture replacement is being used.
         uvCoord = round(uvCoord * LowPrecision) / LowPrecision;
@@ -242,12 +255,20 @@ float4 sampleTexture(OtherMode otherMode, RenderFlags renderFlags, float2 inputU
     
     uvCoord *= gpuTile.tcScale;
     uvCoord -= (float2(rdpTile.uls, rdpTile.ult) * gpuTile.ulScale) / 4.0f;
+
+    // [wcw] Sharp bilinear: texels stay squares, seams blend over one screen pixel (shared/rt64_wcw_sharp_texel.h).
+    if (smoothEdges) {
+        const float2 texelScale = abs(perspCorrectionMod * float2(rdpTile.shifts, rdpTile.shiftt) * gpuTile.tcScale);
+        const float2 texelsPerPixel = (abs(ddxUVx) + abs(ddyUVy)) * texelScale;
+        uvCoord = float2(wcwSharpTexelCoord(uvCoord.x, texelsPerPixel.x), wcwSharpTexelCoord(uvCoord.y, texelsPerPixel.y));
+    }
     
     const uint filter = otherMode.textFilt();
     const uint cycleType = otherMode.cycleType();
     const bool filterBilerp = (filter != G_TF_POINT) && (cycleType != G_CYC_COPY);
     const bool filterAverage = (filter == G_TF_AVERAGE);
-    const bool linearFiltering = renderFlagLinearFiltering(renderFlags);
+    // [wcw] Smoothed edges sample the remapped coordinate with bilinear filtering.
+    const bool linearFiltering = renderFlagLinearFiltering(renderFlags) || smoothEdges;
     
 #if FIX_UPSCALING_PRECISION
     // Account for the fact that scaling can result in less than perfect results that affect the quality of point filtering.
