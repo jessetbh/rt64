@@ -6,6 +6,7 @@
 
 #include "common/rt64_thread.h"
 #include "common/rt64_wcw_logic.h"
+#include "render/rt64_wcw_device_lost.h"
 
 #include "rt64_present_queue.h"
 
@@ -1116,6 +1117,18 @@ namespace RT64 {
                     continue;
                 }
 
+                // [wcw] After device loss, render nothing (the ray tracing scene build and resource creation crashed on
+                // the dead device), but complete the workload so the present thread and the game don't wait on it.
+                if (wcwSkipGpuWork()) {
+                    threadAdvanceWorkloadId(workload.workloadId);
+                    if (!workload.paused) {
+                        threadAdvanceBarrier();
+                    }
+
+                    processCursor = -1;
+                    continue;
+                }
+
                 ElapsedTimer workloadTimer;
                 workloadProfiler.start();
                 threadConfigurationUpdate(workload.viFbSize, workloadConfig);
@@ -1840,6 +1853,12 @@ namespace RT64 {
             }
 
             if (threadsRunning) {
+                // [wcw] No GPU keep-alive work on a lost device.
+                if (wcwSkipGpuWork()) {
+                    Thread::sleepMilliseconds(16);
+                    continue;
+                }
+
                 if (workerMutex.try_lock()) {
                     commandList->begin();
                     commandList->setPipeline(idle.pipeline.get());

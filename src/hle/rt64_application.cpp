@@ -5,6 +5,7 @@
 #include "rt64_application.h"
 #include "rhi/rt64_render_hooks.h"
 #include "render/rt64_hdr_output.h"
+#include "render/rt64_wcw_device_lost.h"
 
 #include <cinttypes>
 #include <filesystem>
@@ -495,6 +496,17 @@ namespace RT64 {
     Application::~Application() {}
 
     void Application::processDisplayLists(uint8_t *memory, uint32_t dlStartAddress, uint32_t dlEndAddress, bool isHLE) {
+        // [wcw] The GPU device is lost and the game is quitting: don't record anything. Interrupt as a finished display
+        // list would (its full sync), so the game keeps running until the quit.
+        if (wcwSkipGpuWork()) {
+            state->dpInterrupt();
+            if (isHLE) {
+                state->spInterrupt();
+            }
+
+            return;
+        }
+
         if (state->debuggerInspector.paused) {
             // TODO: It'd be necessary to parse the display list to see if it actually does a fullSync before sending the interrupt.
             state->dpInterrupt();
@@ -545,6 +557,11 @@ namespace RT64 {
 
     void Application::updateScreen() {
         appWindow->sdlCheckFilterInstallation();
+        // [wcw] No new workloads or presents after device loss (see processDisplayLists).
+        if (wcwSkipGpuWork()) {
+            return;
+        }
+
         // [wcw] Set WCW_INSPECTOR=1 to auto-open the RT64 frame inspector at startup (it renders
         // and is visible, but mouse interaction doesn't work yet — the frontend doesn't forward
         // win32 messages to Application::windowMessageFilter).

@@ -1042,6 +1042,38 @@ TEST_CASE("widescreen: negative screen x and the int16 range survive the convers
     CHECK(unpackX(modifiedScreenXYForAspect(packXY(8000.0f, 0.0f), 0.0f, 2.0f)) == 8191.75f);
 }
 
+// Graphics device loss
+
+TEST_CASE("device loss: renderer threads render until the device is lost, then skip all GPU work") {
+    CHECK(deviceLostWork(false) == DeviceLostWork::Render);
+    CHECK(deviceLostWork(true) == DeviceLostWork::SkipGpuWork);
+}
+
+TEST_CASE("device loss: no device loss, no message and no quit") {
+    DeviceLossQuit q;
+    for (int i = 0; i < 100; i++) {
+        CHECK(q.update(false, i * 1.0, false) == DeviceLossQuit::Action::None);
+    }
+}
+
+TEST_CASE("device loss: the message shows once, and the game quits when the player closes it") {
+    DeviceLossQuit q;
+    CHECK(q.update(true, 100.0, false) == DeviceLossQuit::Action::ShowMessage);
+    CHECK(q.update(true, 101.0, false) == DeviceLossQuit::Action::None);
+    CHECK(q.update(true, 102.0, true) == DeviceLossQuit::Action::Quit);
+    CHECK(q.update(true, 103.0, true) == DeviceLossQuit::Action::None);
+}
+
+TEST_CASE("device loss: an unanswered message doesn't block the quit (test runs hung on the message box)") {
+    DeviceLossQuit q;
+    CHECK(q.update(true, 50.0, false) == DeviceLossQuit::Action::ShowMessage);
+    CHECK(q.update(true, 50.0 + DeviceLostMessageSeconds - 0.1, false) == DeviceLossQuit::Action::None);
+    CHECK(q.update(true, 50.0 + DeviceLostMessageSeconds, false) == DeviceLossQuit::Action::Quit);
+    // Only one quit, even when the player closes the message afterwards.
+    CHECK(q.update(true, 50.0 + DeviceLostMessageSeconds + 1.0, true) == DeviceLossQuit::Action::None);
+    CHECK(q.update(true, 1000.0, false) == DeviceLossQuit::Action::None);
+}
+
 int main() {
     return WcwTest::runAll("rt64 wcw tests");
 }

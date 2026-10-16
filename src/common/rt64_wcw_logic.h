@@ -420,4 +420,45 @@ namespace RT64::WcwLogic {
     // anchor: all the way to the window edge at placement 1, part of the way for a clamped mode (16:9 in a 21:9
     // window). Matches rt64's G_EX_ORIGIN_LEFT / RIGHT rect origins.
     float hudShiftNdc(HudAnchor anchor, float centredWidthFraction, float placement);
+
+    // Graphics device loss
+
+    // What a renderer thread does with its next piece of work (a display list, a workload, a present, a texture
+    // upload batch).
+    enum class DeviceLostWork {
+        // Render it as usual.
+        Render,
+        // Skip all GPU work, but keep the bookkeeping going (workload and present ids, queue barriers, upload
+        // queues), so the threads waiting on it don't block the quit.
+        SkipGpuWork
+    };
+
+    // Once the device is lost every GPU call can fail and resources created since come back empty: the render thread
+    // crashed building the ray tracing scene, the texture thread naming a texture, after the loss was detected. So
+    // from the first piece of work after the loss, no thread touches the GPU again.
+    DeviceLostWork deviceLostWork(bool deviceLost);
+
+    // How long the "Graphics device lost" message waits for the player before the game quits anyway. Nobody may be
+    // at the keyboard (a test run, a player who walked away); the game must still shut down and flush its saves.
+    constexpr double DeviceLostMessageSeconds = 15.0;
+
+    // The quit after device loss, polled by the frontend: show the message once, then quit when the player closes
+    // it or after DeviceLostMessageSeconds, whichever comes first, and only once.
+    class DeviceLossQuit {
+    public:
+        enum class Action {
+            None,
+            ShowMessage,
+            Quit
+        };
+
+        // deviceLost: the device-lost flag; nowSeconds: any steady clock; messageClosed: the player closed the
+        // message.
+        Action update(bool deviceLost, double nowSeconds, bool messageClosed);
+
+    private:
+        bool shown = false;
+        bool quit = false;
+        double shownSeconds = 0.0;
+    };
 };

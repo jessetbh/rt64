@@ -580,4 +580,27 @@ namespace RT64::WcwLogic {
             return 0.0f;
         }
     }
+
+    DeviceLostWork deviceLostWork(bool deviceLost) {
+        return deviceLost ? DeviceLostWork::SkipGpuWork : DeviceLostWork::Render;
+    }
+
+    DeviceLossQuit::Action DeviceLossQuit::update(bool deviceLost, double nowSeconds, bool messageClosed) {
+        if (quit || !deviceLost) {
+            return Action::None;
+        }
+
+        if (!shown) {
+            shown = true;
+            shownSeconds = nowSeconds;
+            return Action::ShowMessage;
+        }
+
+        if (messageClosed || ((nowSeconds - shownSeconds) >= DeviceLostMessageSeconds)) {
+            quit = true;
+            return Action::Quit;
+        }
+
+        return Action::None;
+    }
 };
