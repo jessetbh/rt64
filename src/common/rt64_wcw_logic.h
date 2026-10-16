@@ -57,9 +57,11 @@ namespace RT64::WcwLogic {
     // frames that reused it since.
     bool traceRender(bool generated, bool haveTrace, uint32_t reusesSinceTrace);
 
-    // A pass's identity within a game frame: its draws' triangle counts, in order. A generated frame replays the
-    // real frame's draws, so the same pass has the same signature. Two passes can share a slot (similar scenes);
-    // reusing by slot alone composited one pass's trace for both, darkening generated frames ~5%.
+    // A pass's identity: its draws' triangle counts, in any order. A generated frame reuses the trace of the
+    // previous game frame's real frame, and No Mercy sorts the wrestlers' draws again every game frame: with the
+    // order in the signature the wrestler pass (the most expensive trace) never matched and traced twice per game
+    // frame at 60/120 fps (aki-roadmap#86). Two passes can share a slot (similar scenes); reusing by slot alone
+    // composited one pass's trace for both, darkening generated frames ~5%.
     uint64_t passSignature(const uint32_t *triangleCounts, size_t count);
 
     // Whether a slot's trace can stand in for this pass on a generated frame: the slot holds a trace (traced) of
