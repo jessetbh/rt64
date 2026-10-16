@@ -757,3 +757,323 @@ TEST_CASE("venue switching: a frame from before a 2D screen doesn't pair with th
     CHECK(!everA);
     CHECK_EQ(selector.active(), 1);
 }
+
+// [wcw rt] Emissive textures, spots and crowd falloff (jessetbh/aki-roadmap#62).
+static const char *EmissiveFile = R"json(
+{
+    "default": { "crowdFalloff": 0.3, "emissive": [["00000000000000AA", 1.5, 0]] },
+    "venues": [
+        { "name": "Raw stage", "match": ["0000000000000001"],
+          "emissive": [["B1E01BE92A6F5BE1", 2, 600, 1, 0.5, 0.2], ["00000000000000BB", 1, 0, 1, 1, 1, 4]],
+          "spots": [[0, 800, 2600, 180, 35, 30, 60, 4, 1.5, 2500],
+                    [200, 800, 2600, 180, 35, 30, 60, 4, 1.5, 2500, 0.4, 0.6, 1, 0.5]],
+          "crowdFalloff": 0.5, "crowdDistance": 2000 },
+        { "name": "Plain", "match": ["0000000000000002"] }
+    ]
+}
+)json";
+
+TEST_CASE("emissive: parsed with optional color and glow count, inherited from default") {
+    const LightPresetFile file = parseLightPresets(EmissiveFile);
+    const LightPreset &stage = file.venues[0];
+    CHECK_EQ(stage.emissive.size(), size_t(2));
+    CHECK(stage.emissive[0].hash == 0xB1E01BE92A6F5BE1ull);
+    CHECK_EQ(stage.emissive[0].intensity, 2.0f);
+    CHECK_EQ(stage.emissive[0].range, 600.0f);
+    CHECK(stage.emissive[0].color == (LightColor{ 1.0f, 0.5f, 0.2f }));
+    CHECK_EQ(stage.emissive[0].maxGlows, 1u);
+    CHECK(stage.emissive[1].color == WhiteLight);
+    CHECK_EQ(stage.emissive[1].maxGlows, 4u);
+    // A venue that doesn't list emissive textures takes default's.
+    const LightPreset &plain = file.venues[1];
+    CHECK_EQ(plain.emissive.size(), size_t(1));
+    CHECK(plain.emissive[0].hash == 0xAAull);
+    CHECK_EQ(plain.emissive[0].range, 0.0f);
+}
+
+TEST_CASE("spots: parsed with optional color and phase; none unless set") {
+    const LightPresetFile file = parseLightPresets(EmissiveFile);
+    const LightPreset &stage = file.venues[0];
+    CHECK_EQ(stage.spots.size(), size_t(2));
+    CHECK_EQ(stage.spots[0].position[2], 2600.0f);
+    CHECK_EQ(stage.spots[0].yaw, 180.0f);
+    CHECK_EQ(stage.spots[0].pitch, 35.0f);
+    CHECK_EQ(stage.spots[0].cone, 30.0f);
+    CHECK_EQ(stage.spots[0].sweep, 60.0f);
+    CHECK_EQ(stage.spots[0].period, 4.0f);
+    CHECK_EQ(stage.spots[0].intensity, 1.5f);
+    CHECK_EQ(stage.spots[0].range, 2500.0f);
+    CHECK(stage.spots[0].color == WhiteLight);
+    CHECK_EQ(stage.spots[0].phase, 0.0f);
+    CHECK(stage.spots[1].color == (LightColor{ 0.4f, 0.6f, 1.0f }));
+    CHECK_EQ(stage.spots[1].phase, 0.5f);
+    CHECK(file.venues[1].spots.empty());
+    CHECK(file.defaultPreset.spots.empty());
+}
+
+TEST_CASE("crowd falloff: parsed, inherited from default, written only where set") {
+    const LightPresetFile file = parseLightPresets(EmissiveFile);
+    CHECK_NEAR(file.venues[0].crowdFalloff, 0.5f, 1e-6f);
+    CHECK_EQ(file.venues[0].crowdDistance, 2000.0f);
+    CHECK_NEAR(file.venues[1].crowdFalloff, 0.3f, 1e-6f);
+    CHECK_EQ(file.venues[1].crowdDistance, 1500.0f);
+    const std::string text = writeLightPresets(file);
+    size_t count = 0;
+    for (size_t at = text.find("\"crowdFalloff\""); at != std::string::npos; at = text.find("\"crowdFalloff\"", at + 1)) {
+        count++;
+    }
+
+    // Default and the stage; "Plain" inherits it, so editing default still reaches it.
+    CHECK_EQ(count, size_t(2));
+}
+
+TEST_CASE("emissive, spots, crowd falloff: write then parse gives back the same presets") {
+    const LightPresetFile file = parseLightPresets(EmissiveFile);
+    const LightPresetFile again = parseLightPresets(writeLightPresets(file));
+    CHECK(again.defaultPreset.emissive == file.defaultPreset.emissive);
+    CHECK_EQ(again.venues.size(), file.venues.size());
+    for (size_t i = 0; i < file.venues.size(); i++) {
+        CHECK(again.venues[i].emissive == file.venues[i].emissive);
+        CHECK(again.venues[i].spots == file.venues[i].spots);
+        CHECK_EQ(again.venues[i].crowdFalloff, file.venues[i].crowdFalloff);
+        CHECK_EQ(again.venues[i].crowdDistance, file.venues[i].crowdDistance);
+        CHECK_EQ(again.venues[i].setFields, file.venues[i].setFields);
+    }
+}
+
+TEST_CASE("emissive, spots: an edited default reaches the venues that don't set them (inheritDefault)") {
+    LightPresetFile file = parseLightPresets(EmissiveFile);
+    file.defaultPreset.emissive[0].intensity = 3.0f;
+    file.defaultPreset.spots.push_back(SpotLight());
+    file.defaultPreset.setFields |= FieldSpots;
+    inheritDefault(file);
+    CHECK_EQ(file.venues[1].emissive[0].intensity, 3.0f);
+    CHECK_EQ(file.venues[1].spots.size(), size_t(1));
+    // The stage sets its own.
+    CHECK_EQ(file.venues[0].emissive[0].intensity, 2.0f);
+    CHECK_EQ(file.venues[0].spots.size(), size_t(2));
+}
+
+TEST_CASE("emissive, spots: malformed entries are skipped, values clamped") {
+    const char *text = R"json({
+        "venues": [ { "name": "Bad", "match": ["0000000000000001"],
+            "emissive": [[170, 1, 0], ["00000000000000AA", 1], ["00000000000000AA", -1, -5, 1, 1, 1, 99]],
+            "spots": [[0, 0, 0, 0, 45, 30, 0, 0, 1], [0, 0, 0, 0, 45, 400, -10, -2, 1, 500]],
+            "crowdFalloff": 2, "crowdDistance": -1 } ]
+    })json";
+    const LightPresetFile file = parseLightPresets(text);
+    const LightPreset &v = file.venues[0];
+    // A numeric hash (not a hex string) and a short entry are skipped.
+    CHECK_EQ(v.emissive.size(), size_t(1));
+    CHECK_EQ(v.emissive[0].intensity, 0.0f);
+    CHECK_EQ(v.emissive[0].range, 0.0f);
+    CHECK_EQ(v.emissive[0].maxGlows, MaxEmissiveGlows);
+    // A spot needs at least 10 values.
+    CHECK_EQ(v.spots.size(), size_t(1));
+    CHECK_EQ(v.spots[0].cone, 179.0f);
+    CHECK_EQ(v.spots[0].sweep, 0.0f);
+    CHECK_EQ(v.spots[0].period, 0.0f);
+    CHECK_EQ(v.crowdFalloff, 1.0f);
+    CHECK_EQ(v.crowdDistance, 0.0f);
+}
+
+// A flat quad of an emissive texture: x from x0 to x0 + width, y 0..50, z 0.
+static EmissiveDraw quadDraw(uint64_t hash, float x0, float width) {
+    EmissiveDraw d;
+    d.hash = hash;
+    d.min[0] = x0;
+    d.max[0] = x0 + width;
+    d.max[1] = 50.0f;
+    return d;
+}
+
+TEST_CASE("emissive: no glow while the texture isn't drawn (pyro lights the stage only while it's on screen)") {
+    EmissiveTexture pyro;
+    pyro.hash = 0xAA;
+    CHECK(emissiveGlows(pyro, {}).empty());
+    CHECK(emissiveGlows(pyro, { quadDraw(0xBB, 0.0f, 100.0f) }).empty());
+    CHECK_EQ(emissiveGlows(pyro, { quadDraw(0xAA, 0.0f, 100.0f) }).size(), size_t(1));
+}
+
+TEST_CASE("emissive: one glow at the centre of all the texture's draws, range given or from the bounds") {
+    EmissiveTexture screen;
+    screen.hash = 0xAA;
+    screen.intensity = 2.0f;
+    screen.range = 800.0f;
+    screen.color = { 1.0f, 0.5f, 0.25f };
+    const std::vector<EmissiveDraw> draws = { quadDraw(0xAA, 0.0f, 100.0f), quadDraw(0xBB, 5000.0f, 10.0f), quadDraw(0xAA, 1000.0f, 100.0f) };
+    std::vector<GlowLight> glows = emissiveGlows(screen, draws);
+    CHECK_EQ(glows.size(), size_t(1));
+    CHECK_NEAR(glows[0].position[0], 550.0f, 1e-3f);
+    CHECK_NEAR(glows[0].position[1], 25.0f, 1e-3f);
+    CHECK_NEAR(glows[0].position[2], 0.0f, 1e-3f);
+    CHECK_EQ(glows[0].range, 800.0f);
+    CHECK_EQ(glows[0].intensity, 2.0f);
+    CHECK(glows[0].color == screen.color);
+    // An omni light.
+    CHECK_EQ(glows[0].cosCone, -2.0f);
+    screen.range = 0.0f;
+    glows = emissiveGlows(screen, draws);
+    CHECK_NEAR(glows[0].range, 2.0f * std::sqrt(1100.0f * 1100.0f + 50.0f * 50.0f), 1e-2f);
+}
+
+TEST_CASE("emissive: a sign row makes one glow per draw, nearest draws merged down to maxGlows") {
+    EmissiveTexture signs;
+    signs.hash = 0xAA;
+    signs.range = 500.0f;
+    signs.maxGlows = 4;
+    const std::vector<EmissiveDraw> row = { quadDraw(0xAA, 0.0f, 10.0f), quadDraw(0xAA, 100.0f, 10.0f), quadDraw(0xAA, 1000.0f, 10.0f),
+        quadDraw(0xAA, 1100.0f, 10.0f) };
+    std::vector<GlowLight> glows = emissiveGlows(signs, row);
+    CHECK_EQ(glows.size(), size_t(4));
+    CHECK_NEAR(glows[2].position[0], 1005.0f, 1e-3f);
+    // Two glows: the neighbours pair up.
+    signs.maxGlows = 2;
+    glows = emissiveGlows(signs, row);
+    CHECK_EQ(glows.size(), size_t(2));
+    CHECK_NEAR(glows[0].position[0], 55.0f, 1e-3f);
+    CHECK_NEAR(glows[1].position[0], 1055.0f, 1e-3f);
+}
+
+TEST_CASE("spots: yaw 0 points along +Z, 90 along +X, pitch tilts it down") {
+    SpotLight s;
+    s.pitch = 0.0f;
+    float d[3];
+    spotDirection(s, 0.0, d);
+    CHECK_NEAR(d[0], 0.0f, 1e-5f);
+    CHECK_NEAR(d[1], 0.0f, 1e-5f);
+    CHECK_NEAR(d[2], 1.0f, 1e-5f);
+    s.yaw = 90.0f;
+    spotDirection(s, 0.0, d);
+    CHECK_NEAR(d[0], 1.0f, 1e-5f);
+    CHECK_NEAR(d[2], 0.0f, 1e-5f);
+    s.pitch = 90.0f;
+    spotDirection(s, 0.0, d);
+    CHECK_NEAR(d[1], -1.0f, 1e-5f);
+    s.pitch = 35.0f;
+    spotDirection(s, 0.0, d);
+    CHECK_NEAR(d[0] * d[0] + d[1] * d[1] + d[2] * d[2], 1.0f, 1e-5f);
+}
+
+TEST_CASE("spots: the beam sweeps half the sweep each side over its period, phase shifts it, period 0 holds still") {
+    SpotLight s;
+    s.pitch = 0.0f;
+    s.sweep = 60.0f;
+    s.period = 4.0f;
+    float d[3];
+    spotDirection(s, 0.0, d);
+    CHECK_NEAR(d[0], 0.0f, 1e-5f);
+    // A quarter period in: 30 degrees to +X; three quarters: 30 degrees to -X.
+    spotDirection(s, 1.0, d);
+    CHECK_NEAR(d[0], 0.5f, 1e-5f);
+    spotDirection(s, 3.0, d);
+    CHECK_NEAR(d[0], -0.5f, 1e-5f);
+    // Same place whole periods later, also hours in.
+    float later[3];
+    spotDirection(s, 1.0 + 4.0 * 9000.0, later);
+    CHECK_NEAR(later[0], 0.5f, 1e-4f);
+    s.phase = 0.25f;
+    spotDirection(s, 0.0, d);
+    CHECK_NEAR(d[0], 0.5f, 1e-5f);
+    s.period = 0.0f;
+    spotDirection(s, 1.0, d);
+    CHECK_NEAR(d[0], 0.0f, 1e-5f);
+}
+
+TEST_CASE("spots: full inside the cone, eased edge, nothing outside; no cone lights everywhere") {
+    const float cosCone = std::cos(20.0f * 3.14159265f / 180.0f);
+    CHECK_EQ(spotConeFactor(1.0f, cosCone), 1.0f);
+    CHECK_EQ(spotConeFactor(std::cos(25.0f * 3.14159265f / 180.0f), cosCone), 0.0f);
+    CHECK_EQ(spotConeFactor(cosCone, cosCone), 0.0f);
+    float previous = 0.0f;
+    for (float c = cosCone; c <= 1.0f; c += 0.001f) {
+        const float f = spotConeFactor(c, cosCone);
+        CHECK(f >= previous);
+        CHECK(f >= 0.0f && f <= 1.0f);
+        previous = f;
+    }
+
+    CHECK_EQ(spotConeFactor(-1.0f, -2.0f), 1.0f);
+}
+
+TEST_CASE("glow lights: glows, then spots, then emissive; past the cap the hand-placed lights stay") {
+    LightPreset p;
+    p.glows = { { 0.0f, 300.0f, 0.0f, 1.0f, 500.0f }, { 10.0f, 300.0f, 0.0f, 2.0f, 0.0f } };
+    syncColorLists(p);
+    p.glowColors[0] = { 1.0f, 0.0f, 0.0f };
+    p.spots.push_back(SpotLight());
+    p.spots[0].position[0] = 50.0f;
+    p.spots[0].cone = 40.0f;
+    EmissiveTexture t;
+    t.hash = 0xAA;
+    t.range = 300.0f;
+    t.maxGlows = MaxEmissiveGlows;
+    p.emissive.push_back(t);
+    std::vector<EmissiveDraw> draws;
+    for (int i = 0; i < 20; i++) {
+        draws.push_back(quadDraw(0xAA, 1000.0f * float(i), 10.0f));
+    }
+
+    const float origin[3] = { 100.0f, 0.0f, 0.0f };
+    std::vector<GlowLight> lights = packGlowLights(p, origin, draws, 0.0);
+    CHECK_EQ(lights.size(), size_t(2 + 1 + MaxEmissiveGlows));
+    // Glows and spots are offsets from the anchor; emissive glows sit on their draws.
+    CHECK_EQ(lights[0].position[0], 100.0f);
+    CHECK(lights[0].color == (LightColor{ 1.0f, 0.0f, 0.0f }));
+    CHECK_EQ(lights[0].cosCone, -2.0f);
+    // A glow's range is at least 1 (as the ray tracer always did).
+    CHECK_EQ(lights[1].range, 1.0f);
+    CHECK_EQ(lights[2].position[0], 150.0f);
+    CHECK_NEAR(lights[2].cosCone, std::cos(20.0f * 3.14159265f / 180.0f), 1e-5f);
+    CHECK_EQ(lights[3].range, 300.0f);
+    // A full cap: the glows and the spot are kept, emissive fills the rest.
+    lights = packGlowLights(p, origin, draws, 0.0, 4);
+    CHECK_EQ(lights.size(), size_t(4));
+    CHECK_EQ(lights[0].position[0], 100.0f);
+    CHECK_EQ(lights[2].position[0], 150.0f);
+    CHECK_EQ(lights[3].range, 300.0f);
+    lights = packGlowLights(p, origin, draws, 0.0, 1);
+    CHECK_EQ(lights.size(), size_t(1));
+    CHECK_EQ(lights[0].position[0], 100.0f);
+}
+
+TEST_CASE("glow lights: a flickering glow keeps the rhythm the ray tracer gave it (seed glowIndex * 7919 + 17)") {
+    LightPreset p;
+    p.glows = { { 0.0f, 0.0f, 0.0f, 1.0f, 500.0f }, { 0.0f, 0.0f, 0.0f, 2.0f, 500.0f } };
+    syncColorLists(p);
+    p.glowFlicker[1] = 1.0f;
+    const float origin[3] = { 0.0f, 0.0f, 0.0f };
+    for (double t = 0.0; t < 20.0; t += 0.01) {
+        const std::vector<GlowLight> lights = packGlowLights(p, origin, {}, t);
+        CHECK_EQ(lights[0].intensity, 1.0f);
+        CHECK_EQ(lights[1].intensity, 2.0f * glowFlickerScale(t, 1u * 7919u + 17u, 1.0f));
+    }
+}
+
+TEST_CASE("crowd falloff: front rows lit, the upper deck darker, lit areas spared") {
+    const std::vector<std::array<float, 4>> areas = { { 0.0f, 2700.0f, 600.0f, 400.0f } };
+    // At the outside darkness's edge (radius + edge): only the outside darkness.
+    CHECK_NEAR(outsideLightAt(1150.0f, 0.0f, 0.0f, 0.0f, 650.0f, 500.0f, 0.5f, areas, 0.4f, 1500.0f), 0.5f, 1e-5f);
+    // Halfway over the crowd distance: half the falloff (smoothstep 0.5).
+    CHECK_NEAR(outsideLightAt(1900.0f, 0.0f, 0.0f, 0.0f, 650.0f, 500.0f, 0.5f, areas, 0.4f, 1500.0f), 0.3f, 1e-5f);
+    // The back rows: all of it.
+    CHECK_NEAR(outsideLightAt(4000.0f, 0.0f, 0.0f, 0.0f, 650.0f, 500.0f, 0.5f, areas, 0.4f, 1500.0f), 0.1f, 1e-5f);
+    // Never darker than black.
+    CHECK_NEAR(outsideLightAt(4000.0f, 0.0f, 0.0f, 0.0f, 650.0f, 500.0f, 0.8f, areas, 0.4f, 1500.0f), 0.0f, 1e-6f);
+    // The entrance set (in its lit area) stays lit.
+    CHECK_NEAR(outsideLightAt(0.0f, 2700.0f, 0.0f, 0.0f, 650.0f, 500.0f, 0.5f, areas, 0.4f, 1500.0f), 1.0f, 1e-6f);
+    // Inside the ring's radius: lit.
+    CHECK_NEAR(outsideLightAt(300.0f, 0.0f, 0.0f, 0.0f, 650.0f, 500.0f, 0.5f, areas, 0.4f, 1500.0f), 1.0f, 1e-6f);
+    // Crowd falloff alone (no outside darkness) still works.
+    CHECK_NEAR(outsideLightAt(4000.0f, 0.0f, 0.0f, 0.0f, 650.0f, 500.0f, 0.0f, {}, 0.4f, 1500.0f), 0.6f, 1e-5f);
+}
+
+TEST_CASE("crowd falloff: off (0) matches outsideDarknessAt everywhere") {
+    const std::vector<std::array<float, 4>> areas = { { 0.0f, 2700.0f, 600.0f, 400.0f } };
+    for (float x = -3000.0f; x < 3000.0f; x += 173.0f) {
+        for (float z = -3000.0f; z < 3500.0f; z += 211.0f) {
+            CHECK_NEAR(outsideLightAt(x, z, 0.0f, 0.0f, 650.0f, 500.0f, 0.55f, areas, 0.0f, 1500.0f),
+                outsideDarknessAt(x, z, 0.0f, 0.0f, 650.0f, 500.0f, 0.55f, areas), 1e-6f);
+        }
+    }
+}
