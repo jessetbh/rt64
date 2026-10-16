@@ -6,6 +6,7 @@
 
 #include "common/rt64_thread.h"
 #include "common/rt64_wcw_logic.h"
+#include "common/rt64_wcw_perf.h"
 
 #include "rt64_present_queue.h"
 
@@ -104,6 +105,7 @@ namespace RT64 {
         framebufferRenderer = std::make_unique<FramebufferRenderer>(ext.workloadGraphicsWorker, true, ext.createdGraphicsAPI, ext.shaderLibrary);
         renderFramebufferManager = std::make_unique<RenderFramebufferManager>(ext.device);
         queryPool = ext.device->createQueryPool(2);
+        wcwGpuTimer.setup(ext.device);
 
         projectionProcessor.setup(ext.workloadGraphicsWorker);
         transformProcessor.setup(ext.workloadGraphicsWorker);
@@ -333,6 +335,10 @@ namespace RT64 {
         const bool usingMSAA = (targetManager.multisampling.sampleCount > 1);
 
         rendererCPUProfiler.start();
+        // [wcw perf] WCW_PERF_LOG: CPU time recording this frame, then waiting for its GPU work.
+        const bool wcwPerf = WcwPerf::enabled();
+        // A frame of several workloads records one command list each; each row starts where the last one ended.
+        WcwPerf::Clock::time_point wcwRecordStart = wcwPerf ? WcwPerf::Clock::now() : WcwPerf::Clock::time_point();
 
         const bool aspectRatioAdjustment = (abs(workloadConfig.aspectRatioScale - 1.0f) > 1e-6f);
         const bool processProjections = aspectRatioAdjustment || prevFrame.matched|| curFrame.isDebuggerCameraEnabled(*this);
@@ -756,8 +762,12 @@ namespace RT64 {
             ext.workloadGraphicsWorker->commandList->begin();
             ext.workloadGraphicsWorker->commandList->resetQueryPool(queryPool.get(), 0, 2);
             ext.workloadGraphicsWorker->commandList->writeTimestamp(queryPool.get(), 0);
-            framebufferRenderer->endFramebuffers(ext.workloadGraphicsWorker, &workload.drawBuffers, &workload.outputBuffers, workloadConfig.raytracingEnabled);
-            framebufferRenderer->recordSetup(ext.workloadGraphicsWorker, bufferUploaders, processRSP ? rspProcessor.get() : nullptr, processWorldVertices ? vertexProcessor.get() : nullptr, &workload.outputBuffers, workloadConfig.raytracingEnabled);
+            wcwGpuTimer.begin(ext.workloadGraphicsWorker->commandList.get());
+            {
+                WcwGpuScope wcwSetupScope(ext.workloadGraphicsWorker->commandList.get(), WcwPerf::GpuPass::Setup);
+                framebufferRenderer->endFramebuffers(ext.workloadGraphicsWorker, &workload.drawBuffers, &workload.outputBuffers, workloadConfig.raytracingEnabled);
+                framebufferRenderer->recordSetup(ext.workloadGraphicsWorker, bufferUploaders, processRSP ? rspProcessor.get() : nullptr, processWorldVertices ? vertexProcessor.get() : nullptr, &workload.outputBuffers, workloadConfig.raytracingEnabled);
+            }
 
             // [wcw hfr] WCW_HFR_PRIME=1: start a generated frame's target from the live target's content
             // (ported from the July World Tour fix, bd35fac). Games that clear each buffer in the PREVIOUS
@@ -771,6 +781,7 @@ namespace RT64 {
             // drawn applied translucent full-screen layers (fades) twice, and priming every layer replaced the
             // earlier layers' draws with the blended frame's.
             if (wcwHfrPrime && (overrideTarget == nullptr) && !wcwPrimeTargets.empty() && !usingMSAA) {
+                WcwGpuScope wcwPrimeScope(ext.workloadGraphicsWorker->commandList.get(), WcwPerf::GpuPass::InterpPrime);
                 RenderTarget &liveTarget = targetManager.get(overrideTargetKey, true);
                 for (RenderTarget *primeTarget : wcwPrimeTargets) {
                     if (liveTarget.isEmpty() || (primeTarget == nullptr) || (&liveTarget == primeTarget)) {
@@ -794,6 +805,7 @@ namespace RT64 {
 
             // Record all framebuffer pairs.
             uint32_t framebufferIndex = 0;
+            WcwGpuScope wcwFbOpsScope(ext.workloadGraphicsWorker->commandList.get(), WcwPerf::GpuPass::FbOps);
             for (uint32_t f = 0; f < fbPairCount; f++) {
                 const FramebufferPair &fbPair = workload.fbPairs[f];
                 bool validTargets = getTargetsFromPair(f);
@@ -877,7 +889,10 @@ namespace RT64 {
                         }
                     }
                     
-                    framebufferRenderer->recordFramebuffer(ext.workloadGraphicsWorker, framebufferIndex++);
+                    {
+                        WcwGpuScope wcwRasterScope(ext.workloadGraphicsWorker->commandList.get(), WcwPerf::GpuPass::Raster);
+                        framebufferRenderer->recordFramebuffer(ext.workloadGraphicsWorker, framebufferIndex++);
+                    }
 
                     // Transition the render targets in case the present queue will show them so it doesn't have to perform transitions.
                     if (colorTarget != nullptr && depthTarget != nullptr) {
@@ -929,11 +944,29 @@ namespace RT64 {
                     fbPair.endFbOperations, targetManager, fixedResScale, f, workload.submissionFrame);
             }
 
+            wcwGpuTimer.finish();
             ext.workloadGraphicsWorker->commandList->writeTimestamp(queryPool.get(), 1);
             ext.workloadGraphicsWorker->commandList->end();
             framebufferRenderer->waitForUploaders();
+            const WcwPerf::Clock::time_point wcwSubmit = wcwPerf ? WcwPerf::Clock::now() : WcwPerf::Clock::time_point();
             ext.workloadGraphicsWorker->execute();
             ext.workloadGraphicsWorker->wait();
+            if (wcwPerf) {
+                const WcwPerf::Clock::time_point wcwDone = WcwPerf::Clock::now();
+                WcwPerf::cpuPhase(WcwPerf::CpuPhase::Rt64Record, wcwRecordStart, wcwSubmit);
+                WcwPerf::cpuPhase(WcwPerf::CpuPhase::Rt64GpuWait, wcwSubmit, wcwDone);
+                WcwPerf::GpuRow wcwRow;
+                if (wcwGpuTimer.collect(wcwRow)) {
+                    wcwRow.tMs = WcwPerf::clockMs(wcwSubmit);
+                    wcwRow.present = false;
+                    wcwRow.presentIndex = WcwPerf::presentCount();
+                    wcwRow.presentId = workload.presentId;
+                    wcwRow.generated = (overrideTarget != nullptr);
+                    WcwPerf::gpuRow(wcwRow);
+                }
+
+                wcwRecordStart = wcwDone;
+            }
 
             // [wcw] DIAGNOSTIC: one-shot GPU readback of the rect vertex buffer (defaultBuffer)
             // after the workload's GPU work completed. Compares GPU-side contents with the CPU

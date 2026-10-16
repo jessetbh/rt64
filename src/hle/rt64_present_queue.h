@@ -7,6 +7,7 @@
 #include "common/rt64_profiling_timer.h"
 #include "gui/rt64_inspector.h"
 #include "render/rt64_crt_filter.h"
+#include "render/rt64_wcw_gpu_timer.h"
 #include "render/rt64_vi_renderer.h"
 
 #include "rt64_application_window.h"
@@ -58,6 +59,7 @@ namespace RT64 {
         std::vector<std::unique_ptr<RenderCommandSemaphore>> drawSemaphores;
         std::unique_ptr<VIRenderer> viRenderer;
         std::unique_ptr<CrtFilter> crtFilter;
+        WcwGpuTimer wcwGpuTimer; // [wcw perf] WCW_PERF_LOG pass timings.
         std::unique_ptr<Inspector> inspector;
         ProfilingTimer presentProfiler = ProfilingTimer(120);
         Timestamp presentTimestamp;

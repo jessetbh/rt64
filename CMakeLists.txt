@@ -320,6 +320,7 @@ set (SOURCES
     "${PROJECT_SOURCE_DIR}/src/common/rt64_user_configuration.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_user_paths.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_logic.cpp"
+    "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_perf.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_venues.cpp"
 
     "${PROJECT_SOURCE_DIR}/src/gbi/rt64_gbi.cpp"
@@ -389,6 +390,7 @@ set (SOURCES
     "${PROJECT_SOURCE_DIR}/src/render/rt64_upscaler.cpp"
     "${PROJECT_SOURCE_DIR}/src/render/rt64_vertex_processor.cpp"
     "${PROJECT_SOURCE_DIR}/src/render/rt64_wcw_raytracer.cpp"
+    "${PROJECT_SOURCE_DIR}/src/render/rt64_wcw_gpu_timer.cpp"
     "${PROJECT_SOURCE_DIR}/src/render/rt64_wcw_lighting_editor.cpp"
     "${PROJECT_SOURCE_DIR}/src/render/rt64_crt_filter.cpp"
     "${PROJECT_SOURCE_DIR}/src/render/rt64_hdr_output.cpp"
@@ -456,7 +458,9 @@ if (RT64_WCW_TESTS AND NOT CMAKE_CROSSCOMPILING)
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_logic_tests.cpp"
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_venues_tests.cpp"
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_sharp_texel_tests.cpp"
+        "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_perf_tests.cpp"
         "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_logic.cpp"
+        "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_perf.cpp"
         "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_venues.cpp"
     )
     target_include_directories(rt64_wcw_tests PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/tests/wcw")
