@@ -3,6 +3,7 @@
 //
 
 #include "rt64_framebuffer_renderer.h"
+#include "rt64_wcw_texture_edges.h"
 
 #include <cfloat>
 
@@ -247,6 +248,7 @@ namespace RT64 {
         frameParams.frameCount = 0;
         frameParams.viewUbershaders = false;
         frameParams.ditherNoiseStrength = 1.0f;
+        frameParams.wcwSmooth2DEdges = 0;
 
         shaderUploader = std::make_unique<BufferUploader>(worker->device);
         descCommonSet = std::make_unique<FramebufferRendererDescriptorCommonSet>(shaderLibrary->samplerLibrary, worker->device->getCapabilities().raytracing, worker->device);
@@ -283,6 +285,7 @@ namespace RT64 {
 
         frameParams.viewUbershaders = ubershadersVisible;
         frameParams.ditherNoiseStrength = ditherNoiseStrength;
+        frameParams.wcwSmooth2DEdges = WcwTextureEdges::smooth() ? 1u : 0u;
         framebufferCount = 0;
 
         // Create dummy color target if it hasn't been created yet.

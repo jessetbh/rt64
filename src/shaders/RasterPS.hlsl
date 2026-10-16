@@ -134,7 +134,8 @@ LIBRARY_EXPORT bool RasterPS(const RenderParams rp, float4 vertexPosition, float
         }
         
         const GPUTile gpuTile = GPUTiles[globalTileIndex];
-        const float2 textureUV = gpuTileFlagHighRes(gpuTile.flags) ? vertexUV : lowResUV;
+        // [wcw] Smoothed 2D edges need the continuous UV: the low-res snap would stair-step the seam ramp.
+        const float2 textureUV = (gpuTileFlagHighRes(gpuTile.flags) || wcwSmoothPointTexture(otherMode, rp.flags)) ? vertexUV : lowResUV;
         texVal0 = sampleTexture(otherMode, rp.flags, textureUV, ddx(vertexUV), ddy(vertexUV), rdpTile, gpuTile, false);
     }
     
@@ -149,7 +150,7 @@ LIBRARY_EXPORT bool RasterPS(const RenderParams rp, float4 vertexPosition, float
         }
         
         const GPUTile gpuTile = GPUTiles[globalTileIndex];
-        const float2 textureUV = gpuTileFlagHighRes(gpuTile.flags) ? vertexUV : lowResUV;
+        const float2 textureUV = (gpuTileFlagHighRes(gpuTile.flags) || wcwSmoothPointTexture(otherMode, rp.flags)) ? vertexUV : lowResUV;
         const uint nativeSampler = renderFlagNativeSampler1(rp.flags);
         texVal1 = sampleTexture(otherMode, rp.flags, textureUV, ddx(vertexUV), ddy(vertexUV), rdpTile, gpuTile, oneCycleHardwareBug);
     }
