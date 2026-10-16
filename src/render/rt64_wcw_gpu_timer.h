@@ -39,6 +39,7 @@ namespace RT64 {
 
         void push(WcwPerf::GpuPass pass);
         void pop();
+        void swap(WcwPerf::GpuPass pass);
 
         // The timer recording on this thread for this command list, or null.
         static WcwGpuTimer *active(const RenderCommandList *commandList);

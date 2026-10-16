@@ -75,10 +75,12 @@ namespace RT64::WcwPerf {
     // are written as they are.
     bool isKnownCpuPhaseName(const char *name);
 
-    // A pass marker: a push opens a pass, a pop closes the innermost one. Each stamped marker has a GPU timestamp.
+    // A pass marker: a push opens a pass, a pop closes the innermost one, a swap replaces the innermost one with
+    // another (one stamp instead of a pop and a push). Each stamped marker has a GPU timestamp.
     struct Marker {
         GpuPass pass = GpuPass::Other;
         bool push = false;
+        bool swap = false;
     };
 
     // Keeps a frame's markers within the query pool's capacity: a push is stamped only if its pop, and the pops of
@@ -87,9 +89,11 @@ namespace RT64::WcwPerf {
     public:
         explicit MarkerBudget(uint32_t capacity = 0);
         void reset(uint32_t capacity);
-        // Whether to stamp this push / pop.
+        // Whether to stamp this push / pop / swap. A swap is stamped only when the innermost pass was (its pop is
+        // already owed, so it needs one stamp); with nothing open it is a push.
         bool push();
         bool pop();
+        bool swap();
         uint32_t used() const { return usedStamps; }
         // Passes still open, stamped or not.
         uint32_t depth() const { return uint32_t(stack.size()); }

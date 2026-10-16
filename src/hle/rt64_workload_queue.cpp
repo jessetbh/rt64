@@ -805,9 +805,9 @@ namespace RT64 {
 
             // Record all framebuffer pairs.
             uint32_t framebufferIndex = 0;
+            WcwGpuScope wcwFbOpsScope(ext.workloadGraphicsWorker->commandList.get(), WcwPerf::GpuPass::FbOps);
             for (uint32_t f = 0; f < fbPairCount; f++) {
                 const FramebufferPair &fbPair = workload.fbPairs[f];
-                WcwGpuScope wcwFbOpsScope(ext.workloadGraphicsWorker->commandList.get(), WcwPerf::GpuPass::FbOps);
                 bool validTargets = getTargetsFromPair(f);
                 fbManager.recordOperations(ext.workloadGraphicsWorker, &workload.fbChangePool, &workload.fbStorage, ext.shaderLibrary, ext.textureCache,
                     fbPair.startFbOperations, targetManager, fixedResScale, f, workload.submissionFrame);

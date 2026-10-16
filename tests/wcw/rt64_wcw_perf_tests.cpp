@@ -121,17 +121,54 @@ TEST_CASE("perf: time between passes goes to other, and the columns add up to th
     CHECK_NEAR(span, 9.0, 1e-9);
 }
 
-TEST_CASE("perf: a switch from one pass to another splits the time") {
-    // rt_trace [0,3), then switchTo(rt_composite): pop + push at the same stamp, [3,4).
+TEST_CASE("perf: a swap from one pass to another splits the time with one stamp") {
+    // raster [0,10) with rt_trace [2,5) inside it, swapped to rt_composite [5,6), then back to raster.
     const Marker markers[] = {
-        { GpuPass::RtTrace, true }, { GpuPass::Other, false }, { GpuPass::RtComposite, true }, { GpuPass::Other, false }
+        { GpuPass::Raster, true }, { GpuPass::RtTrace, true }, { GpuPass::RtComposite, false, true }, { GpuPass::Other, false },
+        { GpuPass::Other, false }
     };
-    const uint64_t ns[] = { 0, 3000000, 3000000, 4000000 };
+    const uint64_t ns[] = { 0, 2000000, 5000000, 6000000, 10000000 };
     std::array<double, GpuPassCount> ms;
     exclusivePassTimes(markers, ns, std::size(markers), ms);
     CHECK_NEAR(ms[uint32_t(GpuPass::RtTrace)], 3.0, 1e-9);
     CHECK_NEAR(ms[uint32_t(GpuPass::RtComposite)], 1.0, 1e-9);
+    CHECK_NEAR(ms[uint32_t(GpuPass::Raster)], 6.0, 1e-9);
     CHECK_NEAR(ms[uint32_t(GpuPass::Other)], 0.0, 1e-9);
+
+    // A swap with nothing open opens the pass.
+    const Marker lone[] = { { GpuPass::Vi, false, true }, { GpuPass::Other, false } };
+    const uint64_t loneNs[] = { 0, 2000000 };
+    exclusivePassTimes(lone, loneNs, std::size(lone), ms);
+    CHECK_NEAR(ms[uint32_t(GpuPass::Vi)], 2.0, 1e-9);
+}
+
+TEST_CASE("perf: the marker budget stamps a swap only over a stamped pass, with room for it") {
+    MarkerBudget budget(4);
+    // Nothing open: a swap is a push.
+    CHECK(budget.swap());
+    CHECK_EQ(budget.depth(), 1u);
+    CHECK_EQ(budget.used(), 1u);
+    // Stamped top, room (1 + 1 + 1 owed pop <= 4): one stamp, same depth.
+    CHECK(budget.swap());
+    CHECK_EQ(budget.depth(), 1u);
+    CHECK_EQ(budget.used(), 2u);
+    // 2 + 1 + 1 = 4: still fits; then 3 + 1 + 1 = 5 doesn't, and the owed pop stays stamped.
+    CHECK(budget.swap());
+    CHECK(!budget.swap());
+    CHECK_EQ(budget.dropped(), 1u);
+    CHECK(budget.pop());
+    CHECK_EQ(budget.used(), 4u);
+
+    // An unstamped top: its swap isn't stamped either (and isn't another drop).
+    MarkerBudget tight(2);
+    CHECK(tight.push());
+    CHECK(!tight.push());
+    CHECK_EQ(tight.dropped(), 1u);
+    CHECK(!tight.swap());
+    CHECK_EQ(tight.dropped(), 1u);
+    CHECK(!tight.pop());
+    CHECK(tight.pop());
+    CHECK_EQ(tight.used(), 2u);
 }
 
 TEST_CASE("perf: stray pops, backwards stamps and short timelines don't break the accounting") {

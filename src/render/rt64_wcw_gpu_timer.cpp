@@ -43,6 +43,13 @@ namespace RT64 {
         }
     }
 
+    void WcwGpuTimer::swap(WcwPerf::GpuPass pass) {
+        if (budget.swap()) {
+            commandList->writeTimestamp(pool.get(), uint32_t(markers.size()));
+            markers.push_back({ pass, false, true });
+        }
+    }
+
     void WcwGpuTimer::finish() {
         if ((pool == nullptr) || (activeTimer != this)) {
             return;
@@ -91,8 +98,7 @@ namespace RT64 {
 
     void WcwGpuScope::switchTo(WcwPerf::GpuPass pass) {
         if ((timer != nullptr) && (WcwGpuTimer::active(timer->commandList) == timer)) {
-            timer->pop();
-            timer->push(pass);
+            timer->swap(pass);
         }
     }
 };

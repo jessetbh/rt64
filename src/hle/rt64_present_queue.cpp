@@ -634,14 +634,9 @@ namespace RT64 {
                     crtParams.swapChainTexture = swapChainTexture;
                     crtParams.swapChainFramebuffer = swapChainFramebuffer;
                     crtParams.vi = renderParams;
-                    bool crtRendered;
-                    {
-                        WcwGpuScope wcwCrtScope(commandList, WcwPerf::GpuPass::Crt);
-                        crtRendered = crtFilter->render(*viRenderer, crtParams);
-                    }
-
-                    if (!crtRendered) {
-                        WcwGpuScope wcwViScope(commandList, WcwPerf::GpuPass::Vi);
+                    WcwGpuScope wcwBlitScope(commandList, WcwPerf::GpuPass::Crt);
+                    if (!crtFilter->render(*viRenderer, crtParams)) {
+                        wcwBlitScope.switchTo(WcwPerf::GpuPass::Vi);
                         viRenderer->render(renderParams);
                     }
                 }

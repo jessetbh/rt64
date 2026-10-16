@@ -639,6 +639,8 @@ namespace RT64 {
             return;
         }
 
+        WcwGpuScope wcwBuildScope(worker->commandList.get(), WcwPerf::GpuPass::RtBuild);
+
         currentSlot = chooseSlot();
         Slot &slot = slots[currentSlot];
         if (!slot.valid) {

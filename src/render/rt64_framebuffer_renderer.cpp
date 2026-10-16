@@ -1477,7 +1477,6 @@ namespace RT64 {
         }
 
         if (wcwRaytracer != nullptr) {
-            WcwGpuScope wcwBuildScope(worker->commandList.get(), WcwPerf::GpuPass::RtBuild);
             wcwRaytracer->recordBuild(worker);
         }
 

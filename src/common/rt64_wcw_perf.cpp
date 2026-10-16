@@ -111,6 +111,22 @@ namespace RT64::WcwPerf {
         return stamp;
     }
 
+    bool MarkerBudget::swap() {
+        if (stack.empty()) {
+            return push();
+        }
+
+        const bool stamp = stack.back() && ((usedStamps + 1 + openStamped) <= capacity);
+        if (stamp) {
+            usedStamps++;
+        }
+        else if (stack.back()) {
+            droppedPushes++;
+        }
+
+        return stamp;
+    }
+
     double exclusivePassTimes(const Marker *markers, const uint64_t *stampsNs, size_t count, std::array<double, GpuPassCount> &outMs) {
         outMs.fill(0.0);
         if (count < 2) {
@@ -120,7 +136,15 @@ namespace RT64::WcwPerf {
         std::vector<GpuPass> open;
         for (size_t i = 0; i + 1 < count; i++) {
             const Marker &m = markers[i];
-            if (m.push) {
+            if (m.swap) {
+                if (open.empty()) {
+                    open.push_back(m.pass);
+                }
+                else {
+                    open.back() = m.pass;
+                }
+            }
+            else if (m.push) {
                 open.push_back(m.pass);
             }
             else if (!open.empty()) {
