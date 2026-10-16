@@ -15,6 +15,7 @@
 #include "render/rt64_tile_processor.h"
 #include "render/rt64_look_at_processor.h"
 #include "render/rt64_transform_processor.h"
+#include "render/rt64_wcw_gpu_timer.h"
 
 #include "rt64_shared_queue_resources.h"
 #include "rt64_workload.h"
@@ -110,6 +111,7 @@ namespace RT64 {
         std::unique_ptr<VertexProcessor> vertexProcessor;
         std::unique_ptr<RenderTarget> dummyDepthTarget;
         std::unique_ptr<RenderQueryPool> queryPool;
+        WcwGpuTimer wcwGpuTimer; // [wcw perf] WCW_PERF_LOG pass timings.
         FramebufferChangePool scratchFbChangePool;
         ProfilingTimer rendererCPUProfiler = ProfilingTimer(120);
         ProfilingTimer rendererGPUProfiler = ProfilingTimer(120);

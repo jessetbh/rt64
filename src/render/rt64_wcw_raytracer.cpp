@@ -5,6 +5,7 @@
 #include "rt64_wcw_raytracer.h"
 
 #include "common/rt64_wcw_logic.h"
+#include "rt64_wcw_gpu_timer.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -1151,6 +1152,7 @@ namespace RT64 {
 
         // Shadow mode: temporal resolve of the jittered samples into this slot's history.
         if ((mode == WCW_RT_MODE_SHADOW) || (mode == WCW_RT_MODE_AO)) {
+            WcwGpuScope wcwDenoiseScope(worker->commandList.get(), WcwPerf::GpuPass::RtDenoise);
             RenderTexture *historyIn = slot.history[slot.historyIndex].get();
             RenderTexture *historyOut = slot.history[slot.historyIndex ^ 1].get();
             resolveSet->setBuffer(0, paramsBuffer.get(), alignUp(sizeof(interop::WcwRtParams), 256));
