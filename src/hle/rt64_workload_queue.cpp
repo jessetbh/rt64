@@ -1103,6 +1103,9 @@ namespace RT64 {
         uint32_t wcwPendingBeforePrevRunLength = 0;
         // True once any layer of the current run has skipped its generated frame.
         bool wcwRunGenIncomplete = false;
+        // True once a layer of the current run found a camera cut: the run's remaining layers draw the real frame
+        // in every displayed frame (WcwLogic::CameraCutCounter).
+        bool wcwRunCameraCut = false;
         while (threadsRunning) {
             {
                 std::unique_lock<std::mutex> cursorLock(cursorMutex);
@@ -1237,6 +1240,7 @@ namespace RT64 {
 
                     wcwCompositeRunLength = 1;
                     wcwRunGenIncomplete = false;
+                    wcwRunCameraCut = false;
                     wcwRunSerialCounter++;
                 }
                 else {
@@ -1256,6 +1260,7 @@ namespace RT64 {
                 // end of this iteration), and paired with their snapshot from the previous run instead.
                 // The wrestler layer (80+ transforms) pairs with the latest wrestler snapshot, if it is intact,
                 // at most two presents old and of a similar size.
+                char wcwPairSource = 'S'; // WCW_RUN_LOG: S = fixed step, W = wrestler snapshot, L = layer snapshot
                 {
                     const uint32_t curXf = uint32_t(workload.drawData.worldTransforms.size());
                     if ((curXf >= 80) && (wcwSnapFrameIndex < gameFrames.size()) && (wcwSnapFrameIndex != curFrameIndex) &&
@@ -1267,6 +1272,7 @@ namespace RT64 {
                         const bool sameLayer = (snapXf * 4 <= curXf * 5) && (curXf * 4 <= snapXf * 5);
                         if (intact && recent && sameLayer) {
                             prevFrameIndex = wcwSnapFrameIndex;
+                            wcwPairSource = 'W';
                         }
                     }
                 }
@@ -1304,7 +1310,24 @@ namespace RT64 {
 
                         if (best != UINT32_MAX) {
                             prevFrameIndex = best;
+                            wcwPairSource = 'L';
                         }
+                    }
+                }
+
+                // [wcw hfr] WCW_PAIR_LOG=1: which earlier layer this one interpolates from.
+                {
+                    static const bool wcwPairLog = getenv("WCW_PAIR_LOG") != nullptr;
+                    if (wcwPairLog && RT64::wcwInterpActive.load(std::memory_order_relaxed)) {
+                        const GameFrame &pf = gameFrames[prevFrameIndex];
+                        const uint32_t pw = pf.workloads.empty() ? UINT32_MAX : pf.workloads[0];
+                        const bool pwValid = (pw < workloads.size());
+                        fprintf(stderr, "[wcw pair] t=%.3f present %llu serial %llu layer %u addr %06X xf %u src %c prev serial %llu xf %u present %llu\n",
+                            std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(),
+                            (unsigned long long)workload.presentId, (unsigned long long)workload.wcwRunSerial, wcwCompositeRunLength,
+                            thisWorkloadColorAddress & 0xFFFFFF, uint32_t(workload.drawData.worldTransforms.size()), wcwPairSource,
+                            pwValid ? (unsigned long long)workloads[pw].wcwRunSerial : 0ULL, pwValid ? uint32_t(workloads[pw].drawData.worldTransforms.size()) : 0u,
+                            pwValid ? (unsigned long long)workloads[pw].presentId : 0ULL);
                     }
                 }
                 
@@ -1471,6 +1494,20 @@ namespace RT64 {
                     // [wcw fix] Frame matching is running: enable the 60Hz behaviour elsewhere in the renderer.
                     RT64::wcwInterpActive.store(true, std::memory_order_relaxed);
 
+                    // [wcw fix] Camera cut: don't interpolate between the two shots.
+                    static const bool wcwNoCutRule = getenv("WCW_HFR_NOCUT") != nullptr;
+                    if (generateInterpolatedFrames && !wcwNoCutRule && curFrame.wcwCameraCut.cut()) {
+                        wcwRunCameraCut = true;
+                    }
+
+                    static const bool wcwPairLog = getenv("WCW_PAIR_LOG") != nullptr;
+                    if (wcwPairLog && (curFrame.wcwCameraCut.pairs > 0)) {
+                        fprintf(stderr, "[wcw cut] t=%.3f serial %llu layer %u pairs %u jumped %u max %.3f%s\n",
+                            std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(),
+                            (unsigned long long)workload.wcwRunSerial, wcwCompositeRunLength, curFrame.wcwCameraCut.pairs,
+                            curFrame.wcwCameraCut.jumped, curFrame.wcwCameraCut.maxChange, curFrame.wcwCameraCut.cut() ? " CUT" : "");
+                    }
+
                     const bool resetTicks = !generateInterpolatedFrames || (originalRateForTicks != workload.viOriginalRate) || (displayRateForTicks != workloadConfig.targetRate) || !displayRateAboveOriginal;
                     if (resetTicks) {
                         wcwTicks.reset();
@@ -1636,6 +1673,10 @@ namespace RT64 {
                         const WcwLogic::FrameWeights weights = wcwTicks.advance(workloadConfig.targetRate, workload.viOriginalRate);
                         prevFrameWeight = weights.prev;
                         curFrameWeight = weights.cur;
+                        if (wcwRunCameraCut) {
+                            prevFrameWeight = 1.0f;
+                            curFrameWeight = 1.0f;
+                        }
 
                         // Override the render target.
                         if (usingMSAA || (frame > 0)) {
@@ -1689,6 +1730,8 @@ namespace RT64 {
 
                     // For every additional frame, we increase the frames available and notify the present queue.
                     if (generateInterpolatedFrames && (usingMSAA || (frame > 0))) {
+                        // [wcw fix] The workload queued after this one, if any: another layer of this run or a new run.
+                        WcwLogic::NextLayer wcwNext = WcwLogic::NextLayer::Unknown;
                         {
                             std::scoped_lock<std::mutex> cursorLock(cursorMutex);
                             // [wcw fix] Multi-layer frames: the next layer is always queued already, so this would stop every
@@ -1696,12 +1739,30 @@ namespace RT64 {
                             // 4 the remaining generated frames got only the last layer). Layers finish all their frames.
                             skipWorkloadNow = ((frame + 1) < displayFrames) && (writeCursor != threadCursor) &&
                                 !RT64::wcwInterpActive.load(std::memory_order_relaxed);
+
+                            const bool nextQueued = (writeCursor != threadCursor);
+                            uint32_t nextAddress = 0;
+                            bool nextDrawsNothing = true;
+                            if (nextQueued) {
+                                const Workload &nextWorkload = workloads[threadCursor];
+                                nextAddress = (nextWorkload.fbPairCount > 0) ? nextWorkload.fbPairs[0].colorImage.address : 0;
+                                for (uint32_t f = 0; f < nextWorkload.fbPairCount; f++) {
+                                    if (!nextWorkload.fbPairs[f].drawColorRect.isEmpty()) {
+                                        nextDrawsNothing = false;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            wcwNext = WcwLogic::nextLayer(nextQueued, nextAddress, nextDrawsNothing, thisWorkloadColorAddress);
                         }
 
                         // [wcw fix] Only the run's last layer publishes the generated frame, so the present
                         // never shows a partly drawn one. The expected length is the longest recent run; a
-                        // run that ends shorter is published when the next run starts (see above). If any
-                        // layer of the run skipped its generated frame, drop the frame instead.
+                        // run that ends shorter is published when the next run starts (see above), and one
+                        // that goes on past it (the next workload is queued and continues the run) waits for
+                        // a later layer (WcwLogic::publishRunAtLayer). If any layer of the run skipped its
+                        // generated frame, drop the frame instead.
                         uint32_t wcwExpectedRunLen = (wcwLastCompositeRunLength > 0) ? wcwLastCompositeRunLength : 1;
                         bool wcwFlushNow = true;
                         if (!usingMSAA) {
@@ -1709,7 +1770,7 @@ namespace RT64 {
                                 wcwExpectedRunLen = std::max(wcwExpectedRunLen, h);
                             }
 
-                            wcwFlushNow = (wcwCompositeRunLength >= wcwExpectedRunLen);
+                            wcwFlushNow = WcwLogic::publishRunAtLayer(wcwCompositeRunLength, wcwExpectedRunLen, wcwNext);
                         }
 
                         // A run where any layer skipped a generated frame publishes none of them: with more than one
@@ -1735,10 +1796,10 @@ namespace RT64 {
                         // [wcw hfr] WCW_RUN_LOG=1: one line per layer's generated frame (flicker hunting).
                         static const bool wcwRunLog = getenv("WCW_RUN_LOG") != nullptr;
                         if (wcwRunLog) {
-                            fprintf(stderr, "[wcw run] t=%.3f present %llu serial %llu layer %u/%u addr %06X frame %u/%u %s\n",
+                            fprintf(stderr, "[wcw run] t=%.3f present %llu serial %llu layer %u/%u addr %06X frame %u/%u next %c %s\n",
                                 std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(),
                                 (unsigned long long)workload.presentId, (unsigned long long)workload.wcwRunSerial, wcwCompositeRunLength, wcwExpectedRunLen,
-                                interpolationTargetKey.address & 0xFFFFFF, frame, displayFrames, wcwDropNow ? "DROP" : (wcwFlushNow ? "FLUSH" : "pending"));
+                                interpolationTargetKey.address & 0xFFFFFF, frame, displayFrames, "USN"[int(wcwNext)], wcwDropNow ? "DROP" : (wcwFlushNow ? "FLUSH" : "pending"));
                         }
 
                         if (wcwFlushNow || wcwDropNow) {

@@ -434,6 +434,50 @@ namespace RT64::WcwLogic {
         return (runLength >= previousRunLength) || ((runBeforePrevious > 0) && (runLength >= runBeforePrevious));
     }
 
+    NextLayer nextLayer(bool queued, uint32_t nextColorAddress, bool nextDrawsNothing, uint32_t runColorAddress) {
+        if (!queued) {
+            return NextLayer::Unknown;
+        }
+
+        return (nextDrawsNothing || (nextColorAddress == runColorAddress)) ? NextLayer::SameRun : NextLayer::NewRun;
+    }
+
+    bool publishRunAtLayer(uint32_t runLength, uint32_t expectedRunLength, NextLayer next) {
+        return (next != NextLayer::SameRun) && (runLength >= expectedRunLength);
+    }
+
+    float matrixChange(const float prev[16], const float cur[16]) {
+        double num = 0.0, den = 0.0;
+        for (int k = 0; k < 16; k++) {
+            if (!std::isfinite(prev[k]) || !std::isfinite(cur[k])) {
+                return -1.0f;
+            }
+
+            num += double(cur[k] - prev[k]) * double(cur[k] - prev[k]);
+            den += double(cur[k]) * double(cur[k]);
+        }
+
+        return (den > 0.0) ? float(std::sqrt(num / den)) : -1.0f;
+    }
+
+    void CameraCutCounter::reset() {
+        *this = CameraCutCounter();
+    }
+
+    void CameraCutCounter::add(float change) {
+        if (change < 0.0f) {
+            return;
+        }
+
+        pairs++;
+        jumped += (change > JumpChange) ? 1 : 0;
+        maxChange = std::max(maxChange, change);
+    }
+
+    bool CameraCutCounter::cut() const {
+        return (pairs >= MinPairs) && (jumped * 2 > pairs);
+    }
+
     bool primeGeneratedTargets(bool primeEnabled, bool generateInterpolatedFrames, bool usingMSAA, uint32_t runLength) {
         return primeEnabled && generateInterpolatedFrames && !usingMSAA && (runLength == 1);
     }

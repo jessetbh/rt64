@@ -258,6 +258,7 @@ namespace RT64 {
         tileInterpolationUsed = false;
         lookAtInterpolationUsed = false;
         matched = true;
+        wcwCameraCut.reset();
 
         thread_local std::unordered_map<uint32_t, ModifiedBuffers> workloadsModified;
         workloadsModified.clear();
@@ -778,6 +779,14 @@ namespace RT64 {
         }
 
         wcwHfrPurePairs.fetch_add(1, std::memory_order_relaxed);
+
+        // [wcw fix] Camera cut detection: how far this pair's camera moved (WcwLogic::CameraCutCounter).
+        if ((curTransformIndex < curWorkload.drawData.worldTransformsCamera.size()) && (prevTransformIndex < prevWorkload.drawData.worldTransformsCamera.size())) {
+            float cc[16], cp[16];
+            hlslpp::store(hlslpp::float4x4(curWorkload.drawData.worldTransformsCamera[curTransformIndex]), cc);
+            hlslpp::store(hlslpp::float4x4(prevWorkload.drawData.worldTransformsCamera[prevTransformIndex]), cp);
+            wcwCameraCut.add(WcwLogic::matrixChange(cp, cc));
+        }
         const hlslpp::float4x4 &curTransform = curWorkload.drawData.worldTransformsPure[curTransformIndex];
         const hlslpp::float4x4 &prevTransform = prevWorkload.drawData.worldTransformsPure[prevTransformIndex];
         const uint32_t curGroupIndex = curWorkload.drawData.worldTransformGroups[curTransformIndex];

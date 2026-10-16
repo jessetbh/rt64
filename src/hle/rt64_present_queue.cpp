@@ -803,8 +803,30 @@ namespace RT64 {
                             fprintf(lumf, "%d,%.1f,0x%X,0x%X,%.2f\n", wcwPresentN, msNow, present.screenVI.fbAddress(), wcw_addr, double(sum) / cnt);
                             fflush(lumf);
                         }
-                        const bool wcwBmpWanted = (wcwBmpEvery > 0) ? ((wcwPresentN >= wcwBmpStart) && ((wcwPresentN - wcwBmpStart) / wcwBmpEvery < wcwBmpCount))
+                        bool wcwBmpWanted = (wcwBmpEvery > 0) ? ((wcwPresentN >= wcwBmpStart) && ((wcwPresentN - wcwBmpStart) / wcwBmpEvery < wcwBmpCount))
                             : ((wcwPresentN >= wcwBmpStart) && (wcwPresentN < wcwBmpStart + wcwBmpCount));
+
+                        // [wcw hfr] WCW_LUM_JUMP=<percent>: also save a present whose luminance differs from the one before
+                        // it by more than that, and the present after it (flicker hunting; at most 80 files).
+                        {
+                            static const double wcwLumJump = getenv("WCW_LUM_JUMP") ? atof(getenv("WCW_LUM_JUMP")) : 0.0;
+                            static const int wcwLumJumpFrom = getenv("WCW_LUM_JUMP_FROM") ? atoi(getenv("WCW_LUM_JUMP_FROM")) : 0;
+                            static double wcwPrevLum = -1.0;
+                            static int wcwJumpNext = -1, wcwJumpSaved = 0;
+                            const double lumNow = double(sum) / cnt;
+                            if ((wcwLumJump > 0.0) && (wcwJumpSaved < 80) && (wcwPresentN >= wcwLumJumpFrom)) {
+                                const bool jump = (wcwPrevLum > 3.0) && (std::fabs(lumNow - wcwPrevLum) > wcwPrevLum * wcwLumJump / 100.0);
+                                if (jump || (wcwPresentN == wcwJumpNext)) {
+                                    wcwBmpWanted = true;
+                                    wcwJumpSaved++;
+                                    if (jump) {
+                                        wcwJumpNext = wcwPresentN + 1;
+                                    }
+                                }
+                            }
+
+                            wcwPrevLum = lumNow;
+                        }
                         if (wcwBmpWanted) {
                             char name[64]; snprintf(name, sizeof(name), "wcw_present_%04d.bmp", wcwPresentN);
                             FILE *bf = fopen(name, "wb");

@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "common/rt64_wcw_logic.h"
 #include "preset/rt64_preset_scene.h"
 #include "render/rt64_buffer_uploader.h"
 
@@ -129,6 +130,8 @@ namespace RT64 {
         std::vector<GameScene> orthographicScenes;
         std::vector<uint32_t> workloads;
         bool matched = false;
+        // [wcw fix] How far the matched objects' camera moved since the previous frame (cut detection).
+        WcwLogic::CameraCutCounter wcwCameraCut;
 
         bool areFramebufferPairsCompatible(const WorkloadQueue &workloadQueue, const GameIndices::FramebufferPair &first, const GameIndices::FramebufferPair &second);
         bool isSceneCompatible(const WorkloadQueue &workloadQueue, const GameScene &scene, const GameIndices::Projection &proj);

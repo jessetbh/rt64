@@ -105,6 +105,152 @@ TEST_CASE("short runs: a scene's steady layer count keeps its generated frames")
     }
 }
 
+// Multi-layer runs longer than expected
+
+// Replays run lengths layer by layer through publishRunAtLayer: the expected length is the longest of the last 8
+// runs, and lookahead says whether the render thread could see the next workload (the game had queued it) when a
+// layer decided. Returns, per run, the layer that published its generated frame (0 = none: it waited for the next
+// run's start, where publishShortRun decides).
+static std::vector<uint32_t> replayLayers(const std::vector<uint32_t> &lengths, bool lookahead) {
+    std::vector<uint32_t> publishedAt;
+    std::vector<uint32_t> history;
+    for (uint32_t length : lengths) {
+        uint32_t expected = 1;
+        for (size_t i = (history.size() > 8) ? history.size() - 8 : 0; i < history.size(); i++) {
+            expected = std::max(expected, history[i]);
+        }
+
+        uint32_t at = 0;
+        for (uint32_t layer = 1; layer <= length; layer++) {
+            NextLayer next = NextLayer::Unknown;
+            if (lookahead) {
+                next = (layer < length) ? nextLayer(true, 0x100, false, 0x100) : nextLayer(true, 0x200, false, 0x100);
+            }
+
+            if (publishRunAtLayer(layer, expected, next)) {
+                at = layer;
+                break;
+            }
+        }
+
+        publishedAt.push_back(at);
+        history.push_back(length);
+    }
+
+    return publishedAt;
+}
+
+TEST_CASE("long runs: a run longer than expected publishes at its last layer (Revenge attract dark flash, #6 cause 2)") {
+    // Revenge's attract mode (WCW_RUN_LOG, 60 fps): a 5-layer run among 3-layer ones. Its generated frame was
+    // published at layer 3, before layers 4 and 5 drew (generated 6.4 against real 8.2).
+    const std::vector<uint32_t> runs = { 3, 3, 3, 3, 3, 3, 3, 5, 3, 3 };
+    CHECK(replayLayers(runs, true)[7] == 5);
+    // Without seeing the next workload, the expected-length rule publishes it early: the old behaviour.
+    CHECK(replayLayers(runs, false)[7] == 3);
+    // VPW2's 4-layer spike among 3-layer runs.
+    CHECK(replayLayers({ 3, 3, 3, 3, 4, 3 }, true)[4] == 4);
+}
+
+TEST_CASE("long runs: steady and short runs publish as before") {
+    for (uint32_t at : replayLayers({ 3, 3, 3, 3, 3, 3 }, true)) {
+        CHECK(at == 3);
+    }
+
+    // A run cut short still waits for the next run's start (publishShortRun decides there).
+    CHECK(replayLayers({ 3, 3, 3, 3, 1 }, true)[4] == 0);
+    CHECK(replayLayers({ 5, 5, 5, 5, 3 }, true)[4] == 0);
+    // Single-layer screens publish at once.
+    for (uint32_t at : replayLayers({ 1, 1, 1 }, true)) {
+        CHECK(at == 1);
+    }
+}
+
+TEST_CASE("long runs: nextLayer") {
+    CHECK(nextLayer(false, 0x100, false, 0x100) == NextLayer::Unknown);
+    CHECK(nextLayer(true, 0x100, false, 0x100) == NextLayer::SameRun);
+    CHECK(nextLayer(true, 0x200, false, 0x100) == NextLayer::NewRun);
+    // A workload that draws nothing joins the current run (it can't change the image).
+    CHECK(nextLayer(true, 0x200, true, 0x100) == NextLayer::SameRun);
+    CHECK(!publishRunAtLayer(3, 3, NextLayer::SameRun));
+    CHECK(publishRunAtLayer(3, 3, NextLayer::NewRun));
+    CHECK(publishRunAtLayer(3, 3, NextLayer::Unknown));
+    CHECK(!publishRunAtLayer(2, 3, NextLayer::NewRun));
+}
+
+// Camera cuts
+
+// A view matrix (row-major 4x4) looking along z from (x, 0, z), turned by yaw radians: the shape of the per-object
+// camera matrices the AKI games' matched pairs carry.
+static std::vector<float> cameraMatrix(float x, float z, float yaw) {
+    const float c = std::cos(yaw), s = std::sin(yaw);
+    return { c, 0.0f, -s, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, s, 0.0f, c, 0.0f, -x, -150.0f, -z, 1.0f };
+}
+
+TEST_CASE("camera cuts: matrixChange") {
+    const std::vector<float> a = cameraMatrix(0.0f, 600.0f, 0.3f);
+    CHECK(matrixChange(a.data(), a.data()) == 0.0f);
+    // A pan: a few units and a degree per game frame.
+    const std::vector<float> pan = cameraMatrix(4.0f, 604.0f, 0.3f + 0.0175f);
+    CHECK(matrixChange(a.data(), pan.data()) < 0.05f);
+    // A cut to the other side of the ring.
+    const std::vector<float> cut = cameraMatrix(-300.0f, -200.0f, 2.8f);
+    CHECK(matrixChange(a.data(), cut.data()) > CameraCutCounter::JumpChange);
+    std::vector<float> bad = a;
+    bad[5] = NAN;
+    CHECK(matrixChange(a.data(), bad.data()) < 0.0f);
+    const std::vector<float> zero(16, 0.0f);
+    CHECK(matrixChange(a.data(), zero.data()) < 0.0f);
+}
+
+TEST_CASE("camera cuts: a layer whose objects' cameras all jumped is a cut (Revenge attract made-up views, #6 cause 3)") {
+    // Revenge's attract mode cuts between shots every few seconds; the generated frame at each cut interpolated the
+    // camera between the two shots (a third view, 10-50% off in luminance). Every matched object's camera jumps.
+    const std::vector<float> before = cameraMatrix(0.0f, 600.0f, 0.3f);
+    const std::vector<float> after = cameraMatrix(-300.0f, -200.0f, 2.8f);
+    CameraCutCounter c;
+    for (int i = 0; i < 40; i++) {
+        c.add(matrixChange(before.data(), after.data()));
+    }
+
+    CHECK(c.cut());
+    CHECK(c.pairs == 40);
+
+    // A pan moves every camera a little: not a cut.
+    const std::vector<float> pan = cameraMatrix(4.0f, 604.0f, 0.32f);
+    c.reset();
+    for (int i = 0; i < 40; i++) {
+        c.add(matrixChange(before.data(), pan.data()));
+    }
+
+    CHECK(!c.cut());
+}
+
+TEST_CASE("camera cuts: a few odd pairs or too few pairs are not a cut") {
+    const std::vector<float> before = cameraMatrix(0.0f, 600.0f, 0.3f);
+    const std::vector<float> after = cameraMatrix(-300.0f, -200.0f, 2.8f);
+    const float jump = matrixChange(before.data(), after.data());
+    CameraCutCounter c;
+    // 10 of 40 pairs paired with the wrong object.
+    for (int i = 0; i < 40; i++) {
+        c.add((i < 10) ? jump : 0.01f);
+    }
+
+    CHECK(!c.cut());
+
+    // Too few pairs to tell (a 2D layer, a single object).
+    c.reset();
+    for (uint32_t i = 0; i + 1 < CameraCutCounter::MinPairs; i++) {
+        c.add(jump);
+    }
+
+    CHECK(!c.cut());
+
+    // Pairs whose change can't be measured don't count.
+    c.reset();
+    c.add(-1.0f);
+    CHECK(c.pairs == 0);
+}
+
 TEST_CASE("short runs: publishShortRun") {
     CHECK(!publishShortRun(1, 3, 3));
     CHECK(!publishShortRun(3, 5, 5));
