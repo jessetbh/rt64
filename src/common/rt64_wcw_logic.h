@@ -381,4 +381,43 @@ namespace RT64::WcwLogic {
         std::unordered_map<uint32_t, uint32_t> identities;
         std::mutex identitiesMutex;
     };
+
+    // HUD Placement without G_EX tags
+
+    // The games never tag their HUD with gEXSetRectAlign / G_EX_ORIGIN_*, so Graphics > HUD Placement did nothing.
+    // Instead the renderer collects the 2D draws a pass makes after its widened 3D scene (texrects, fill rects,
+    // triangles drawn with a matrix without perspective), and anchors them here: draws that touch or nearly touch are
+    // one element; an element left of the centre anchors to the left edge, right of it to the right edge, and one
+    // across the centre or near it stays centred. Grouping first keeps an element in one piece (a timer's digits,
+    // a meter's segments) instead of tearing it at the centre line.
+    enum class HudAnchor : uint8_t {
+        Centre,
+        Left,
+        Right
+    };
+
+    // A 2D draw's bounds in the game's framebuffer pixels.
+    struct HudBox {
+        float left, top, right, bottom;
+    };
+
+    // Draws closer than this fraction of the screen width (on both axes) belong to one element.
+    constexpr float HudElementGap = 0.025f;
+    // An element whose centre is closer to the screen centre than this fraction of the screen width stays centred.
+    constexpr float HudCentreBand = 0.08f;
+    // Passes with more 2D draws than this are left alone (a full 2D screen, not a HUD; also bounds the grouping cost).
+    constexpr size_t HudMaxBoxes = 512;
+
+    // One anchor per box. The screen spans screenLeft..screenRight in the same pixels as the boxes.
+    std::vector<HudAnchor> hudAnchors(const std::vector<HudBox> &boxes, float screenLeft, float screenRight);
+
+    // Whether HUD placement changes anything: the frame is wider than the game's 4:3 (centredWidthFraction = 4:3 width /
+    // output width, below 1) and the HUD Placement mode moves elements (placement = rt64's extAspectPercentage, 0 for
+    // Original).
+    bool hudPlacementActive(float centredWidthFraction, float placement);
+
+    // Horizontal shift, in normalized device coordinates of the wide output, that moves a centred 4:3 element to its
+    // anchor: all the way to the window edge at placement 1, part of the way for a clamped mode (16:9 in a 21:9
+    // window). Matches rt64's G_EX_ORIGIN_LEFT / RIGHT rect origins.
+    float hudShiftNdc(HudAnchor anchor, float centredWidthFraction, float placement);
 };

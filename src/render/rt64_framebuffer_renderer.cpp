@@ -6,6 +6,7 @@
 #include "rt64_wcw_texture_edges.h"
 
 #include <cfloat>
+#include <cstring>
 
 #include "../include/rt64_extended_gbi.h"
 
@@ -211,6 +212,142 @@ namespace RT64 {
         left = correctMisalignment(left, leftOrigin);
         right = correctMisalignment(right, rightOrigin);
         return RenderViewport(left, top, right - left, bottom - top);
+    }
+
+    // [wcw] HUD Placement without G_EX tags. A projection drawn with the wide viewport (same test as the draw loop's
+    // useWideViewport).
+    static bool wcwHudWideProjection(const FramebufferPair &fbPair, const DrawData &drawData, const Projection &proj) {
+        if (!proj.usesViewport()) {
+            return false;
+        }
+
+        const int16_t *clipRatios = &drawData.viewportClipRatios[proj.transformsIndex * 4];
+        const FixedRect rect = proj.scissorRect.intersection(drawData.rspViewports[proj.transformsIndex].rect(clipRatios));
+        const bool coversWholeWidth = !rect.isEmpty() && (rect.ulx <= fbPair.scissorRect.ulx) && (rect.lrx >= fbPair.scissorRect.lrx);
+        const bool horizontalRatio = !rect.isEmpty() && (rect.width(true, true) > rect.height(true, true));
+        return (drawData.viewportOrigins[proj.transformsIndex] == G_EX_ORIGIN_NONE) && coversWholeWidth && horizontalRatio;
+    }
+
+    // [wcw] Anchors for the 2D draws a pass makes after its widened 3D scene (WcwLogic::hudAnchors): texrects and fill
+    // rects that don't span the scissor's width, and triangles whose forced matrix has no perspective (every vertex at
+    // w = 1: the classification the interpolation code uses for screen-space draws) in wide projections. Draws before
+    // the scene (backdrops), passes without a 3D scene (menus, 2D screens), tagged rects and tile copies keep their
+    // place. anchors[callBase[pr] + d] is projection pr's call d.
+    static void wcwHudPlacementAnchors(const FramebufferPair &fbPair, const DrawData &drawData, float fbWidth, std::vector<uint32_t> &callBase, std::vector<WcwLogic::HudAnchor> &anchors) {
+        callBase.clear();
+        anchors.clear();
+        uint32_t callTotal = 0;
+        for (uint32_t pr = 0; pr < fbPair.projectionCount; pr++) {
+            callBase.push_back(callTotal);
+            callTotal += fbPair.projections[pr].gameCallCount;
+        }
+
+        anchors.assign(callTotal, WcwLogic::HudAnchor::Centre);
+
+        const size_t vertexTotal = std::min(drawData.posTransformed.size(), drawData.posScreen.size());
+        std::vector<WcwLogic::HudBox> boxes;
+        std::vector<uint32_t> boxCalls;
+        bool sceneDrawn = false;
+        for (uint32_t pr = 0; pr < fbPair.projectionCount; pr++) {
+            const Projection &proj = fbPair.projections[pr];
+            if (proj.scissorRect.isNull()) {
+                continue;
+            }
+
+            const bool rectProj = (proj.type == Projection::Type::Rectangle);
+            const bool triProj = (proj.type == Projection::Type::Perspective) || (proj.type == Projection::Type::Orthographic);
+            const bool wideProj = triProj && wcwHudWideProjection(fbPair, drawData, proj);
+            for (uint32_t d = 0; d < proj.gameCallCount; d++) {
+                const GameCall &call = proj.gameCalls[d];
+                if (rectProj) {
+                    const FixedRect &rect = call.callDesc.rect;
+                    if (!sceneDrawn || rect.isNull() || (call.callDesc.rectLeftOrigin != G_EX_ORIGIN_NONE) || (call.callDesc.rectRightOrigin != G_EX_ORIGIN_NONE) ||
+                        (call.callDesc.rectAspect != G_EX_ASPECT_AUTO) || ((rect.ulx <= fbPair.scissorRect.ulx) && (rect.lrx >= fbPair.scissorRect.lrx)))
+                    {
+                        continue;
+                    }
+
+                    bool tileCopiesUsed = false;
+                    for (uint32_t t = 0; (t < call.callDesc.tileCount) && !tileCopiesUsed; t++) {
+                        tileCopiesUsed = drawData.callTiles[call.callDesc.tileIndex + t].tileCopyUsed;
+                    }
+
+                    if (tileCopiesUsed) {
+                        continue;
+                    }
+
+                    boxes.push_back({ rect.ulx / 4.0f, rect.uly / 4.0f, rect.lrx / 4.0f, rect.lry / 4.0f });
+                    boxCalls.push_back(callBase[pr] + d);
+                }
+                else if (triProj) {
+                    if ((call.callDesc.extendedType != DrawExtendedType::None) || (call.callDesc.triangleCount == 0) || (call.callDesc.otherMode.cycleType() == G_CYC_FILL)) {
+                        continue;
+                    }
+
+                    bool flat = true;
+                    bool valid = true;
+                    WcwLogic::HudBox box = { FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX };
+                    for (uint32_t i = 0; i < call.callDesc.triangleCount * 3; i++) {
+                        const size_t faceIndex = size_t(call.meshDesc.faceIndicesStart) + i;
+                        if (faceIndex >= drawData.faceIndices.size()) {
+                            valid = false;
+                            break;
+                        }
+
+                        const uint32_t v = drawData.faceIndices[faceIndex];
+                        if (v >= vertexTotal) {
+                            valid = false;
+                            break;
+                        }
+
+                        if (std::abs(float(drawData.posTransformed[v].w) - 1.0f) >= 1e-4f) {
+                            flat = false;
+                            break;
+                        }
+
+                        const hlslpp::float3 &screen = drawData.posScreen[v];
+                        box.left = std::min(box.left, float(screen.x));
+                        box.right = std::max(box.right, float(screen.x));
+                        box.top = std::min(box.top, float(screen.y));
+                        box.bottom = std::max(box.bottom, float(screen.y));
+                    }
+
+                    if (!valid) {
+                        continue;
+                    }
+
+                    if (!flat) {
+                        sceneDrawn = sceneDrawn || wideProj;
+                        continue;
+                    }
+
+                    if (sceneDrawn && wideProj) {
+                        boxes.push_back(box);
+                        boxCalls.push_back(callBase[pr] + d);
+                    }
+                }
+            }
+        }
+
+        if (boxes.empty()) {
+            return;
+        }
+
+        const std::vector<WcwLogic::HudAnchor> boxAnchors = WcwLogic::hudAnchors(boxes, 0.0f, fbWidth);
+        for (size_t b = 0; b < boxes.size(); b++) {
+            anchors[boxCalls[b]] = boxAnchors[b];
+        }
+
+        // WCW_HUD_LOG=1: the 2D draws found after the scene and their anchors, every 300th pass that has any.
+        static const bool wcwHudLog = getenv("WCW_HUD_LOG") != nullptr;
+        static uint32_t wcwHudLogCount = 0;
+        if (wcwHudLog && ((wcwHudLogCount++ % 300) == 0)) {
+            fprintf(stderr, "[wcw hud] fb width %.0f: %zu 2D draws after the scene\n", fbWidth, boxes.size());
+            for (size_t b = 0; (b < boxes.size()) && (b < 48); b++) {
+                const char *anchorName = (boxAnchors[b] == WcwLogic::HudAnchor::Left) ? "left" : ((boxAnchors[b] == WcwLogic::HudAnchor::Right) ? "right" : "centre");
+                fprintf(stderr, "[wcw hud]   (%.1f,%.1f)-(%.1f,%.1f) %s\n", boxes[b].left, boxes[b].top, boxes[b].right, boxes[b].bottom, anchorName);
+            }
+        }
     }
 
     hlslpp::float3 viewPositionFrom(hlslpp::float4x4 viewI) {
@@ -1604,6 +1741,17 @@ namespace RT64 {
         uint32_t vertexTestZFaceIndicesStart = 0;
         int32_t vertexTestZCallIndex = -1;
         RenderViewport viewportClip;
+
+        // [wcw] HUD Placement without G_EX tags: 2D elements after the 3D scene anchor to the window edges.
+        // WCW_HUD_PLACEMENT=0 turns it off.
+        static const bool wcwHudDisabled = (getenv("WCW_HUD_PLACEMENT") != nullptr) && (strcmp(getenv("WCW_HUD_PLACEMENT"), "0") == 0);
+        const float wcwCentredWidth = (wideWidth > 0.0f) ? (originalWidth / wideWidth) : 1.0f;
+        const bool wcwHudActive = !wcwHudDisabled && WcwLogic::hudPlacementActive(wcwCentredWidth, extOriginPercentage);
+        std::vector<uint32_t> wcwHudCallBase;
+        std::vector<WcwLogic::HudAnchor> wcwHudAnchorList;
+        if (wcwHudActive) {
+            wcwHudPlacementAnchors(fbPair, drawData, float(p.fbWidth), wcwHudCallBase, wcwHudAnchorList);
+        }
         for (uint32_t pr = 0; (pr < fbPair.projectionCount) && (globalCallIndex < p.maxGameCall); pr++) {
             const Projection &proj = fbPair.projections[pr];
             if (proj.scissorRect.isNull()) {
@@ -1660,6 +1808,8 @@ namespace RT64 {
                 viewportClip = convertViewportRect(viewport.rect(viewportClipRatios), p.resolutionScale, p.fbWidth, projInvRatioScale, extOriginPercentage, 0.0f, viewportOrigin, viewportOrigin);
             }
 
+            const float wcwProjScreenOffsetX = triangles.screenOffset.x;
+
             // [wcw rt] The first perspective projection becomes the traced scene. (AKI games draw
             // without the Z-buffer, back to front, so depth writes can't identify the 3D scene.)
             const bool wcwRtProj = (wcwRaytracer != nullptr) && wcwRaytracer->wantsScene() && (proj.type == Projection::Type::Perspective) &&
@@ -1690,6 +1840,11 @@ namespace RT64 {
 
             for (uint32_t d = 0; (d < proj.gameCallCount) && (globalCallIndex < p.maxGameCall); d++) {
                 const GameCall &call = proj.gameCalls[d];
+                const WcwLogic::HudAnchor wcwHudAnchor = wcwHudActive ? wcwHudAnchorList[wcwHudCallBase[pr] + d] : WcwLogic::HudAnchor::Centre;
+                const bool wcwHudAnchored = (wcwHudAnchor != WcwLogic::HudAnchor::Centre);
+                const uint16_t wcwHudOrigin = (wcwHudAnchor == WcwLogic::HudAnchor::Left) ? uint16_t(G_EX_ORIGIN_LEFT) : uint16_t(G_EX_ORIGIN_RIGHT);
+                const uint16_t rectLeftOrigin = wcwHudAnchored ? wcwHudOrigin : call.callDesc.rectLeftOrigin;
+                const uint16_t rectRightOrigin = wcwHudAnchored ? wcwHudOrigin : call.callDesc.rectRightOrigin;
                 renderIndices.instanceIndex = call.callDesc.callIndex;
                 renderIndices.faceIndicesStart = call.meshDesc.faceIndicesStart;
                 renderIndices.rdpTileIndex = call.callDesc.tileIndex;
@@ -1729,7 +1884,7 @@ namespace RT64 {
                         horizontalMisalignment = int32_t(p.horizontalMisalignment);
                     }
 
-                    clearRect.rect = convertFixedRect(call.callDesc.rect, p.resolutionScale, p.fbWidth, invRatioScale, extOriginPercentage, horizontalMisalignment, call.callDesc.rectLeftOrigin, call.callDesc.rectRightOrigin);
+                    clearRect.rect = convertFixedRect(call.callDesc.rect, p.resolutionScale, p.fbWidth, invRatioScale, extOriginPercentage, horizontalMisalignment, rectLeftOrigin, rectRightOrigin);
                 }
                 else if (call.callDesc.extendedType != DrawExtendedType::None) {
                     switch (call.callDesc.extendedType) {
@@ -1821,6 +1976,7 @@ namespace RT64 {
                             instanceDrawCall.type = InstanceDrawCall::Type::IndexedTriangles;
                             triangles.indexStart = triangles.vertexTestZ ? vertexTestZFaceIndicesStart : call.meshDesc.faceIndicesStart;
                             invRatioScale = projInvRatioScale;
+                            triangles.screenOffset.x = wcwProjScreenOffsetX + WcwLogic::hudShiftNdc(wcwHudAnchor, wcwCentredWidth, extOriginPercentage);
                             break;
                         }
                         case Projection::Type::Rectangle: {
@@ -1833,7 +1989,7 @@ namespace RT64 {
                             }
 
                             // The call's scissor spans the whole width of the framebuffer pair scissor. The rect must not be using extended origins.
-                            const bool regularOrigins = (call.callDesc.rectLeftOrigin == G_EX_ORIGIN_NONE) && (call.callDesc.rectRightOrigin == G_EX_ORIGIN_NONE);
+                            const bool regularOrigins = (rectLeftOrigin == G_EX_ORIGIN_NONE) && (rectRightOrigin == G_EX_ORIGIN_NONE);
                             const bool coversScissorWidth = regularOrigins && (call.callDesc.rect.ulx <= fbPair.scissorRect.ulx) && (call.callDesc.rect.lrx >= fbPair.scissorRect.lrx);
                             if ((tileCopiesUsed || coversScissorWidth || call.callDesc.rectAspect == G_EX_ASPECT_STRETCH) && (call.callDesc.rectAspect != G_EX_ASPECT_ADJUST)) {
                                 invRatioScale = 1.0f;
@@ -1842,7 +1998,7 @@ namespace RT64 {
                                 horizontalMisalignment = p.horizontalMisalignment;
                             }
 
-                            RenderViewport viewportRect = convertViewportRect(call.callDesc.rect, p.resolutionScale, p.fbWidth, invRatioScale, extOriginPercentage, horizontalMisalignment, call.callDesc.rectLeftOrigin, call.callDesc.rectRightOrigin);
+                            RenderViewport viewportRect = convertViewportRect(call.callDesc.rect, p.resolutionScale, p.fbWidth, invRatioScale, extOriginPercentage, horizontalMisalignment, rectLeftOrigin, rectRightOrigin);
                             triangles.screenScale = { viewportRect.width / framebuffer.viewport.width, viewportRect.height / framebuffer.viewport.height };
                             triangles.screenOffset.x = halfPixelOffset.x + ((viewportRect.x + viewportRect.width / 2.0f) - halfViewportSize.x) / halfViewportSize.x;
                             triangles.screenOffset.y = halfPixelOffset.y + (halfViewportSize.y - (viewportRect.y + viewportRect.height / 2.0f)) / halfViewportSize.y;
@@ -1965,7 +2121,10 @@ namespace RT64 {
                             }
                         }
 
-                        triangles.scissor = convertFixedRect(call.callDesc.scissorRect, p.resolutionScale, p.fbWidth, invRatioScale, extOriginPercentage, int32_t(horizontalMisalignment), call.callDesc.scissorLeftOrigin, call.callDesc.scissorRightOrigin);
+                        // [wcw] An anchored rect's scissor moves with it (a centred 4:3 scissor would cut it off).
+                        const bool wcwHudRectScissor = wcwHudAnchored && (proj.type == Projection::Type::Rectangle);
+                        triangles.scissor = convertFixedRect(call.callDesc.scissorRect, p.resolutionScale, p.fbWidth, invRatioScale, extOriginPercentage, int32_t(horizontalMisalignment),
+                            wcwHudRectScissor ? wcwHudOrigin : call.callDesc.scissorLeftOrigin, wcwHudRectScissor ? wcwHudOrigin : call.callDesc.scissorRightOrigin);
 
                         bool usesViewport = (proj.type == Projection::Type::Perspective) || (proj.type == Projection::Type::Orthographic);
                         if (usesViewport) {

@@ -490,4 +490,94 @@ namespace RT64::WcwLogic {
         identities.emplace(address, id);
         return id;
     }
+
+    std::vector<HudAnchor> hudAnchors(const std::vector<HudBox> &boxes, float screenLeft, float screenRight) {
+        const size_t n = boxes.size();
+        std::vector<HudAnchor> anchors(n, HudAnchor::Centre);
+        const float width = screenRight - screenLeft;
+        if ((n == 0) || (n > HudMaxBoxes) || !(width > 0.0f)) {
+            return anchors;
+        }
+
+        // Group boxes closer than the gap (union-find).
+        std::vector<size_t> parent(n);
+        for (size_t i = 0; i < n; i++) {
+            parent[i] = i;
+        }
+
+        auto root = [&](size_t i) {
+            while (parent[i] != i) {
+                parent[i] = parent[parent[i]];
+                i = parent[i];
+            }
+
+            return i;
+        };
+
+        const float gap = HudElementGap * width;
+        for (size_t i = 0; i < n; i++) {
+            for (size_t j = i + 1; j < n; j++) {
+                const HudBox &a = boxes[i];
+                const HudBox &b = boxes[j];
+                const bool near = (a.left - gap <= b.right) && (b.left - gap <= a.right) && (a.top - gap <= b.bottom) && (b.top - gap <= a.bottom);
+                if (near) {
+                    parent[root(i)] = root(j);
+                }
+            }
+        }
+
+        // Each element's horizontal extent.
+        std::vector<float> elementLeft(n, 0.0f), elementRight(n, 0.0f);
+        std::vector<bool> elementSeen(n, false);
+        for (size_t i = 0; i < n; i++) {
+            const size_t r = root(i);
+            if (!elementSeen[r]) {
+                elementSeen[r] = true;
+                elementLeft[r] = boxes[i].left;
+                elementRight[r] = boxes[i].right;
+            }
+            else {
+                elementLeft[r] = std::min(elementLeft[r], boxes[i].left);
+                elementRight[r] = std::max(elementRight[r], boxes[i].right);
+            }
+        }
+
+        const float centre = (screenLeft + screenRight) / 2.0f;
+        for (size_t i = 0; i < n; i++) {
+            const size_t r = root(i);
+            const float left = elementLeft[r];
+            const float right = elementRight[r];
+            const bool crossesCentre = (left < centre) && (right > centre);
+            const bool nearCentre = std::abs((left + right) / 2.0f - centre) <= (HudCentreBand * width);
+            if (crossesCentre || nearCentre) {
+                anchors[i] = HudAnchor::Centre;
+            }
+            else {
+                anchors[i] = (right <= centre) ? HudAnchor::Left : HudAnchor::Right;
+            }
+        }
+
+        return anchors;
+    }
+
+    bool hudPlacementActive(float centredWidthFraction, float placement) {
+        return (placement > 0.0f) && (centredWidthFraction < 0.999f) && (centredWidthFraction > 0.0f);
+    }
+
+    float hudShiftNdc(HudAnchor anchor, float centredWidthFraction, float placement) {
+        if (!hudPlacementActive(centredWidthFraction, placement)) {
+            return 0.0f;
+        }
+
+        const float shift = (1.0f - centredWidthFraction) * std::min(placement, 1.0f);
+        switch (anchor) {
+        case HudAnchor::Left:
+            return -shift;
+        case HudAnchor::Right:
+            return shift;
+        case HudAnchor::Centre:
+        default:
+            return 0.0f;
+        }
+    }
 };

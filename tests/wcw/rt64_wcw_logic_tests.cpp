@@ -823,6 +823,163 @@ TEST_CASE("hdr advice: little headroom with the CRT filter asks for less brightn
     CHECK_EQ(int(hdrAdvice(100.0f, OwnerHdr, CrtOff)), int(HdrAdvice::Dim));
 }
 
+// HUD Placement
+
+namespace {
+    // A 320-pixel-wide game screen (centre 160) and a 480-pixel anamorphic one (WCW's 480x240).
+    std::vector<HudAnchor> anchors320(const std::vector<HudBox> &boxes) {
+        return hudAnchors(boxes, 0.0f, 320.0f);
+    }
+
+    // A meter drawn as segments 'step' pixels apart.
+    void addSegments(std::vector<HudBox> &boxes, float left, float right, float top, float bottom, float step, float segmentWidth) {
+        for (float x = left; x + segmentWidth <= right; x += step) {
+            boxes.push_back({ x, top, x + segmentWidth, bottom });
+        }
+    }
+
+    bool allAre(const std::vector<HudAnchor> &anchors, size_t begin, size_t end, HudAnchor anchor) {
+        for (size_t i = begin; i < end; i++) {
+            if (anchors[i] != anchor) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // rt64's rect conversion for an origin (convertViewportRect), as normalized device x of the wide output.
+    float rectOriginNdc(float x, float fbWidth, float centredWidthFraction, float placement, HudAnchor anchor) {
+        float origin = fbWidth / 2.0f;
+        if (anchor == HudAnchor::Left) {
+            origin = 0.0f * placement + (fbWidth / 2.0f) * (1.0f - placement);
+        }
+        else if (anchor == HudAnchor::Right) {
+            origin = fbWidth * placement + (fbWidth / 2.0f) * (1.0f - placement);
+        }
+
+        const float wideX = origin + (x - origin) * centredWidthFraction;
+        return (wideX / fbWidth) * 2.0f - 1.0f;
+    }
+}
+
+TEST_CASE("hud: two corner meters anchor to their own edges (WM2000 attitude meters)") {
+    std::vector<HudBox> boxes;
+    addSegments(boxes, 16.0f, 120.0f, 200.0f, 210.0f, 6.0f, 4.0f);
+    const size_t leftCount = boxes.size();
+    addSegments(boxes, 200.0f, 304.0f, 200.0f, 210.0f, 6.0f, 4.0f);
+    // Name plates above the meters.
+    boxes.push_back({ 16.0f, 186.0f, 80.0f, 196.0f });
+    boxes.push_back({ 240.0f, 186.0f, 304.0f, 196.0f });
+
+    const auto anchors = anchors320(boxes);
+    CHECK(allAre(anchors, 0, leftCount, HudAnchor::Left));
+    CHECK(allAre(anchors, leftCount, boxes.size() - 2, HudAnchor::Right));
+    CHECK(anchors[boxes.size() - 2] == HudAnchor::Left);
+    CHECK(anchors[boxes.size() - 1] == HudAnchor::Right);
+}
+
+TEST_CASE("hud: a centred timer stays in one piece (digits left of the centre don't anchor left)") {
+    // "00:26": five glyphs across the centre line.
+    std::vector<HudBox> boxes;
+    for (int i = 0; i < 5; i++) {
+        boxes.push_back({ 136.0f + i * 10.0f, 12.0f, 144.0f + i * 10.0f, 24.0f });
+    }
+
+    const auto anchors = anchors320(boxes);
+    CHECK(allAre(anchors, 0, boxes.size(), HudAnchor::Centre));
+}
+
+TEST_CASE("hud: an element near the centre stays centred even without crossing it") {
+    // A short label just left of the centre line, alone.
+    const auto anchors = anchors320({ { 140.0f, 100.0f, 158.0f, 110.0f } });
+    CHECK(anchors[0] == HudAnchor::Centre);
+}
+
+TEST_CASE("hud: a meter's end segment near the centre moves with the meter (no tearing)") {
+    std::vector<HudBox> boxes;
+    addSegments(boxes, 20.0f, 154.0f, 200.0f, 210.0f, 6.0f, 4.0f);
+    // Alone, the last segment would be in the centre band.
+    CHECK(anchors320({ boxes.back() })[0] == HudAnchor::Centre);
+    const auto anchors = anchors320(boxes);
+    CHECK(allAre(anchors, 0, boxes.size(), HudAnchor::Left));
+}
+
+TEST_CASE("hud: an element across the centre stays, and draws far apart are separate elements") {
+    std::vector<HudBox> boxes = {
+        { 60.0f, 20.0f, 260.0f, 40.0f },  // banner across the centre
+        { 10.0f, 220.0f, 40.0f, 230.0f }, // bottom-left icon, far below the banner
+        { 280.0f, 220.0f, 310.0f, 230.0f } // bottom-right icon
+    };
+
+    const auto anchors = anchors320(boxes);
+    CHECK(anchors[0] == HudAnchor::Centre);
+    CHECK(anchors[1] == HudAnchor::Left);
+    CHECK(anchors[2] == HudAnchor::Right);
+
+    // Touching the banner joins it: the icon then stays with the banner.
+    boxes[1] = { 40.0f, 42.0f, 56.0f, 52.0f };
+    CHECK(anchors320(boxes)[1] == HudAnchor::Centre);
+}
+
+TEST_CASE("hud: the anamorphic 480-wide framebuffer uses its own centre") {
+    const auto anchors = hudAnchors({ { 20.0f, 200.0f, 150.0f, 210.0f }, { 330.0f, 200.0f, 460.0f, 210.0f }, { 225.0f, 10.0f, 255.0f, 20.0f } }, 0.0f, 480.0f);
+    CHECK(anchors[0] == HudAnchor::Left);
+    CHECK(anchors[1] == HudAnchor::Right);
+    CHECK(anchors[2] == HudAnchor::Centre);
+}
+
+TEST_CASE("hud: a full 2D screen (too many draws) and an empty screen are left alone") {
+    std::vector<HudBox> boxes;
+    for (size_t i = 0; i <= HudMaxBoxes; i++) {
+        boxes.push_back({ 0.0f, 0.0f, 4.0f, 4.0f });
+    }
+
+    CHECK(allAre(anchors320(boxes), 0, boxes.size(), HudAnchor::Centre));
+    CHECK(anchors320({}).empty());
+    CHECK(hudAnchors({ { 0.0f, 0.0f, 4.0f, 4.0f } }, 10.0f, 10.0f)[0] == HudAnchor::Centre);
+}
+
+TEST_CASE("hud: shift reaches the window edge at Expand, a 16:9 edge when clamped, nothing at Original or 4:3") {
+    // 16:9 window: the 4:3 picture is 0.75 of the width.
+    const float s169 = (4.0f / 3.0f) / (16.0f / 9.0f);
+    CHECK_NEAR(hudShiftNdc(HudAnchor::Left, s169, 1.0f), -0.25, 1e-5);
+    CHECK_NEAR(hudShiftNdc(HudAnchor::Right, s169, 1.0f), 0.25, 1e-5);
+    CHECK_NEAR(hudShiftNdc(HudAnchor::Centre, s169, 1.0f), 0.0, 1e-6);
+    // The 4:3 picture's left edge (-s) lands on the window edge.
+    CHECK_NEAR(-s169 + hudShiftNdc(HudAnchor::Left, s169, 1.0f), -1.0, 1e-5);
+
+    // 21:9 window with HUD Placement 16:9: rt64's percentage is (16:9 - 4:3) / (21:9 - 4:3).
+    const float s219 = (4.0f / 3.0f) / (21.0f / 9.0f);
+    const float clamp169 = (16.0f / 9.0f - 4.0f / 3.0f) / (21.0f / 9.0f - 4.0f / 3.0f);
+    CHECK_NEAR(-s219 + hudShiftNdc(HudAnchor::Left, s219, clamp169), -(16.0f / 9.0f) / (21.0f / 9.0f), 1e-5);
+    CHECK_NEAR(s219 + hudShiftNdc(HudAnchor::Right, s219, clamp169), (16.0f / 9.0f) / (21.0f / 9.0f), 1e-5);
+
+    CHECK(!hudPlacementActive(s169, 0.0f));
+    CHECK(!hudPlacementActive(1.0f, 1.0f));
+    CHECK(hudPlacementActive(s169, 1.0f));
+    CHECK_NEAR(hudShiftNdc(HudAnchor::Left, s169, 0.0f), 0.0, 1e-6);
+    CHECK_NEAR(hudShiftNdc(HudAnchor::Right, 1.0f, 1.0f), 0.0, 1e-6);
+}
+
+TEST_CASE("hud: triangles move exactly like rects with rt64's G_EX origins (both parts of an element stay together)") {
+    const float fbWidth = 320.0f;
+    const float placements[] = { 1.0f, 0.4444f, 0.25f };
+    const float fractions[] = { 0.75f, 0.5714f };
+    const HudAnchor sides[] = { HudAnchor::Left, HudAnchor::Right, HudAnchor::Centre };
+    for (float e : placements) {
+        for (float s : fractions) {
+            for (HudAnchor a : sides) {
+                for (float x : { 0.0f, 37.0f, 160.0f, 290.0f }) {
+                    // A triangle vertex: its 4:3 position compressed into the centre, then shifted.
+                    const float triNdc = ((x / fbWidth) * 2.0f - 1.0f) * s + hudShiftNdc(a, s, e);
+                    CHECK_NEAR(triNdc, rectOriginNdc(x, fbWidth, s, e, a), 1e-4);
+                }
+            }
+        }
+    }
+}
+
 // Widescreen
 
 TEST_CASE("widescreen: a pass whose scissor matches its framebuffer covers the screen (both pixel aspects)") {
