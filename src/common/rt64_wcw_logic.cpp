@@ -106,7 +106,9 @@ namespace RT64::WcwLogic {
             break;
         case RtQuality::Quality:
             // The full look: Strong AO. With 4 rays and the separate AO cleanup it reads clean (before that cleanup,
-            // Strong mottled the mat next to the wrestlers).
+            // Strong mottled the mat next to the wrestlers). Every pixel up to 1440 lines: a full 4K trace cost ~22 ms
+            // of GPU per game frame in No Mercy's arenas (38 fps), and 1440 lines brings it back to ~60 (aki-roadmap#84).
+            preset.maxLines = 1440.0f;
             preset.samplesPerLight = 2;
             preset.ao = AoLevel::Strong;
             preset.aoSamples = 4;

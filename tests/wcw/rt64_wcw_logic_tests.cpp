@@ -317,12 +317,31 @@ TEST_CASE("quality: Ultra traces every pixel with more rays than Quality") {
 }
 
 TEST_CASE("quality: trace resolution at 1080p and 4K") {
-    // Performance caps at 720 lines and Balanced at 1080, both at most half resolution; Quality and Ultra are full.
+    // Performance caps at 720 lines and Balanced at 1080, both at most half resolution; Quality is full up to 1440
+    // lines and Ultra is full.
     CHECK_NEAR(rtTraceScale(rtPreset(0), 1080), 0.5f, 1e-6f);
     CHECK_NEAR(rtTraceScale(rtPreset(1), 1080), 0.5f, 1e-6f);
+    CHECK_EQ(rtTraceScale(rtPreset(2), 1080), 1.0f);
     CHECK_NEAR(rtTraceScale(rtPreset(0), 2160), 720.0f / 2160.0f, 1e-6f);
     CHECK_NEAR(rtTraceScale(rtPreset(1), 2160), 0.5f, 1e-6f);
-    CHECK_EQ(rtTraceScale(rtPreset(2), 2160), 1.0f);
+    CHECK_NEAR(rtTraceScale(rtPreset(2), 2160), 1440.0f / 2160.0f, 1e-6f);
+    CHECK_EQ(rtTraceScale(rtPreset(3), 2160), 1.0f);
+}
+
+TEST_CASE("quality: Quality traces at most 1440 lines (a full 4K trace ran No Mercy's arenas at 38 fps, #84)") {
+    const RtPreset quality = rtPreset(uint32_t(RtQuality::Quality));
+    // Every pixel up to 1440 lines: 1080p, 1200 (5x 240) and 1440p targets are untouched.
+    CHECK_EQ(rtTraceScale(quality, 1200), 1.0f);
+    CHECK_EQ(rtTraceScale(quality, 1440), 1.0f);
+    // Above that the trace is 1440 lines tall: 4K (9x 240) and 5K-class (12x 240) targets.
+    for (uint32_t height : { 1680u, 2160u, 2880u }) {
+        CHECK_NEAR(rtTraceScale(quality, height) * float(height), 1440.0f, 1e-2f);
+    }
+    // Supersampled 2x at 4K (a 4320-line target) also traces 1440 lines, not the 2160 the output size allows.
+    CHECK_NEAR(rtTraceScale(quality, 4320, 2) * 4320.0f, 1440.0f, 1e-2f);
+    // Still more lines than Balanced at 4K, and Ultra still traces every one.
+    CHECK(rtTraceScale(quality, 2160) > rtTraceScale(rtPreset(uint32_t(RtQuality::Balanced)), 2160));
+    CHECK_EQ(rtTraceScale(rtPreset(uint32_t(RtQuality::Ultra)), 2160), 1.0f);
 }
 
 TEST_CASE("quality: a supersampled target traces at no more than the output size") {
