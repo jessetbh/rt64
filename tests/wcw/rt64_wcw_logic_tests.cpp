@@ -37,6 +37,76 @@ TEST_CASE("shadow casters survive every render of a game frame at 120 fps (shado
     }
 }
 
+// Ray tracer texture memory (#72)
+
+TEST_CASE("ray tracer textures: one RGBA16F texture per slot plus 20 shared bytes per trace texel") {
+    CHECK(rtTextureBytes(100, 10, 0) == 1000ull * 20);
+    CHECK(rtTextureBytes(100, 10, 5) == 1000ull * (20 + 5 * 8));
+    CHECK(rtTextureBytes(100, 10, 5, true) == 1000ull * (26 + 5 * 24));
+}
+
+TEST_CASE("ray tracer textures at Quality on a 4476x1680 target: 1.1 GB before #72, under half after") {
+    // The #72 measurement: No Mercy, 5 slots in an arena, the full target traced.
+    const uint64_t before = rtTextureBytes(4476, 1680, 5, true);
+    const uint64_t after = rtTextureBytes(4476, 1680, 5);
+    CHECK(before > 1050000000ull);
+    CHECK(before < 1150000000ull);
+    CHECK(after < 460000000ull);
+    CHECK((after * 2) < before);
+    // No 32-bit overflow on very large targets (8K, all 8 slots).
+    CHECK(rtTextureBytes(7680, 4320, 8) == 7680ull * 4320 * (20 + 8 * 8));
+}
+
+TEST_CASE("idle slots release their textures, but never one that can still cast shadows") {
+    CHECK(!releaseSlotTextures(100, 100, true));
+    CHECK(!releaseSlotTextures(100 + ShadowCasterStaleFrames, 100, true));
+    CHECK(!releaseSlotTextures(100 + RtSlotIdleFrames, 100, true));
+    CHECK(releaseSlotTextures(101 + RtSlotIdleFrames, 100, true));
+    // A slot built after the counter (never in practice) is kept.
+    CHECK(!releaseSlotTextures(50, 100, true));
+    CHECK(RtSlotIdleFrames > ShadowCasterStaleFrames);
+    for (uint64_t frame = 100; frame <= 100 + ShadowCasterStaleFrames; frame++) {
+        if (shadowCasterFresh(frame, 100)) {
+            CHECK(!releaseSlotTextures(frame, 100, true));
+        }
+    }
+}
+
+TEST_CASE("slot textures sized for another trace resolution are released once the slot is no longer in use") {
+    CHECK(releaseSlotTextures(101 + ShadowCasterStaleFrames, 100, false));
+    CHECK(releaseSlotTextures(100 + RtSlotIdleFrames + 1, 100, false));
+    // In use (traced this frame or the last ones): kept, or a slot alternating between two target sizes in one
+    // frame would lose its textures and history every frame.
+    for (uint64_t frame = 100; frame <= 100 + ShadowCasterStaleFrames; frame++) {
+        CHECK(!releaseSlotTextures(frame, 100, false));
+    }
+}
+
+TEST_CASE("resolve region: the rect's 8x8 thread groups, clipped to the trace texture") {
+    uint32_t region[4];
+    const uint32_t exact[4] = { 8, 16, 72, 48 };
+    resolveRegion(exact, 1000, 500, region);
+    CHECK((region[0] == 8) && (region[1] == 16) && (region[2] == 72) && (region[3] == 48));
+
+    // Partial groups cover whole groups: the resolve writes up to 7 texels past the rect's end.
+    const uint32_t partial[4] = { 10, 3, 21, 4 };
+    resolveRegion(partial, 1000, 500, region);
+    CHECK((region[0] == 10) && (region[1] == 3) && (region[2] == 26) && (region[3] == 11));
+
+    // The last group past the texture's edge is clipped (the shader skips those threads).
+    const uint32_t edge[4] = { 990, 495, 1000, 500 };
+    resolveRegion(edge, 1000, 500, region);
+    CHECK((region[0] == 990) && (region[1] == 495) && (region[2] == 1000) && (region[3] == 500));
+    const uint32_t full[4] = { 0, 0, 1001, 501 };
+    resolveRegion(full, 1001, 501, region);
+    CHECK((region[2] == 1001) && (region[3] == 501));
+
+    // An empty rect writes nothing.
+    const uint32_t empty[4] = { 40, 40, 40, 40 };
+    resolveRegion(empty, 1000, 500, region);
+    CHECK((region[2] == region[0]) && (region[3] == region[1]));
+}
+
 // Multi-layer runs that end early
 
 // Replays a sequence of run lengths through the workload queue's publishing: a run's generated frame waits for

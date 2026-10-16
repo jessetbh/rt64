@@ -13,6 +13,27 @@ namespace RT64::WcwLogic {
         return (frameCounter >= builtFrame) && ((frameCounter - builtFrame) <= ShadowCasterStaleFrames);
     }
 
+    uint64_t rtTextureBytes(uint32_t traceWidth, uint32_t traceHeight, uint32_t allocatedSlots, bool before72) {
+        const uint64_t texels = uint64_t(traceWidth) * uint64_t(traceHeight);
+        const uint64_t slotBytes = before72 ? RtSlotTexelBytesBefore72 : RtSlotTexelBytes;
+        const uint64_t sharedBytes = before72 ? RtSharedTexelBytesBefore72 : RtSharedTexelBytes;
+        return texels * (sharedBytes + slotBytes * allocatedSlots);
+    }
+
+    bool releaseSlotTextures(uint64_t frameCounter, uint64_t builtFrame, bool sizeMatches) {
+        const uint64_t limit = sizeMatches ? RtSlotIdleFrames : ShadowCasterStaleFrames;
+        return (frameCounter > builtFrame) && ((frameCounter - builtFrame) > limit);
+    }
+
+    void resolveRegion(const uint32_t rect[4], uint32_t traceWidth, uint32_t traceHeight, uint32_t region[4]) {
+        const uint32_t width = (rect[2] > rect[0]) ? (rect[2] - rect[0]) : 0;
+        const uint32_t height = (rect[3] > rect[1]) ? (rect[3] - rect[1]) : 0;
+        region[0] = std::min(rect[0], traceWidth);
+        region[1] = std::min(rect[1], traceHeight);
+        region[2] = uint32_t(std::min(uint64_t(rect[0]) + ((uint64_t(width) + 7) / 8) * 8, uint64_t(traceWidth)));
+        region[3] = uint32_t(std::min(uint64_t(rect[1]) + ((uint64_t(height) + 7) / 8) * 8, uint64_t(traceHeight)));
+    }
+
     TraceArea traceArea(bool darkenMisses, float outsideDarkness) {
         if (outsideDarkness <= 0.0f) {
             return TraceArea::Receivers;

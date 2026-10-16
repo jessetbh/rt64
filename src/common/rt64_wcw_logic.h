@@ -25,6 +25,35 @@ namespace RT64::WcwLogic {
     // Whether a scene last built on game frame builtFrame still casts shadows on game frame frameCounter.
     bool shadowCasterFresh(uint64_t frameCounter, uint64_t builtFrame);
 
+    // Ray tracer texture memory (aki-roadmap#72). Each scene slot keeps one RGBA16F texture: its resolved history
+    // (shadow RGB, AO; a miss holds the miss factor with AO < 0), which the composite also reads and encodes. The
+    // resolve writes a shared scratch and copies the region it wrote back into the slot. Shared beside it: the
+    // trace's current sample (RGBA16F factor and AO) and hit distance (R32F).
+    constexpr uint64_t RtSlotTexelBytes = 8;
+    constexpr uint64_t RtSharedTexelBytes = 8 + 8 + 4;
+    // Before #72: per slot two RGBA16F histories and an RGBA16F output; shared an unused RGBA16F output, the RGBA32F
+    // current sample and the R16F AO. For the WCW_GPU_LOG comparison and the tests.
+    constexpr uint64_t RtSlotTexelBytesBefore72 = 8 + 8 + 8;
+    constexpr uint64_t RtSharedTexelBytesBefore72 = 8 + 16 + 2;
+
+    // GPU bytes of the ray tracer's trace-resolution textures with allocatedSlots slots holding a history.
+    uint64_t rtTextureBytes(uint32_t traceWidth, uint32_t traceHeight, uint32_t allocatedSlots, bool before72 = false);
+
+    // A slot whose scene wasn't built for this many game frames gives its textures and bottom-level structure back
+    // (a menu, an entrance or another venue's scene). Long past ShadowCasterStaleFrames, so a slot that can still
+    // cast shadows is never released.
+    constexpr uint64_t RtSlotIdleFrames = 300;
+
+    // Whether a slot's textures are released before the next workload: idle (see RtSlotIdleFrames), or sized for
+    // another trace resolution and no longer a fresh shadow caster (its next trace would recreate them anyway; until
+    // then they'd hold the old size). A slot in use keeps them: passes onto targets of two sizes in one frame would
+    // otherwise recreate them every frame and never keep a history.
+    bool releaseSlotTextures(uint64_t frameCounter, uint64_t builtFrame, bool sizeMatches);
+
+    // The trace texels the resolve writes for a traced rect (x0, y0, x1, y1; exclusive ends): whole 8x8 thread
+    // groups from the rect's origin, clipped to the trace texture. This is the region copied back into the slot.
+    void resolveRegion(const uint32_t rect[4], uint32_t traceWidth, uint32_t traceHeight, uint32_t region[4]);
+
     // What a workload's trace pass covers on screen.
     enum class TraceArea {
         // The whole color target: the pass that darkens the misses (crowd and background, never in the traced scene).

@@ -26,6 +26,12 @@
 // Wrestler sheen (highlights + backlight) alone, grey on black.
 #define WCW_RT_MODE_SHEEN_RAW 12
 
+// A slot's resolved history texel (shadow RGB, AO) marks a ray miss with this AO and holds the miss factor in RGB
+// (aki-roadmap#72: the composite encodes the history, there is no separate output texture). Resolved AO never gets
+// below -1, so anything under WCW_RT_HISTORY_MISS_BELOW is a miss.
+#define WCW_RT_HISTORY_MISS -4.0f
+#define WCW_RT_HISTORY_MISS_BELOW -2.0f
+
 // Side of the blue noise tile the trace shader samples (WcwLogic::BlueNoiseSize; a power of two).
 #define WCW_RT_BLUE_NOISE_SIZE 64
 
@@ -187,6 +193,9 @@ namespace interop {
         // Trace texels per color target pixel, and the trace texture size.
         float2 scale;
         float2 traceSize;
+        // 1: the texture is a slot's resolved history (shadow and AO modes), encoded here for the 2x multiply;
+        // 0: a debug view's color, alpha blended as is.
+        uint decodeHistory;
     };
 #ifdef HLSL_CPU
 };

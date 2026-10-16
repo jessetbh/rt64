@@ -99,17 +99,18 @@ namespace RT64 {
             float boundsMax[3] = {};
             bool valid = false;
 
-            // Soft-shadow history (ping-pong) of this workload's pass, with the camera it used.
-            std::unique_ptr<RenderTexture> history[2];
-            uint32_t historyIndex = 0;
+            // The resolved soft shadows and AO of this workload's pass (shadow RGB, AO; WcwLogic::RtSlotTexelBytes),
+            // with the camera it used: the next resolve's history and the texture the composite reads and encodes.
+            // In the debug views, the trace's color instead (historyMode: the mode that wrote it).
+            std::unique_ptr<RenderTexture> history;
             uint32_t historyWidth = 0;
             uint32_t historyHeight = 0;
+            uint32_t historyMode = UINT32_MAX;
             bool historyValid = false;
             hlslpp::float4x4 prevViewProj;
 
-            // This slot's trace output, and what it was traced for: AKI games render some frames
-            // twice (two framebuffers, same camera), and the second pass reuses the first trace.
-            std::unique_ptr<RenderTexture> output;
+            // What the history was last traced for: AKI games render some frames twice (two framebuffers,
+            // same camera), and the second pass reuses the first trace.
             uint64_t tracedPresent = UINT64_MAX;
             hlslpp::float4x4 tracedViewProj;
             uint32_t tracedRect[4] = {};
@@ -149,10 +150,18 @@ namespace RT64 {
         uint64_t meshStartsBufferSize = 0;
         // Blue noise tile for the trace's random samples (WcwLogic::blueNoiseTile), uploaded once.
         std::unique_ptr<RenderBuffer> blueNoiseBuffer;
-        std::unique_ptr<RenderTexture> outputTexture;
+        // This trace's samples: the colored shadow term and the AO (RGBA16F), and the primary hit distance (R32F).
         std::unique_ptr<RenderTexture> currentTexture;
-        // The traced AO term beside currentTexture's colored shadow term and hit distance.
-        std::unique_ptr<RenderTexture> currentAoTexture;
+        std::unique_ptr<RenderTexture> currentDistTexture;
+        // The resolve's output, copied back into the slot's history (one scratch instead of a ping-pong pair per slot).
+        std::unique_ptr<RenderTexture> resolveTexture;
+        // Frees slot textures that are idle or sized for another resolution, and everything once ray tracing is
+        // off (WcwLogic::releaseSlotTextures). Only between workloads: nothing recorded still uses them.
+        void releaseTextures();
+        void releaseAll();
+        // WCW_GPU_LOG: prints the textures' size when it changes.
+        void logTextureMemory();
+        uint64_t loggedTextureBytes = 0;
         uint32_t frameIndex = 0;
         uint32_t reusedTraces = 0;
         // Traces generated frames skipped (WcwLogic::traceRender), for WCW_GPU_LOG.

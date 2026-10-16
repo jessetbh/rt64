@@ -18,11 +18,11 @@ StructuredBuffer<float4> gWorldPos : register(t2);
 StructuredBuffer<uint> gFaceIndices : register(t3);
 StructuredBuffer<uint> gMeshIndexStarts : register(t4);
 RWTexture2D<float4> gOutput : register(u5);
-// Shadow mode: (shadow factor RGB, primary hit distance (0 = no hit)) for the resolve pass, which filters the shadow
-// and AO terms separately. The shadow factor is colored by the lights and includes the glows (up to 2).
+// Shadow mode: (shadow factor RGB, AO factor) for the resolve pass, which filters the shadow and AO terms separately.
+// The shadow factor is colored by the lights and includes the glows (up to 2).
 RWTexture2D<float4> gCurrent : register(u6);
-// Shadow mode: the AO factor, beside gCurrent.
-RWTexture2D<float> gCurrentAo : register(u13);
+// Shadow mode: the primary hit distance (0 = no hit), beside gCurrent.
+RWTexture2D<float> gCurrentDist : register(u13);
 StructuredBuffer<RDPTile> gRDPTiles : register(t7);
 StructuredBuffer<GPUTile> gGPUTiles : register(t8);
 StructuredBuffer<float2> gTexCoords : register(t9);
@@ -180,8 +180,8 @@ void writeNoHit(uint2 pixel, RayDesc ray) {
             }
         }
 
-        gCurrent[pixel] = float4(missFactor, missFactor, missFactor, 0.0f);
-        gCurrentAo[pixel] = 1.0f;
+        gCurrent[pixel] = float4(missFactor, missFactor, missFactor, 1.0f);
+        gCurrentDist[pixel] = 0.0f;
     }
     else {
         gOutput[pixel] = float4(1.0f, 1.0f, 1.0f, 0.0f);
@@ -456,8 +456,8 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
 
             // Glows add light on top of the darkened surface (not scaled by it), so a lamp's pool reaches full
             // brightness under the lamp even in a dark room: the darkness is the missing ambient light.
-            gCurrent[pixel] = float4(outside + glowLight(hitPos, normal, pixel), hitT);
-            gCurrentAo[pixel] = 1.0f;
+            gCurrent[pixel] = float4(outside + glowLight(hitPos, normal, pixel), 1.0f);
+            gCurrentDist[pixel] = hitT;
             return;
         }
 
@@ -655,6 +655,6 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
         factor *= 1.0f + glowLight(hitPos, normal, pixel);
     }
 
-    gCurrent[pixel] = float4(factor, hitT);
-    gCurrentAo[pixel] = ao;
+    gCurrent[pixel] = float4(factor, ao);
+    gCurrentDist[pixel] = hitT;
 }
