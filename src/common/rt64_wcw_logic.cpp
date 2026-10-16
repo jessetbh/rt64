@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace RT64::WcwLogic {
     bool shadowCasterFresh(uint64_t frameCounter, uint64_t builtFrame) {
@@ -33,7 +34,9 @@ namespace RT64::WcwLogic {
     }
 
     uint64_t passSignature(const uint32_t *triangleCounts, size_t count) {
-        // FNV-1a over the count and the triangle counts.
+        // FNV-1a over the count and the sorted triangle counts.
+        std::vector<uint32_t> sorted(triangleCounts, triangleCounts + count);
+        std::sort(sorted.begin(), sorted.end());
         uint64_t hash = 14695981039346656037ULL;
         auto mix = [&hash](uint64_t value) {
             for (uint32_t i = 0; i < 8; i++) {
@@ -43,8 +46,8 @@ namespace RT64::WcwLogic {
         };
 
         mix(count);
-        for (size_t i = 0; i < count; i++) {
-            mix(triangleCounts[i]);
+        for (uint32_t triangles : sorted) {
+            mix(triangles);
         }
 
         return hash;
