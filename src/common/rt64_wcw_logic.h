@@ -114,7 +114,8 @@ namespace RT64::WcwLogic {
 
     // What a Ray Tracing Quality level traces. Performance and Balanced trace at reduced resolution (soft,
     // temporally resolved shadows don't need every pixel), capped at maxLines so 4K targets don't multiply the
-    // rays; Quality and Ultra trace every pixel. Higher levels add rays, and the AO look comes with the level.
+    // rays; Quality traces every pixel up to 1440 lines (so at 4K it traces two thirds of the lines), and Ultra
+    // traces every pixel at any size. Higher levels add rays, and the AO look comes with the level.
     struct RtPreset {
         // Trace resolution relative to the color target, before the line cap.
         float scale = 1.0f;
