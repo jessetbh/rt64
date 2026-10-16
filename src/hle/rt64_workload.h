@@ -37,6 +37,12 @@ namespace RT64 {
         std::vector<uint16_t> lookAtIndices;
         std::vector<uint32_t> faceIndices;
         std::vector<uint32_t> modifyPosUints;
+        // [wcw fix] Per viewProj transform: the x scale Expand applied to its projection (1 = none), and modifyPosUints
+        // with its screen-x modifies adjusted to match (WcwLogic::modifiedScreenXYForAspect). Both filled by the
+        // ProjectionProcessor; the RSP modify pass uses the adjusted copy when modifyPosAdjusted is set.
+        std::vector<float> projRatioScales;
+        std::vector<uint32_t> modifyPosUintsAdjusted;
+        bool modifyPosAdjusted = false;
         std::vector<hlslpp::float4> posTransformed;
         std::vector<hlslpp::float3> posScreen;
         std::vector<interop::RDPParams> rdpParams;
@@ -152,6 +158,7 @@ namespace RT64 {
         BufferPair lookAtIndicesBuffer;
         BufferPair faceIndicesBuffer;
         BufferPair modifyPosUintsBuffer;
+        BufferPair modifyPosUintsAdjustedBuffer; // [wcw fix] see DrawData::modifyPosUintsAdjusted
         BufferPair rdpParamsBuffer;
         BufferPair rspParamsBuffer;
         BufferPair extraParamsBuffer;

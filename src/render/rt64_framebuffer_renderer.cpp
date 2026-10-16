@@ -1716,8 +1716,12 @@ namespace RT64 {
         // p.aspectRatioSource (now the 4:3 display ratio). The scissor is in fb pixels,
         // so "covers the whole screen" means it matches the fb's dimensions — identical
         // for square-pixel games (320x240), required for WCW's anamorphic 480x240 fb.
-        const float fbPixelRatio = (p.fbHeight > 0) ? (static_cast<float>(p.fbWidth) / static_cast<float>(p.fbHeight)) : p.aspectRatioSource;
-        const bool adjustRatio = (abs((scissorRatio / fbPixelRatio) - 1.0f) < SimilarityPercentage);
+        // [wcw fix] Also when the scissor spans the fb's full width and at least its height: RT64 sizes the fb from
+        // what was drawn, so a 480x240 screen measured 480x196 in some passes, failed the ratio test there and was
+        // stretched instead of aspect-corrected (No Mercy's story dialog text jumped; WcwLogic::framebufferPassCoversScreen).
+        const bool adjustRatio = (p.fbHeight > 0) ?
+            WcwLogic::framebufferPassCoversScreen(fbPair.scissorRect.width(false, true), fbPair.scissorRect.height(false, true), int32_t(p.fbWidth), int32_t(p.fbHeight)) :
+            (abs((scissorRatio / p.aspectRatioSource) - 1.0f) < SimilarityPercentage);
         const float aspectRatioScale = adjustRatio ? (p.aspectRatioTarget / p.aspectRatioSource) : 1.0f;
         InstanceDrawCall instanceDrawCall;
         interop::RenderIndices renderIndices;

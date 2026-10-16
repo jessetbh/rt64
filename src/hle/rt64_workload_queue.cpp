@@ -659,7 +659,7 @@ namespace RT64 {
             scratchFbChangePool.reset();
             fbManager.resetOperations();
             if (framebufferRenderer->wcwRaytracer != nullptr) {
-                framebufferRenderer->wcwRaytracer->beginWorkload(workload.presentId);
+                framebufferRenderer->wcwRaytracer->beginWorkload(workload.presentId, curFrameWeight);
             }
 
             framebufferRenderer->resetFramebuffers(ext.workloadGraphicsWorker, ubershadersVisible, workload.extended.ditherNoiseStrength, targetManager.multisampling);
@@ -1066,6 +1066,9 @@ namespace RT64 {
         uint64_t wcwPendingRunSerial = 0;
         uint32_t wcwPendingRunAddr = 0;
         uint32_t wcwPendingFrames = 0; // generated frames the pending run will make available
+        // The pending run's layer count so far, and the length of the run before it (WcwLogic::publishShortRun).
+        uint32_t wcwPendingRunLength = 0;
+        uint32_t wcwPendingPrevRunLength = 0;
         // True once any layer of the current run has skipped its generated frame.
         bool wcwRunGenIncomplete = false;
         while (threadsRunning) {
@@ -1482,12 +1485,27 @@ namespace RT64 {
                 // [wcw fix] A new run has started (or this workload won't generate), so the pending run is
                 // complete: publish its generated frame now.
                 if (wcwInterpFlushPending && (useDifferentCounters || !generateInterpolatedFrames)) {
+                    // [wcw fix] A run that ended shorter than the one before it is missing layers: drop its generated
+                    // frame (the real frame shows instead) rather than publish a frame without them.
+                    const bool wcwPublishPending = WcwLogic::publishShortRun(wcwPendingRunLength, wcwPendingPrevRunLength);
+                    static const bool wcwRunLog = getenv("WCW_RUN_LOG") != nullptr;
+                    if (wcwRunLog) {
+                        fprintf(stderr, "[wcw run] t=%.3f present %llu serial %llu PENDING-FLUSH of serial %llu (%s) layer %u gen %d\n",
+                            std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(),
+                            (unsigned long long)workload.presentId, (unsigned long long)workload.wcwRunSerial, (unsigned long long)wcwPendingRunSerial,
+                            useDifferentCounters ? "new present" : "non-generating workload", wcwCompositeRunLength, generateInterpolatedFrames ? 1 : 0);
+                    }
                     {
                         std::scoped_lock<std::mutex> managerLock(ext.sharedResources->interpolatedMutex);
                         InterpolatedFrameCounters &wcwFlushCounters = ext.sharedResources->interpolatedFrames[wcwInterpFlushIndex];
-                        wcwFlushCounters.available = std::max(wcwFlushCounters.available, wcwPendingFrames);
-                        RT64::wcwAddrSlotComplete[(wcwPendingRunAddr >> 10) & 3].store(wcwPendingRunSerial, std::memory_order_relaxed);
-                        RT64::wcwSlotRealComplete[wcwPendingRunSerial % 3].store(wcwPendingRunSerial, std::memory_order_relaxed);
+                        if (wcwPublishPending) {
+                            wcwFlushCounters.available = std::max(wcwFlushCounters.available, wcwPendingFrames);
+                            RT64::wcwAddrSlotComplete[(wcwPendingRunAddr >> 10) & 3].store(wcwPendingRunSerial, std::memory_order_relaxed);
+                            RT64::wcwSlotRealComplete[wcwPendingRunSerial % 3].store(wcwPendingRunSerial, std::memory_order_relaxed);
+                        }
+                        else {
+                            wcwFlushCounters.skipped = true;
+                        }
                     }
 
                     ext.sharedResources->interpolatedCondition.notify_all();
@@ -1680,6 +1698,15 @@ namespace RT64 {
                             }
                         }
 
+                        // [wcw hfr] WCW_RUN_LOG=1: one line per layer's generated frame (flicker hunting).
+                        static const bool wcwRunLog = getenv("WCW_RUN_LOG") != nullptr;
+                        if (wcwRunLog) {
+                            fprintf(stderr, "[wcw run] t=%.3f present %llu serial %llu layer %u/%u addr %06X frame %u/%u %s\n",
+                                std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(),
+                                (unsigned long long)workload.presentId, (unsigned long long)workload.wcwRunSerial, wcwCompositeRunLength, wcwExpectedRunLen,
+                                interpolationTargetKey.address & 0xFFFFFF, frame, displayFrames, wcwDropNow ? "DROP" : (wcwFlushNow ? "FLUSH" : "pending"));
+                        }
+
                         if (wcwFlushNow || wcwDropNow) {
                             wcwInterpFlushPending = false;
                         }
@@ -1689,6 +1716,8 @@ namespace RT64 {
                             wcwPendingRunSerial = workload.wcwRunSerial;
                             wcwPendingRunAddr = interpolationTargetKey.address;
                             wcwPendingFrames = usingMSAA ? (frame + 1) : frame;
+                            wcwPendingRunLength = wcwCompositeRunLength;
+                            wcwPendingPrevRunLength = wcwLastCompositeRunLength;
                         }
 
                         // Add the amount of display ticks that correspond to the remaining frames.

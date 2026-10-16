@@ -37,6 +37,159 @@ TEST_CASE("shadow casters survive every render of a game frame at 120 fps (shado
     }
 }
 
+// Multi-layer runs that end early
+
+// Replays a sequence of run lengths through the workload queue's publishing: a run's generated frame waits for
+// the longest of the last 8 runs; a run that ends shorter is published when the next run starts, if
+// publishShortRun allows. Returns, per run, whether its generated frame was shown.
+static std::vector<bool> replayRuns(const std::vector<uint32_t> &lengths) {
+    std::vector<bool> shown;
+    std::vector<uint32_t> history;
+    uint32_t previous = 0;
+    for (uint32_t length : lengths) {
+        uint32_t expected = 1;
+        for (size_t i = (history.size() > 8) ? history.size() - 8 : 0; i < history.size(); i++) {
+            expected = std::max(expected, history[i]);
+        }
+
+        shown.push_back((length >= expected) || publishShortRun(length, previous));
+        history.push_back(length);
+        previous = length;
+    }
+
+    return shown;
+}
+
+TEST_CASE("short runs: a run cut short after longer runs drops its generated frame (Revenge attract flashes)") {
+    // Run lengths from Revenge's attract mode (WCW_RUN_LOG, 60 fps). Both cut-short runs flashed in the flicker
+    // log: a 1-layer run after 3-layer runs (generated 55.9 against real 48.6) and a 3-layer run after a 5-layer
+    // one (generated 6.4 against real 8.2).
+    const std::vector<bool> a = replayRuns({ 3, 3, 3, 3, 3, 3, 3, 3, 1, 1, 1, 1 });
+    CHECK(!a[8]);
+    const std::vector<bool> b = replayRuns({ 3, 3, 3, 3, 3, 3, 3, 5, 3, 3, 3, 3 });
+    CHECK(!b[8]);
+}
+
+TEST_CASE("short runs: a scene's steady layer count keeps its generated frames") {
+    // After the first cut-short run, the scene keeps 1 (or 3) layers: those runs match the previous one and are
+    // shown, though still shorter than the recent maximum.
+    const std::vector<bool> a = replayRuns({ 3, 3, 3, 3, 3, 3, 3, 3, 1, 1, 1, 1 });
+    CHECK(a[9] && a[10] && a[11]);
+    const std::vector<bool> b = replayRuns({ 3, 3, 3, 3, 3, 3, 3, 5, 3, 3, 3, 3 });
+    CHECK(b[9] && b[10] && b[11]);
+    for (bool s : replayRuns({ 3, 3, 3, 3, 3, 3, 3, 3, 3, 3 })) {
+        CHECK(s);
+    }
+}
+
+TEST_CASE("short runs: publishShortRun") {
+    CHECK(!publishShortRun(1, 3));
+    CHECK(!publishShortRun(3, 5));
+    CHECK(publishShortRun(3, 3));
+    CHECK(publishShortRun(4, 3));
+    // No previous run yet.
+    CHECK(publishShortRun(1, 0));
+}
+
+TEST_CASE("trace area: only the pass that darkens the misses traces full screen (No Mercy arenas ran at ~7 fps)") {
+    // A No Mercy arena frame with outside darkness: the arena pass darkens the misses, the ring, wrestler and
+    // small passes don't, and must stay within their geometry instead of tracing the whole target.
+    CHECK(traceArea(true, 0.55f) == TraceArea::FullScreen);
+    CHECK(traceArea(false, 0.55f) == TraceArea::Geometry);
+}
+
+TEST_CASE("trace area: without outside darkness, passes trace only their receivers") {
+    CHECK(traceArea(false, 0.0f) == TraceArea::Receivers);
+    // darkenMisses alone (no darkness to apply) doesn't widen the pass.
+    CHECK(traceArea(true, 0.0f) == TraceArea::Receivers);
+}
+
+TEST_CASE("generated frames: the real frame (current weight 1) is not generated, interpolated ones are") {
+    CHECK(!generatedFrame(1.0f));
+    CHECK(generatedFrame(0.5f));
+    CHECK(generatedFrame(0.25f));
+    CHECK(generatedFrame(0.75f));
+    CHECK(generatedFrame(0.0f));
+}
+
+TEST_CASE("generated frames: only the real frame traces at 60 and 120 fps (every displayed frame traced: ~6 fps)") {
+    // Replays a pass through the interpolation weights of a few game frames and counts its traces.
+    for (uint32_t targetRate : { 60u, 120u }) {
+        InterpolationTicks ticks;
+        bool haveTrace = false;
+        uint32_t reuses = 0, traces = 0, displayed = 0;
+        const uint32_t gameFrames = 10;
+        for (uint32_t g = 0; g < gameFrames; g++) {
+            const uint32_t frames = ticks.beginGameFrame(targetRate, 30, 0);
+            for (uint32_t f = 0; f < frames; f++) {
+                const FrameWeights weights = ticks.advance(targetRate, 30);
+                displayed++;
+                if (traceRender(generatedFrame(weights.cur), haveTrace, reuses)) {
+                    traces++;
+                    haveTrace = true;
+                    reuses = 0;
+                }
+                else {
+                    reuses++;
+                }
+            }
+        }
+
+        CHECK_EQ(displayed, gameFrames * (targetRate / 30));
+        // One trace per game frame; the very first generated frame traces too, having nothing to reuse.
+        CHECK(traces <= gameFrames + 1);
+        CHECK(traces >= gameFrames);
+    }
+}
+
+TEST_CASE("generated frames: a pass with no trace yet traces, even on a generated frame") {
+    CHECK(traceRender(true, false, 0));
+    CHECK(traceRender(false, false, 0));
+    CHECK(traceRender(false, true, 0));
+    CHECK(!traceRender(true, true, 0));
+}
+
+TEST_CASE("generated frames: shadows don't freeze when real frames are skipped under load") {
+    // 120 fps: 3 generated frames between real ones reuse the trace; a 4th in a row (the real frame was skipped)
+    // traces again.
+    CHECK(!traceRender(true, true, 1));
+    CHECK(!traceRender(true, true, 2));
+    CHECK(traceRender(true, true, MaxGeneratedReuse));
+    CHECK(traceRender(true, true, MaxGeneratedReuse + 5));
+}
+
+TEST_CASE("generated frames: two passes sharing a slot don't reuse each other's trace (generated frames ~5% darker)") {
+    // Two No Mercy passes of similar scenes map to one slot. On the real frame each traces in turn, so the slot
+    // holds the second pass's trace; on a generated frame the first pass must trace, not composite that trace.
+    const uint32_t passA[] = { 12, 40, 2, 2, 600 };
+    const uint32_t passB[] = { 12, 40, 2, 2, 598 };
+    const uint64_t slotTrace = passSignature(passB, 5);
+    CHECK(passSignature(passA, 5) != slotTrace);
+    CHECK(traceRender(true, passSignature(passA, 5) == slotTrace, 0));
+    CHECK(!traceRender(true, passSignature(passB, 5) == slotTrace, 0));
+}
+
+TEST_CASE("generated frames: a trace is reused only with the same outside darkness choice (misses darkened twice)") {
+    // The arena pass darkened the misses on the real frame's target. On a generated target it is again the
+    // darkening pass: reuse. If that target picked another pass to darken, the arena trace (darkness baked in)
+    // must not be composited, or the misses darken twice.
+    CHECK(reusableTrace(true, 7, 7, true, true));
+    CHECK(reusableTrace(true, 7, 7, false, false));
+    CHECK(!reusableTrace(true, 7, 7, true, false));
+    CHECK(!reusableTrace(true, 7, 7, false, true));
+    CHECK(!reusableTrace(true, 7, 8, true, true));
+    CHECK(!reusableTrace(false, 7, 7, true, true));
+}
+
+TEST_CASE("generated frames: a pass's signature is stable across the renders of a game frame") {
+    const uint32_t pass[] = { 24, 8, 8, 130 };
+    CHECK_EQ(passSignature(pass, 4), passSignature(pass, 4));
+    // Order and count matter: the same draws in another order, or one draw fewer, are another pass.
+    const uint32_t reordered[] = { 8, 24, 8, 130 };
+    CHECK(passSignature(pass, 4) != passSignature(reordered, 4));
+    CHECK(passSignature(pass, 4) != passSignature(pass, 3));
+}
+
 // Ray-traced ambient occlusion
 
 TEST_CASE("ao: Off traces no occlusion rays") {
@@ -792,6 +945,68 @@ TEST_CASE("hud: triangles move exactly like rects with rt64's G_EX origins (both
             }
         }
     }
+}
+
+// Widescreen
+
+TEST_CASE("widescreen: a pass whose scissor matches its framebuffer covers the screen (both pixel aspects)") {
+    CHECK(framebufferPassCoversScreen(320, 240, 320, 240));
+    CHECK(framebufferPassCoversScreen(480, 240, 480, 240));
+}
+
+TEST_CASE("widescreen: No Mercy's story screens (480x240 scissor, fb measured 480x196) cover the screen (dialog text jumped)") {
+    CHECK(framebufferPassCoversScreen(480, 240, 480, 196));
+    CHECK(framebufferPassCoversScreen(480, 240, 480, 198));
+}
+
+TEST_CASE("widescreen: a sub-rectangle of another shape doesn't (split screen, a texture rendered into part of it)") {
+    CHECK(!framebufferPassCoversScreen(240, 240, 480, 240));
+    CHECK(!framebufferPassCoversScreen(480, 120, 480, 240));
+    CHECK(!framebufferPassCoversScreen(64, 64, 480, 240));
+}
+
+TEST_CASE("widescreen: the ratio test is unchanged (a same-shape scissor counts, as before)") {
+    CHECK(framebufferPassCoversScreen(64, 32, 480, 240));
+    CHECK(framebufferPassCoversScreen(300, 240, 320, 240));
+}
+
+TEST_CASE("widescreen: empty or unknown sizes don't cover the screen") {
+    CHECK(!framebufferPassCoversScreen(0, 240, 480, 240));
+    CHECK(!framebufferPassCoversScreen(480, 240, 0, 0));
+}
+
+static uint32_t packXY(float x, float y) {
+    return (uint32_t(uint16_t(int16_t(std::lround(x * 4.0f)))) << 16) | uint32_t(uint16_t(int16_t(std::lround(y * 4.0f))));
+}
+
+static float unpackX(uint32_t v) {
+    return float(int16_t((v >> 16) & 0xFFFF)) / 4.0f;
+}
+
+TEST_CASE("widescreen: a game-set screen position is compressed like transformed vertices (story flow lines were stretched)") {
+    // 480-wide N64 screen, viewport centered at 240, Expand 16:9 (projRatioScale 0.75): a flow-line end at x = 338 lands
+    // 98 * 0.75 from the center, as the boxes it joins do; y stays.
+    const uint32_t v = modifiedScreenXYForAspect(packXY(338.0f, 61.25f), 240.0f, 0.75f);
+    CHECK(std::abs(unpackX(v) - (240.0f + 98.0f * 0.75f)) <= 0.25f);
+    CHECK((v & 0xFFFF) == (packXY(338.0f, 61.25f) & 0xFFFF));
+}
+
+TEST_CASE("widescreen: the viewport center and both sides follow the same rule") {
+    CHECK(unpackX(modifiedScreenXYForAspect(packXY(240.0f, 0.0f), 240.0f, 0.75f)) == 240.0f);
+    CHECK(std::abs(unpackX(modifiedScreenXYForAspect(packXY(40.0f, 0.0f), 240.0f, 0.75f)) - 90.0f) <= 0.25f);
+    // A viewport centered elsewhere (AKI's menus use a 3x screen viewport, still centered on the screen; others may not).
+    CHECK(std::abs(unpackX(modifiedScreenXYForAspect(packXY(100.0f, 0.0f), 60.0f, 0.5f)) - 80.0f) <= 0.25f);
+}
+
+TEST_CASE("widescreen: at Original (ratio 1) a modify is untouched, bit for bit") {
+    for (uint32_t v : { packXY(338.0f, 61.25f), packXY(-12.75f, 239.5f), 0xFFFF8000u, 0x7FFF0001u }) {
+        CHECK(modifiedScreenXYForAspect(v, 240.0f, 1.0f) == v);
+    }
+}
+
+TEST_CASE("widescreen: negative screen x and the int16 range survive the conversion") {
+    CHECK(std::abs(unpackX(modifiedScreenXYForAspect(packXY(-100.0f, 5.0f), 240.0f, 0.75f)) - (240.0f - 340.0f * 0.75f)) <= 0.25f);
+    CHECK(unpackX(modifiedScreenXYForAspect(packXY(8000.0f, 0.0f), 0.0f, 2.0f)) == 8191.75f);
 }
 
 int main() {
