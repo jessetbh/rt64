@@ -15,6 +15,9 @@ namespace RT64 {
 
         commandQueue = device->createCommandQueue(commandListType);
         commandList = commandQueue->createCommandList();
+        // [wcw] Named so a device-loss report (WCW_DRED) says which worker's commands hung the GPU.
+        commandQueue->setName(name + " queue");
+        commandList->setName(name);
         commandFence = device->createCommandFence();
     }
 
