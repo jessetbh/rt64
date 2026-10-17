@@ -1088,6 +1088,7 @@ namespace RT64 {
         // lengths, its serial number, and its generated frame while it waits for the run's last layer.
         uint32_t wcwCompositeRunLength = 0;
         uint32_t wcwLastCompositeRunLength = 0;
+        uint32_t wcwBeforeLastCompositeRunLength = 0;
         uint32_t wcwRunLengthHistory[8] = {};
         uint32_t wcwRunLengthCursor = 0;
         uint64_t wcwRunSerialCounter = 0;
@@ -1096,9 +1097,10 @@ namespace RT64 {
         uint64_t wcwPendingRunSerial = 0;
         uint32_t wcwPendingRunAddr = 0;
         uint32_t wcwPendingFrames = 0; // generated frames the pending run will make available
-        // The pending run's layer count so far, and the length of the run before it (WcwLogic::publishShortRun).
+        // The pending run's layer count so far, and the lengths of the two runs before it (WcwLogic::publishShortRun).
         uint32_t wcwPendingRunLength = 0;
         uint32_t wcwPendingPrevRunLength = 0;
+        uint32_t wcwPendingBeforePrevRunLength = 0;
         // True once any layer of the current run has skipped its generated frame.
         bool wcwRunGenIncomplete = false;
         while (threadsRunning) {
@@ -1226,6 +1228,7 @@ namespace RT64 {
                 // previous layer of this one. For an N-layer frame that is N game frames back.
                 if (!immediateRepeat) {
                     if (wcwCompositeRunLength > 0) {
+                        wcwBeforeLastCompositeRunLength = wcwLastCompositeRunLength;
                         wcwLastCompositeRunLength = wcwCompositeRunLength;
                         RT64::wcwLastRunLength.store(wcwCompositeRunLength, std::memory_order_relaxed);
                         wcwRunLengthHistory[wcwRunLengthCursor] = wcwCompositeRunLength;
@@ -1515,9 +1518,10 @@ namespace RT64 {
                 // [wcw fix] A new run has started (or this workload won't generate), so the pending run is
                 // complete: publish its generated frame now.
                 if (wcwInterpFlushPending && (useDifferentCounters || !generateInterpolatedFrames)) {
-                    // [wcw fix] A run that ended shorter than the one before it is missing layers: drop its generated
-                    // frame (the real frame shows instead) rather than publish a frame without them.
-                    const bool wcwPublishPending = WcwLogic::publishShortRun(wcwPendingRunLength, wcwPendingPrevRunLength);
+                    // [wcw fix] A run that ended shorter than the runs before it is missing layers: drop its generated
+                    // frame (the real frame shows instead) rather than publish a frame without them. Not after a
+                    // one-run spike (WcwLogic::publishShortRun).
+                    const bool wcwPublishPending = WcwLogic::publishShortRun(wcwPendingRunLength, wcwPendingPrevRunLength, wcwPendingBeforePrevRunLength);
                     static const bool wcwRunLog = getenv("WCW_RUN_LOG") != nullptr;
                     if (wcwRunLog) {
                         fprintf(stderr, "[wcw run] t=%.3f present %llu serial %llu PENDING-FLUSH of serial %llu (%s) layer %u gen %d\n",
@@ -1748,6 +1752,7 @@ namespace RT64 {
                             wcwPendingFrames = usingMSAA ? (frame + 1) : frame;
                             wcwPendingRunLength = wcwCompositeRunLength;
                             wcwPendingPrevRunLength = wcwLastCompositeRunLength;
+                            wcwPendingBeforePrevRunLength = wcwBeforeLastCompositeRunLength;
                         }
 
                         // Add the amount of display ticks that correspond to the remaining frames.

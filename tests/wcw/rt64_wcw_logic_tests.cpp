@@ -46,14 +46,16 @@ static std::vector<bool> replayRuns(const std::vector<uint32_t> &lengths) {
     std::vector<bool> shown;
     std::vector<uint32_t> history;
     uint32_t previous = 0;
+    uint32_t beforePrevious = 0;
     for (uint32_t length : lengths) {
         uint32_t expected = 1;
         for (size_t i = (history.size() > 8) ? history.size() - 8 : 0; i < history.size(); i++) {
             expected = std::max(expected, history[i]);
         }
 
-        shown.push_back((length >= expected) || publishShortRun(length, previous));
+        shown.push_back((length >= expected) || publishShortRun(length, previous, beforePrevious));
         history.push_back(length);
+        beforePrevious = previous;
         previous = length;
     }
 
@@ -61,13 +63,34 @@ static std::vector<bool> replayRuns(const std::vector<uint32_t> &lengths) {
 }
 
 TEST_CASE("short runs: a run cut short after longer runs drops its generated frame (Revenge attract flashes)") {
-    // Run lengths from Revenge's attract mode (WCW_RUN_LOG, 60 fps). Both cut-short runs flashed in the flicker
-    // log: a 1-layer run after 3-layer runs (generated 55.9 against real 48.6) and a 3-layer run after a 5-layer
-    // one (generated 6.4 against real 8.2).
+    // Run lengths from Revenge's attract mode (WCW_RUN_LOG, 60 fps). A 1-layer run after 3-layer runs flashed in
+    // the flicker log (generated 55.9 against real 48.6). Revenge's other cut-short runs: 2 after 3s, 3 or 4 after 5s.
     const std::vector<bool> a = replayRuns({ 3, 3, 3, 3, 3, 3, 3, 3, 1, 1, 1, 1 });
     CHECK(!a[8]);
+    CHECK(!replayRuns({ 3, 3, 3, 3, 3, 3, 3, 3, 2 })[8]);
+    CHECK(!replayRuns({ 5, 5, 5, 5, 5, 5, 5, 5, 3 })[8]);
+    CHECK(!replayRuns({ 5, 5, 5, 5, 5, 5, 5, 5, 4 })[8]);
+    // Cut short right after a spike: still shorter than the run before the spike.
+    CHECK(!replayRuns({ 3, 3, 3, 3, 3, 3, 3, 4, 1 })[8]);
+}
+
+TEST_CASE("short runs: the steady run after a one-frame spike keeps its generated frame (#85, VPW2 stutter)") {
+    // VPW2 matches (WCW_RUN_LOG, 60 fps) draw 3 layers per frame and a 4th every ~16th frame. The 3-layer run after
+    // each 4-layer one lost its generated frame: a missed refresh ~2 times a second.
+    std::vector<uint32_t> vpw2;
+    for (int i = 0; i < 4; i++) {
+        vpw2.insert(vpw2.end(), { 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4 });
+    }
+    for (bool s : replayRuns(vpw2)) {
+        CHECK(s);
+    }
+
+    // Revenge's attract mode has the same spikes (3, 5, 3 and 3, 4, 3). Its flash there (generated 6.4 against
+    // real 8.2) is the 5-layer run's own frame, published at its 3rd layer (#6 cause 2), not the 3-layer run after it.
     const std::vector<bool> b = replayRuns({ 3, 3, 3, 3, 3, 3, 3, 5, 3, 3, 3, 3 });
-    CHECK(!b[8]);
+    CHECK(b[8]);
+    CHECK(replayRuns({ 3, 3, 3, 3, 3, 3, 3, 4, 3 })[8]);
+    CHECK(replayRuns({ 1, 1, 1, 1, 1, 1, 1, 3, 1 })[8]);
 }
 
 TEST_CASE("short runs: a scene's steady layer count keeps its generated frames") {
@@ -83,12 +106,16 @@ TEST_CASE("short runs: a scene's steady layer count keeps its generated frames")
 }
 
 TEST_CASE("short runs: publishShortRun") {
-    CHECK(!publishShortRun(1, 3));
-    CHECK(!publishShortRun(3, 5));
-    CHECK(publishShortRun(3, 3));
-    CHECK(publishShortRun(4, 3));
-    // No previous run yet.
-    CHECK(publishShortRun(1, 0));
+    CHECK(!publishShortRun(1, 3, 3));
+    CHECK(!publishShortRun(3, 5, 5));
+    CHECK(publishShortRun(3, 3, 5));
+    CHECK(publishShortRun(4, 3, 3));
+    // The previous run was a spike.
+    CHECK(publishShortRun(3, 4, 3));
+    CHECK(!publishShortRun(2, 4, 3));
+    // No previous run yet, or none before it.
+    CHECK(publishShortRun(1, 0, 0));
+    CHECK(!publishShortRun(1, 3, 0));
 }
 
 TEST_CASE("trace area: only the pass that darkens the misses traces full screen (No Mercy arenas ran at ~7 fps)") {
