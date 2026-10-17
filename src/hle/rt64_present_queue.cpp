@@ -859,9 +859,9 @@ namespace RT64 {
                         // generated presents and the real frame (at most 120 files; meant for windowed runs).
                         {
                             static const double wcwLumWrong = getenv("WCW_LUM_WRONG") ? atof(getenv("WCW_LUM_WRONG")) : 0.0;
-                            struct WcwShot { int n; double lum; std::vector<uint8_t> px; };
+                            struct WcwShot { int n; double lum; std::vector<uint8_t> px; uint64_t presentId; };
                             static std::vector<WcwShot> wcwGroup;
-                            static WcwShot wcwPrevReal{ 0, -1.0, {} };
+                            static WcwShot wcwPrevReal{ 0, -1.0, {}, 0 };
                             static uint32_t wcwGroupAddr = 0;
                             static int wcwWrongSaved = 0;
                             if ((wcwLumWrong > 0.0) && (wcwWrongSaved < 120)) {
@@ -893,7 +893,8 @@ namespace RT64 {
                                         const bool off = std::fabs(gen / real.lum - 1.0) > wcwLumWrong / 100.0;
                                         const bool blend = (gen >= lo - 0.02 * hi) && (gen <= hi + 0.02 * hi);
                                         if (off && !blend) {
-                                            fprintf(stderr, "[wcw wrong] present %d prev %.2f gen %.2f real %.2f\n", wcwGroup.front().n, wcwPrevReal.lum, gen, real.lum);
+                                            fprintf(stderr, "[wcw wrong] present %d id %llu (prev id %llu) prev %.2f gen %.2f real %.2f\n", wcwGroup.front().n,
+                                                (unsigned long long)real.presentId, (unsigned long long)wcwPrevReal.presentId, wcwPrevReal.lum, gen, real.lum);
                                             saveShot(wcwPrevReal, "prev");
                                             for (size_t g = 0; g + 1 < wcwGroup.size(); g++) saveShot(wcwGroup[g], "gen");
                                             saveShot(real, "real");
@@ -904,7 +905,7 @@ namespace RT64 {
                                 }
                                 wcwGroupAddr = addr;
                                 if (wcwGroup.size() < 8) {
-                                    WcwShot s{ wcwPresentN, double(sum) / cnt, {} };
+                                    WcwShot s{ wcwPresentN, double(sum) / cnt, {}, present.presentId };
                                     s.px.resize(uint64_t(wcwRbW) * wcwRbH * 4);
                                     for (uint32_t y = 0; y < wcwRbH; y++) memcpy(s.px.data() + uint64_t(y) * wcwRbW * 4, p + uint64_t(y) * wcwRbRow * 4, uint64_t(wcwRbW) * 4);
                                     wcwGroup.push_back(std::move(s));
