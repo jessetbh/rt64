@@ -10,6 +10,7 @@
 #include "xxHash/xxh3.h"
 
 #include "common/rt64_tmem_hasher.h"
+#include "common/rt64_wcw_texdump.h"
 
 #include "rt64_state.h"
 
@@ -72,6 +73,28 @@ namespace RT64 {
 
         // Insert into set regardless of whether the dump is successful or not.
         dumpedSet.insert(hash);
+
+        // [wcw] The texture as the game draws it, as <hash>.png in the dump's pack folder: edit it and load the folder
+        // as a texture pack (aki-roadmap#48). Raw TMEM textures (uploadTMEM) decode with the tile they were loaded with.
+        {
+            WcwTexDump::TileFormat tileFormat;
+            tileFormat.fmt = loadTile.fmt;
+            tileFormat.siz = loadTile.siz;
+            tileFormat.address = uint32_t(loadTile.tmem) << 3;
+            tileFormat.stride = uint32_t(loadTile.line) << 3;
+            tileFormat.tlut = tlut;
+            tileFormat.palette = loadTile.palette;
+            const std::vector<uint8_t> rgba = WcwTexDump::decodeTexture(reinterpret_cast<const uint8_t *>(state->rdp->TMEM), width, height, tileFormat);
+            const std::vector<uint8_t> png = WcwTexDump::encodePNG(rgba.data(), width, height);
+            if (!png.empty()) {
+                std::filesystem::path pngPath = state->dumpingTexturesDirectory / WcwTexDump::PackFolderName / WcwTexDump::hashFileName(hash);
+                std::ofstream pngStream(pngPath, std::ios::binary);
+                if (pngStream.is_open()) {
+                    pngStream.write(reinterpret_cast<const char *>(png.data()), png.size());
+                    pngStream.close();
+                }
+            }
+        }
         
         // Dump the entirety of TMEM.
         char baseName[64];
@@ -187,6 +210,29 @@ namespace RT64 {
             dumpTileStream << std::setw(4) << jroot << std::endl;
             dumpTileStream.close();
         }
+    }
+
+    bool TextureManager::prepareDumpDirectory(const std::filesystem::path &directory) {
+        std::error_code ec;
+        const std::filesystem::path packDirectory = directory / WcwTexDump::PackFolderName;
+        std::filesystem::create_directories(packDirectory, ec);
+        if (ec) {
+            fprintf(stderr, "[wcw texdump] can't create %s: %s\n", packDirectory.u8string().c_str(), ec.message().c_str());
+            return false;
+        }
+
+        // Keep an rt64.json the player may have edited.
+        const std::filesystem::path databasePath = packDirectory / "rt64.json";
+        if (!std::filesystem::exists(databasePath, ec)) {
+            std::ofstream databaseStream(databasePath, std::ios::binary);
+            if (databaseStream.is_open()) {
+                const std::string text = WcwTexDump::packDatabaseJson(TMEMHasher::CurrentHashVersion);
+                databaseStream.write(text.data(), text.size());
+            }
+        }
+
+        fprintf(stderr, "[wcw texdump] dumping textures to %s\n", directory.u8string().c_str());
+        return true;
     }
 
     void TextureManager::removeHashes(const std::vector<uint64_t> &hashes) {

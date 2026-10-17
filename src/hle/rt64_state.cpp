@@ -63,6 +63,17 @@ namespace RT64 {
         rdp = std::make_unique<RDP>(this);
 
         reset();
+
+        // [wcw] WCW_TEX_DUMP=<folder>: dump every texture the game loads from the start, as PNGs in <folder>/pack
+        // plus the raw files the texture tools read (the games' --dump-textures option sets it), aki-roadmap#48.
+        if (const char *dumpDirectory = getenv("WCW_TEX_DUMP")) {
+            if (dumpDirectory[0] != '\0') {
+                const std::filesystem::path directory = std::filesystem::u8path(dumpDirectory);
+                if (TextureManager::prepareDumpDirectory(directory)) {
+                    dumpingTexturesDirectory = directory;
+                }
+            }
+        }
     }
 
     State::~State() { }
@@ -2312,6 +2323,9 @@ namespace RT64 {
                         if (dumpingTexturesDirectory.empty()) {
                             dumpingTexturesDirectory = FileDialog::getDirectoryPath();
                             textureManager.dumpedSet.clear();
+                            if (!dumpingTexturesDirectory.empty() && !TextureManager::prepareDumpDirectory(dumpingTexturesDirectory)) {
+                                dumpingTexturesDirectory.clear();
+                            }
                         }
                         else {
                             dumpingTexturesDirectory.clear();

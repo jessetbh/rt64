@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <filesystem>
 #include <set>
 
 #include "hle/rt64_draw_call.h"
@@ -21,5 +22,8 @@ namespace RT64 {
         uint64_t uploadTexture(State *state, const LoadTile &loadTile, TextureCache *textureCache, uint64_t creationFrame, uint16_t width, uint16_t height, uint32_t tlut);
         void dumpTexture(uint64_t hash, State *state, const LoadTile &loadTile, uint16_t width, uint16_t height, uint32_t tlut);
         void removeHashes(const std::vector<uint64_t> &hashes);
+
+        // [wcw] Create a dump directory and its ready-to-zip pack folder (PNGs + rt64.json), aki-roadmap#48.
+        static bool prepareDumpDirectory(const std::filesystem::path &directory);
     };
 };

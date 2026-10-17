@@ -321,6 +321,7 @@ set (SOURCES
     "${PROJECT_SOURCE_DIR}/src/common/rt64_user_paths.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_logic.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_perf.cpp"
+    "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_texdump.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_venues.cpp"
 
     "${PROJECT_SOURCE_DIR}/src/gbi/rt64_gbi.cpp"
@@ -459,11 +460,15 @@ if (RT64_WCW_TESTS AND NOT CMAKE_CROSSCOMPILING)
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_venues_tests.cpp"
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_sharp_texel_tests.cpp"
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_perf_tests.cpp"
+        "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_texdump_tests.cpp"
         "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_logic.cpp"
         "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_perf.cpp"
+        "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_texdump.cpp"
         "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_venues.cpp"
+        "${PROJECT_SOURCE_DIR}/src/common/rt64_replacement_database.cpp"
+        "${PROJECT_SOURCE_DIR}/src/contrib/miniz/miniz.c"
     )
-    target_include_directories(rt64_wcw_tests PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/tests/wcw")
+    target_include_directories(rt64_wcw_tests PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/src/contrib" "${PROJECT_SOURCE_DIR}/tests/wcw")
     set(RT64_WCW_TESTS_STAMP "${CMAKE_CURRENT_BINARY_DIR}/rt64_wcw_tests.passed")
     add_custom_command(
         OUTPUT "${RT64_WCW_TESTS_STAMP}"
