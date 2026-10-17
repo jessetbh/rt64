@@ -420,8 +420,7 @@ namespace RT64 {
                 }
             }
 
-            fprintf(stderr, "[wcw xf] t=%.3f xf %u unmapped %u bins %u %u %u %u %u %u max %.2f
-",
+            fprintf(stderr, "[wcw xf] t=%.3f xf %u unmapped %u bins %u %u %u %u %u %u max %.2f\n",
                 std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(), total, unmapped,
                 wcwXfBins[0], wcwXfBins[1], wcwXfBins[2], wcwXfBins[3], wcwXfBins[4], wcwXfBins[5], wcwXfMax);
         }
