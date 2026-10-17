@@ -10,6 +10,8 @@
 
 #include "shared/rt64_wcw_rt.h"
 
+// The trace's parameters (shared/rt64_wcw_rt.h). The shader build only tracks this file, not the headers it includes:
+// change this file too when WcwRtParams changes, or an incremental build keeps the old layout (black RT output).
 ConstantBuffer<WcwRtParams> gParams : register(b0);
 // (shadow factor RGB, AO factor) and the hit distance (0 = no hit) from the trace pass.
 Texture2D<float4> gCurrent : register(t1);

@@ -38,10 +38,9 @@ int moduloInt(int a, int b) {
     return (b > 0) ? (a - b * int(floor(float(a) / float(b)))) : a;
 }
 
-// Texel alpha of an alpha-tested draw at a hit, point sampled with the same tile transform
-// and clamp/wrap/mirror rules as TextureSampler.hlsli. Tiles needing raw TMEM decoding are
-// treated as opaque.
-float hitAlpha(uint geometryIndex, uint primitiveIndex, float2 barycentrics) {
+// Texel of a textured draw at a hit, point sampled with the same tile transform and clamp/wrap/mirror rules as
+// TextureSampler.hlsli. Tiles needing raw TMEM decoding read as opaque white.
+float4 hitTexel(uint geometryIndex, uint primitiveIndex, float2 barycentrics) {
     const uint tileWord = gMeshTiles[geometryIndex];
     const uint base = (gMeshIndexStarts[geometryIndex] & ~WCW_RT_MESH_FLAGS) + primitiveIndex * 3;
     const float2 uv0 = gTexCoords[gFaceIndices[base + 0]];
@@ -53,7 +52,7 @@ float hitAlpha(uint geometryIndex, uint primitiveIndex, float2 barycentrics) {
     const RDPTile rdpTile = gRDPTiles[tileIndex];
     const GPUTile gpuTile = gGPUTiles[tileIndex];
     if (gpuTileFlagRawTMEM(gpuTile.flags)) {
-        return 1.0f;
+        return float4(1.0f, 1.0f, 1.0f, 1.0f);
     }
 
     const float correction = ((tileWord & WCW_RT_TILE_UV_CORRECTION) != 0) ? 0.5f : 1.0f;
@@ -92,7 +91,12 @@ float hitAlpha(uint geometryIndex, uint primitiveIndex, float2 barycentrics) {
 
     const int2 size = int2(gpuTile.textureDimensions.xy);
     texel = clamp(texel, int2(0, 0), max(size - 1, int2(0, 0)));
-    return gTextures[NonUniformResourceIndex(gpuTile.textureIndex)].Load(int3(texel, 0)).a;
+    return gTextures[NonUniformResourceIndex(gpuTile.textureIndex)].Load(int3(texel, 0));
+}
+
+// Texel alpha of an alpha-tested draw at a hit (hitTexel).
+float hitAlpha(uint geometryIndex, uint primitiveIndex, float2 barycentrics) {
+    return hitTexel(geometryIndex, primitiveIndex, barycentrics).a;
 }
 
 // Non-opaque candidates of this workload's alpha-tested draws only count where the texel is
@@ -266,6 +270,45 @@ float3 shadowOrigin(uint geometryIndex, uint primitiveIndex, float2 barycentrics
     return lifted;
 }
 
+// The shading normal on a rope strip, bent across the strip's width like a cylinder (mirrors WcwLogic::ropeBentNormal):
+// the long edge that isn't the diagonal is one side of the strip, the opposite vertex lies on the other.
+float3 ropeBentNormal(uint geometryIndex, uint primitiveIndex, float3 hitPos, float3 faceNormal, float roundness) {
+    const uint base = (gMeshIndexStarts[geometryIndex] & ~WCW_RT_MESH_FLAGS) + primitiveIndex * 3;
+    float3 v[3];
+    v[0] = gWorldPos[gFaceIndices[base + 0]].xyz;
+    v[1] = gWorldPos[gFaceIndices[base + 1]].xyz;
+    v[2] = gWorldPos[gFaceIndices[base + 2]].xyz;
+    const float3 len = float3(length(v[1] - v[0]), length(v[2] - v[1]), length(v[0] - v[2]));
+    // Edge k runs from vertex k to k + 1; the side edge has the middle length.
+    const float shortest = min(len.x, min(len.y, len.z));
+    const float longest = max(len.x, max(len.y, len.z));
+    const float middle = len.x + len.y + len.z - shortest - longest;
+    const uint side = (len.x == middle) ? 0 : ((len.y == middle) ? 1 : 2);
+    if ((middle <= 1e-6f) || (shortest > 0.5f * middle)) {
+        return faceNormal;
+    }
+
+    const float3 p0 = v[side];
+    const float3 axis = (v[(side + 1) % 3] - p0) / middle;
+    const float3 toApex = v[(side + 2) % 3] - p0;
+    const float3 across = toApex - axis * dot(toApex, axis);
+    const float width = length(across);
+    if (width <= 1e-6f) {
+        return faceNormal;
+    }
+
+    const float3 acrossDir = across / width;
+    const float t = saturate(dot(hitPos - p0, acrossDir) / width);
+    const float u = clamp((2.0f * t - 1.0f) * saturate(roundness), -0.95f, 0.95f);
+    return normalize(faceNormal * sqrt(1.0f - u * u) + acrossDir * u);
+}
+
+// The highlight's gain on a surface of this luminance (mirrors WcwLogic::highlightGain).
+float highlightGain(float tint, float surfaceLuma) {
+    const float dielectric = 1.0f / max(saturate(surfaceLuma), 0.25f);
+    return lerp(dielectric, 1.0f, saturate(tint));
+}
+
 // A light's or glow's color at this pixel: white on the left half with WCW_RT_COLOR_SPLIT.
 bool whiteLight(uint2 pixel) {
     return (gParams.colorSplit != 0) && (pixel.x < (gParams.resolution.x / 2));
@@ -370,6 +413,22 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
     float3 normal = triangleNormal(primary.CommittedGeometryIndex(), primary.CommittedPrimitiveIndex());
     if (dot(normal, ray.Direction) > 0.0f) {
         normal = -normal;
+    }
+
+    // Surface class (WcwLogic::surfaceClassFor, packed into the tile word): its material shades the highlights below.
+    const uint hitTileWord = gMeshTiles[primary.CommittedGeometryIndex()];
+    const uint surfaceClass = (hitTileWord >> WCW_RT_TILE_CLASS_SHIFT) & WCW_RT_TILE_CLASS_MASK;
+    if (gParams.mode == WCW_RT_MODE_MATERIAL) {
+        const float3 classColors[WCW_RT_MAX_CLASSES] = {
+            float3(0.5f, 0.5f, 0.5f), float3(1.0f, 0.75f, 0.55f), float3(1.0f, 0.1f, 0.1f), float3(1.0f, 0.85f, 0.0f),
+            float3(1.0f, 1.0f, 1.0f), float3(0.1f, 0.35f, 1.0f), float3(0.0f, 0.9f, 0.9f), float3(0.9f, 0.1f, 0.9f)
+        };
+
+        // Unclassified: grey when textured (a candidate for the table), dark when untextured.
+        const bool textured = (hitTileWord & WCW_RT_TILE_TEXTURED) != 0;
+        const float3 color = (surfaceClass != WCW_RT_CLASS_OTHER) ? classColors[surfaceClass] : (textured ? float3(0.4f, 0.4f, 0.4f) : float3(0.08f, 0.08f, 0.08f));
+        gOutput[pixel] = float4(color, 0.8f);
+        return;
     }
 
     if (gParams.mode == WCW_RT_MODE_HIT_NORMAL) {
@@ -487,12 +546,27 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
 
     // Light reaching the pixel, in the lights' colors (white lights: the visible fraction of the total weight).
     float3 lit = float3(0.0f, 0.0f, 0.0f);
-    // Wrestler sheen: highlights and backlight from the lights that reach the pixel (no extra rays).
+    // Highlights and backlight from the lights that reach the pixel (no extra rays), in the surface class's material:
+    // the wrestler sheen, generalized (aki-roadmap#95). WCW_RT_MATERIAL_SPLIT: only wrestlers on the left half.
     const bool characterReceiver = (gMeshIndexStarts[primary.CommittedGeometryIndex()] & WCW_RT_MESH_CHARACTER) != 0;
-    const bool sheenOn = characterReceiver && ((gParams.sheenSpecular > 0.0f) || (gParams.sheenRim > 0.0f)) &&
-        !((gParams.sheenSplit != 0) && (pixel.x < (gParams.resolution.x / 2)));
+    const bool leftHalf = pixel.x < (gParams.resolution.x / 2);
+    const uint materialClass = ((gParams.materialSplit != 0) && leftHalf && (surfaceClass != WCW_RT_CLASS_WRESTLER)) ? WCW_RT_CLASS_OTHER : surfaceClass;
+    const float4 materialA = gParams.materialA[materialClass];
+    const float4 materialB = gParams.materialB[materialClass];
+    const float sheenSpecular = materialA.x;
+    const float sheenShininess = max(materialA.y, 1.0f);
+    const float sheenRim = materialA.z;
+    const bool sheenOn = ((sheenSpecular > 0.0f) || (sheenRim > 0.0f)) && !((gParams.sheenSplit != 0) && leftHalf);
     const float3 viewDir = -ray.Direction;
-    const float rimEdge = pow(1.0f - saturate(dot(shadeNormal, viewDir)), max(gParams.sheenRimPower, 1.0f));
+    // Ropes: the normal bent across the strip (highlights only; shadows keep the flat normal).
+    const float3 sheenNormal = (sheenOn && (materialB.y > 0.0f)) ? ropeBentNormal(primary.CommittedGeometryIndex(), primary.CommittedPrimitiveIndex(), hitPos, shadeNormal, materialB.y) : shadeNormal;
+    const float rimEdge = pow(1.0f - saturate(dot(sheenNormal, viewDir)), max(materialA.w, 1.0f));
+    // Dielectric highlights reach the light's color on dark textured surfaces; untextured draws count as white.
+    float sheenGain = 1.0f;
+    if (sheenOn && (materialB.x < 1.0f) && ((hitTileWord & WCW_RT_TILE_TEXTURED) != 0)) {
+        const float3 texel = hitTexel(primary.CommittedGeometryIndex(), primary.CommittedPrimitiveIndex(), primary.CommittedTriangleBarycentrics()).rgb;
+        sheenGain = highlightGain(materialB.x, dot(texel, float3(0.2126f, 0.7152f, 0.0722f)));
+    }
     float3 sheen = float3(0.0f, 0.0f, 0.0f);
     int occluderId = -1;
     // Heavier lights cast proportionally darker shadows, so their sampling noise shows more:
@@ -525,14 +599,16 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
         if (sheenOn) {
             const float3 toLightDir = toLight / max(lightDist, 1e-6f);
             const float3 halfway = normalize(toLightDir + viewDir);
-            const float highlight = pow(saturate(dot(shadeNormal, halfway)), max(gParams.sheenShininess, 1.0f)) * facing;
+            // Facing from the bent normal on ropes, so the highlight runs along the rope.
+            const float sheenFacing = (materialB.y > 0.0f) ? saturate(dot(sheenNormal, toLightDir)) : facing;
+            const float highlight = pow(saturate(dot(sheenNormal, halfway)), sheenShininess) * sheenFacing;
             // The outline facing a light: overhead TV lights rim the shoulders and heads as seen from the hard cam.
-            const float backlight = rimEdge * facing;
+            const float backlight = rimEdge * sheenFacing;
             // Each light's sheen at its own strength relative to the strongest light (not its share of the total):
             // a highlight from one light isn't dimmer because other lights exist.
             const float3 sheenColor = whiteLight(pixel) ? float3(1.0f, 1.0f, 1.0f) : gParams.lightColors[l].rgb;
             const float sheenWeight = lightWeights[l] / max(weightMax, 1e-6f) / float(samples);
-            sampleSheen = sheenColor * sheenWeight * (gParams.sheenSpecular * highlight + gParams.sheenRim * backlight);
+            sampleSheen = sheenColor * sheenWeight * sheenGain * (sheenSpecular * highlight + sheenRim * backlight);
         }
 
         RayDesc shadowRay;
