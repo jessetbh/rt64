@@ -23,8 +23,11 @@
 #define WCW_RT_MODE_AO_RAW 9
 // Raw shadow term before AO and filtering, grey (white = lit).
 #define WCW_RT_MODE_SHADOW_RAW 10
-// Wrestler sheen (highlights + backlight) alone, grey on black.
+// Wrestler sheen (highlights + backlight) alone, grey on black. With materials: every class's highlights.
 #define WCW_RT_MODE_SHEEN_RAW 12
+// Surface classes (aki-roadmap#95): each hit tinted by its class (WCW_RT_CLASS_*), textured unclassified draws grey,
+// untextured ones dark, to fill and check a game's rt_materials.json.
+#define WCW_RT_MODE_MATERIAL 13
 
 // A slot's resolved history texel (shadow RGB, AO) marks a ray miss with this AO and holds the miss factor in RGB
 // (aki-roadmap#72: the composite encodes the history, there is no separate output texture). Resolved AO never gets
@@ -51,7 +54,18 @@
 // (rays skip its transparent texels) and whether its UVs get the non-perspective correction.
 #define WCW_RT_TILE_ALPHA_TEST 0x80000000u
 #define WCW_RT_TILE_UV_CORRECTION 0x40000000u
-#define WCW_RT_TILE_INDEX_MASK 0x3FFFFFFFu
+// The draw is textured (its tile's texels can be sampled for the material's highlight gain).
+#define WCW_RT_TILE_TEXTURED 0x20000000u
+// Bits 26-28: the draw's surface class (WcwLogic::SurfaceClass, rt64_wcw_materials.h).
+#define WCW_RT_TILE_CLASS_SHIFT 26
+#define WCW_RT_TILE_CLASS_MASK 0x7u
+#define WCW_RT_TILE_INDEX_MASK 0x03FFFFFFu
+
+// Surface classes (WcwLogic::SurfaceClass) and how many there are.
+#define WCW_RT_CLASS_OTHER 0
+#define WCW_RT_CLASS_WRESTLER 1
+#define WCW_RT_CLASS_ROPES 2
+#define WCW_RT_MAX_CLASSES 8
 
 #ifdef HLSL_CPU
 namespace interop {
@@ -116,6 +130,11 @@ namespace interop {
         // (WcwLogic::normalizedLightColor), so a color tints without changing the brightness; white = no tint.
         float4 lightColors[WCW_RT_MAX_LIGHTS];
         float4 glowColors[WCW_RT_MAX_GLOWS];
+        // Per surface class (WcwLogic::resolveMaterials): highlight strength, shininess, rim strength, rim falloff; and
+        // tint (0 = the highlight in the light's color, 1 = in the surface's), rope roundness. Class 1 is the wrestler
+        // sheen (WCW_RT_SHEEN* / WCW_RT_RIM* override it).
+        float4 materialA[WCW_RT_MAX_CLASSES];
+        float4 materialB[WCW_RT_MAX_CLASSES];
         float aoCharacterStrength;
         float aoCharacterRadius;
         // 1: lit draws use their interpolated vertex normals for the AO hemisphere (WCW_RT_AO_SMOOTH=0 turns it off).
@@ -159,13 +178,10 @@ namespace interop {
         uint2 traceEnd;
         // WCW_RT_COLOR_SPLIT=1: white lights and glows on the left half of the screen (same-moment comparisons).
         uint colorSplit;
-        // Wrestler sheen (WcwLogic::sheenSettings): highlight strength and exponent, backlight strength and falloff.
-        float sheenSpecular;
-        float sheenShininess;
-        float sheenRim;
-        float sheenRimPower;
-        // WCW_RT_SHEEN_SPLIT=1: no sheen on the left half of the screen (same-moment comparisons).
+        // WCW_RT_SHEEN_SPLIT=1: no highlights (any class) on the left half of the screen (same-moment comparisons).
         uint sheenSplit;
+        // WCW_RT_MATERIAL_SPLIT=1: on the left half, only wrestlers get highlights (as before materials).
+        uint materialSplit;
         // [wcw rt] Outside darkness (the venue preset's outsideDarkness / outsideEdge; WcwLogic::outsideDarknessFactor):
         // surfaces beyond receiverRadius (wrestlers too) darken by up to outsideDarkness over outsideEdge units.
         // darkenMisses: ray misses (background, crowd sprites) darken too, on the arena pass of a target only

@@ -16,6 +16,7 @@
 
 #include "common/rt64_common.h"
 #include "common/rt64_plume.h"
+#include "common/rt64_wcw_materials.h"
 #include "common/rt64_wcw_venues.h"
 #include "shared/rt64_wcw_rt.h"
 
@@ -247,6 +248,25 @@ namespace RT64 {
         bool sceneBoundsValid = false;
         // The preset's light origin: zero, or the scene anchor.
         void presetOrigin(const LightPreset &preset, float origin[3]) const;
+
+        // [wcw rt] Per-surface materials (aki-roadmap#95): a JSON file (WCW_RT_MATERIALS_FILE, default
+        // assets/rt_materials.json) mapping texture hashes to surface classes, with a rope rule for the untextured
+        // ropes, per-class materials and per-venue overrides (WcwLogic, common/rt64_wcw_materials, unit tested). Each
+        // gathered draw gets a class in its tile word; the trace shades its highlights with that class's material.
+        // Reloaded when it changes like the presets. No file: only wrestlers get highlights (the sheen). WCW_RT_MATERIALS=0
+        // turns the other classes off; WCW_RT_MATERIAL_SPLIT=1 does so on the left half of the screen; WCW_RT_MATERIAL_LOG=1
+        // prints the classes drawn and the unclassified world draws' textures and bounds (to fill the table and tune
+        // the rope rule).
+        WcwLogic::MaterialTable materialTable;
+        std::string materialsPath;
+        int64_t materialsStamp = INT64_MIN;
+        void loadMaterials(bool force);
+        // World bounds of the draw being gathered (extendBounds), consumed by addMesh.
+        float drawMin[3] = { FLT_MAX, FLT_MAX, FLT_MAX };
+        float drawMax[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+        // WCW_RT_MATERIAL_LOG: draws per class this present, and the unclassified world draws (texture hash; bounds, triangles).
+        uint32_t frameClassDraws[WcwLogic::SurfaceClassCount] = {};
+        std::vector<std::pair<uint64_t, std::array<float, 7>>> frameUnclassifiedDraws;
         void loadPresets(bool force);
         void finishPresent();
         const LightPreset &activePreset() const;
@@ -305,7 +325,8 @@ namespace RT64 {
         // character: a wrestler draw, shadowed with the weaker character strength.
         // lit: the draw uses N64 lighting (G_LIGHTING), so its vertices carry normals the AO can interpolate.
         // alphaTest: rays skip the draw's transparent texels (tileIndex, uvCorrection: its texture).
-        // textureHash: the draw's first texture (0 if none), a venue fingerprint for the light presets.
+        // textureHash: the draw's first texture (0 if none), a venue fingerprint for the light presets and the key of
+        // the material table.
         void addMesh(uint32_t faceIndicesStart, uint32_t triangleCount, uint32_t vertexCount, bool culled, bool character, bool lit,
             bool alphaTest, uint32_t tileIndex, bool uvCorrection, uint64_t textureHash);
         // Grows the screen bounds with a world-space triangle (3 xyz positions) of a gathered draw.

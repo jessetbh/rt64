@@ -226,6 +226,40 @@ namespace RT64 {
         }
     }
 
+    void WcwRaytracer::loadMaterials(bool force) {
+        if (materialsPath.empty()) {
+            const char *pathText = getenv("WCW_RT_MATERIALS_FILE");
+            materialsPath = (pathText != nullptr) ? pathText : "assets/rt_materials.json";
+        }
+
+        std::error_code ec;
+        const auto stampTime = std::filesystem::last_write_time(materialsPath, ec);
+        const int64_t stamp = ec ? INT64_MIN + 1 : int64_t(stampTime.time_since_epoch().count());
+        if (!force && (stamp == materialsStamp)) {
+            return;
+        }
+
+        materialsStamp = stamp;
+        materialTable = WcwLogic::MaterialTable();
+        if (ec) {
+            return;
+        }
+
+        try {
+            std::ifstream file(materialsPath, std::ios::binary);
+            std::stringstream text;
+            text << file.rdbuf();
+            uint32_t skipped = 0;
+            materialTable = WcwLogic::parseMaterialTable(text.str(), &skipped);
+            fprintf(stderr, "[wcw rt] materials loaded from %s: %zu texture(s)%s, %zu venue(s)%s\n", materialsPath.c_str(), materialTable.textures.size(),
+                materialTable.ropes.enabled ? ", rope rule" : "", materialTable.venues.size(), (skipped > 0) ? " (some texture entries skipped)" : "");
+        }
+        catch (const std::exception &e) {
+            materialTable = WcwLogic::MaterialTable();
+            fprintf(stderr, "[wcw rt] materials %s failed to parse: %s\n", materialsPath.c_str(), e.what());
+        }
+    }
+
     void WcwRaytracer::applyPresetFile() {
         const std::lock_guard<std::recursive_mutex> lock(presetsMutex);
         WcwLogic::computeUniqueMatches(presetFile.venues);
@@ -299,6 +333,7 @@ namespace RT64 {
 
         if ((presentCount++ % 30) == 0) {
             loadPresets(false);
+            loadMaterials(false);
         }
 
         // WCW_RT_VENUE_TRACE: when the last frames start pointing to another venue (a camera cut), to time the switch.
@@ -322,6 +357,26 @@ namespace RT64 {
         }
 
         updateRoomPreset();
+
+        // WCW_RT_MATERIAL_LOG: the classes drawn and the untextured world draws (bounds, triangles), every 300 presents.
+        static const bool materialLog = getenv("WCW_RT_MATERIAL_LOG") != nullptr;
+        if (materialLog && ((presentCount % 300) == 0)) {
+            fprintf(stderr, "[wcw rt] material log present %d (venue %s): draws by class", int(wcwRtPresentCounter), (activeVenue >= 0) ? venuePresets[activeVenue].name.c_str() : "default");
+            for (uint32_t c = 0; c < WcwLogic::SurfaceClassCount; c++) {
+                fprintf(stderr, " %s %u", WcwLogic::surfaceClassName(WcwLogic::SurfaceClass(c)), frameClassDraws[c]);
+            }
+
+            fprintf(stderr, "; unclassified world draws hash (min)-(max) tris (0 = untextured):");
+            for (const auto &d : frameUnclassifiedDraws) {
+                const auto &b = d.second;
+                fprintf(stderr, " %016llX (%.0f,%.0f,%.0f)-(%.0f,%.0f,%.0f) %.0f", (unsigned long long)(d.first), b[0], b[1], b[2], b[3], b[4], b[5], b[6]);
+            }
+
+            fprintf(stderr, "\n");
+        }
+
+        std::fill(std::begin(frameClassDraws), std::end(frameClassDraws), 0u);
+        frameUnclassifiedDraws.clear();
 
         static const bool venueLog = getenv("WCW_RT_VENUE_LOG") != nullptr;
         if (venueLog && ((presentCount % 300) == 0) && (textureHistory.size() == VenueWindow)) {
@@ -596,6 +651,10 @@ namespace RT64 {
             loadPresets(true);
         }
 
+        if (materialsStamp == INT64_MIN) {
+            loadMaterials(true);
+        }
+
         const LightPreset preset = activePresetCopy();
         receiverRadius = std::max(envFloat(getenv("WCW_RT_RADIUS"), preset.radius), 0.0f);
         float origin[3];
@@ -629,8 +688,9 @@ namespace RT64 {
             frameTextureTris[textureHash] += triangleCount;
         }
 
-        // Without tile data the alpha test can't be evaluated: keep the draw opaque.
-        alphaTest = alphaTest && (rdpTilesBuffer != nullptr) && (gpuTilesBuffer != nullptr) && (texCoordBuffer != nullptr);
+        // Without tile data the alpha test can't be evaluated (keep the draw opaque) and texels can't be read.
+        const bool tileDataBound = (rdpTilesBuffer != nullptr) && (gpuTilesBuffer != nullptr) && (texCoordBuffer != nullptr);
+        alphaTest = alphaTest && tileDataBound;
         const uint32_t IndexStride = sizeof(uint32_t);
         const uint32_t PosStride = sizeof(float) * 4;
         meshes.emplace_back(RenderBufferReference(faceIndicesBuffer, faceIndicesStart * IndexStride), RenderBufferReference(worldPosBuffer, 0),
@@ -640,13 +700,36 @@ namespace RT64 {
         // carry the culled/character flags.
         meshIndexStarts.emplace_back(faceIndicesStart | (culled ? WCW_RT_MESH_CULLED : 0u) | (character ? WCW_RT_MESH_CHARACTER : 0u) |
             ((lit && (worldNormBuffer != nullptr)) ? WCW_RT_MESH_LIT : 0u));
-        meshTiles.emplace_back((tileIndex & WCW_RT_TILE_INDEX_MASK) | (alphaTest ? WCW_RT_TILE_ALPHA_TEST : 0u) | (uvCorrection ? WCW_RT_TILE_UV_CORRECTION : 0u));
+        // Surface class (WcwLogic::surfaceClassFor) from the texture and the draw's bounds (extendBounds).
+        WcwLogic::DrawShape shape;
+        for (uint32_t i = 0; i < 3; i++) {
+            shape.boundsMin[i] = drawMin[i];
+            shape.boundsMax[i] = drawMax[i];
+            drawMin[i] = FLT_MAX;
+            drawMax[i] = -FLT_MAX;
+        }
+
+        shape.textureHash = textureHash;
+        shape.character = character;
+        static const bool materialsOff = (getenv("WCW_RT_MATERIALS") != nullptr) && (strcmp(getenv("WCW_RT_MATERIALS"), "0") == 0);
+        const WcwLogic::SurfaceClass surfaceClass = character ? WcwLogic::SurfaceClass::Wrestler :
+            (materialsOff ? WcwLogic::SurfaceClass::Other : WcwLogic::surfaceClassFor(materialTable, shape));
+        frameClassDraws[uint32_t(surfaceClass)]++;
+        static const bool materialLog = getenv("WCW_RT_MATERIAL_LOG") != nullptr;
+        if (materialLog && (surfaceClass == WcwLogic::SurfaceClass::Other) && (frameUnclassifiedDraws.size() < 160)) {
+            frameUnclassifiedDraws.push_back({ textureHash, { shape.boundsMin[0], shape.boundsMin[1], shape.boundsMin[2], shape.boundsMax[0], shape.boundsMax[1], shape.boundsMax[2], float(triangleCount) } });
+        }
+
+        meshTiles.emplace_back((tileIndex & WCW_RT_TILE_INDEX_MASK) | (alphaTest ? WCW_RT_TILE_ALPHA_TEST : 0u) | (uvCorrection ? WCW_RT_TILE_UV_CORRECTION : 0u) |
+            (((textureHash != 0) && tileDataBound) ? WCW_RT_TILE_TEXTURED : 0u) | ((uint32_t(surfaceClass) & WCW_RT_TILE_CLASS_MASK) << WCW_RT_TILE_CLASS_SHIFT));
     }
 
     void WcwRaytracer::extendBounds(const float *positions, bool character) {
         for (uint32_t i = 0; i < 9; i++) {
             worldMin[i % 3] = std::min(worldMin[i % 3], positions[i]);
             worldMax[i % 3] = std::max(worldMax[i % 3], positions[i]);
+            drawMin[i % 3] = std::min(drawMin[i % 3], positions[i]);
+            drawMax[i % 3] = std::max(drawMax[i % 3], positions[i]);
             if (!character) {
                 presentMin[i % 3] = std::min(presentMin[i % 3], positions[i]);
                 presentMax[i % 3] = std::max(presentMax[i % 3], positions[i]);
@@ -1016,12 +1099,24 @@ namespace RT64 {
 
         params.colorSplit = (envFloat(getenv("WCW_RT_COLOR_SPLIT"), 0.0f) != 0.0f) ? 1u : 0u;
         {
-            const WcwLogic::SheenSettings sheen = WcwLogic::sheenSettings();
-            params.sheenSpecular = std::max(envFloat(getenv("WCW_RT_SHEEN"), sheen.specular), 0.0f);
-            params.sheenShininess = std::max(envFloat(getenv("WCW_RT_SHEEN_SHININESS"), sheen.shininess), 1.0f);
-            params.sheenRim = std::max(envFloat(getenv("WCW_RT_RIM"), sheen.rim), 0.0f);
-            params.sheenRimPower = std::max(envFloat(getenv("WCW_RT_RIM_POWER"), sheen.rimPower), 1.0f);
+            // Per-class materials for this venue (WcwLogic::resolveMaterials); the wrestler sheen keeps its env overrides.
+            static_assert(WcwLogic::SurfaceClassCount == WCW_RT_MAX_CLASSES, "the trace shader's material slots");
+            static_assert(uint32_t(WcwLogic::SurfaceClass::Wrestler) == WCW_RT_CLASS_WRESTLER, "the trace shader's wrestler class");
+            static_assert(uint32_t(WcwLogic::SurfaceClass::Ropes) == WCW_RT_CLASS_ROPES, "the trace shader's rope class");
+            std::array<WcwLogic::SurfaceMaterial, WcwLogic::SurfaceClassCount> materials = WcwLogic::resolveMaterials(materialTable, preset.name);
+            WcwLogic::SurfaceMaterial &sheen = materials[WCW_RT_CLASS_WRESTLER];
+            sheen.specular = std::max(envFloat(getenv("WCW_RT_SHEEN"), sheen.specular), 0.0f);
+            sheen.shininess = std::max(envFloat(getenv("WCW_RT_SHEEN_SHININESS"), sheen.shininess), 1.0f);
+            sheen.rim = std::max(envFloat(getenv("WCW_RT_RIM"), sheen.rim), 0.0f);
+            sheen.rimPower = std::max(envFloat(getenv("WCW_RT_RIM_POWER"), sheen.rimPower), 1.0f);
+            for (uint32_t c = 0; c < WcwLogic::SurfaceClassCount; c++) {
+                const WcwLogic::SurfaceMaterial &m = materials[c];
+                params.materialA[c] = { m.specular, m.shininess, m.rim, m.rimPower };
+                params.materialB[c] = { m.tint, m.roundness, 0.0f, 0.0f };
+            }
+
             params.sheenSplit = (envFloat(getenv("WCW_RT_SHEEN_SPLIT"), 0.0f) != 0.0f) ? 1u : 0u;
+            params.materialSplit = (envFloat(getenv("WCW_RT_MATERIAL_SPLIT"), 0.0f) != 0.0f) ? 1u : 0u;
         }
         params.glowPadding0 = params.glowPadding1 = params.glowPadding2 = 0.0f;
         params.glowIntensity = { 0.0f, 0.0f, 0.0f, 0.0f };
