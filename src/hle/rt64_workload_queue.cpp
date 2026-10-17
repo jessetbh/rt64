@@ -1520,6 +1520,13 @@ namespace RT64 {
                         wcwRunCameraCut = true;
                     }
 
+                    // [wcw fix] Most of a big layer's objects jumped: a cut the camera test can't see, or the game
+                    // moving the wrestlers into place after one (WcwLogic::ObjectJumpCounter).
+                    static const bool wcwNoJumpRule = getenv("WCW_HFR_NOJUMP") != nullptr;
+                    if (generateInterpolatedFrames && !wcwNoCutRule && !wcwNoJumpRule && curFrame.wcwObjectJump.jumpedLayer()) {
+                        wcwRunCameraCut = true;
+                    }
+
                     static const bool wcwPairLog = getenv("WCW_PAIR_LOG") != nullptr;
                     if (wcwPairLog && (curFrame.wcwCameraCut.pairs > 0)) {
                         fprintf(stderr, "[wcw cut] t=%.3f serial %llu layer %u pairs %u jumped %u max %.3f%s\n",
@@ -1795,7 +1802,10 @@ namespace RT64 {
 
                         // A run where any layer skipped a generated frame publishes none of them: with more than one
                         // generated frame per game frame, layers could otherwise disagree on which frames they drew.
-                        const bool wcwDropNow = wcwRunGenIncomplete;
+                        // Nor does a run where a layer found a cut: the layers before it drew their share of the
+                        // generated frame between the two shots (WcwLogic::dropRunGeneratedFrame).
+                        static const bool wcwNoCutDrop = getenv("WCW_HFR_NOCUTDROP") != nullptr;
+                        const bool wcwDropNow = WcwLogic::dropRunGeneratedFrame(wcwRunGenIncomplete, wcwRunCameraCut && !wcwNoCutDrop);
                         if (wcwDropNow) {
                             wcwFlushNow = false;
                         }

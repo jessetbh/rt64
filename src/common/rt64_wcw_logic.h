@@ -449,6 +449,36 @@ namespace RT64::WcwLogic {
     // later layer. Unknown keeps the expected-length rule.
     bool publishRunAtLayer(uint32_t runLength, uint32_t expectedRunLength, NextLayer next);
 
+    // Objects that jumped
+
+    // Counts, over a big layer's matched object pairs, how far each pair's drawn matrix moved since the previous
+    // frame (matrixChange of the matrices the game uploaded, camera included). Some cuts don't move the objects'
+    // camera matrices: Revenge repositions the wrestlers one frame after a camera cut, and some of its cuts (and
+    // VPW2's) move the objects while the camera test sees < 0.25. Interpolating such a layer drew squashed, stretched
+    // or missing wrestlers and made-up views (aki-roadmap#6). In the attract modes of five games (WCW_PAIR_LOG),
+    // more than a third of a big layer's pairs moved by >= 0.3 in 0.2-1.1% of frames, nearly all at camera cuts.
+    struct ObjectJumpCounter {
+        // A pair whose drawn matrix changed by at least this has jumped.
+        static constexpr float JumpChange = 0.3f;
+        // Only layers with this many pairs (the wrestlers, a crowd): small layers with a few animated objects (VPW2's
+        // 4-object layer that jumps twice a second) jump on their own.
+        static constexpr uint32_t MinPairs = 16;
+
+        uint32_t pairs = 0;
+        uint32_t jumped = 0;
+
+        void reset();
+        void add(float change);
+        // More than a third of the pairs jumped.
+        bool jumpedLayer() const;
+    };
+
+    // Whether a run's generated frame is dropped (the real frame shows for the whole game frame, as at 30 fps): a
+    // layer skipped its generated frame, or a layer found a cut (camera cut, objects that jumped). A cut found in a
+    // later layer comes after the earlier layers drew their share of the generated frame between the two shots
+    // (Revenge's cut into the ring found in the 5th of 5 layers: a generated frame without the wrestlers).
+    bool dropRunGeneratedFrame(bool layerSkipped, bool cutInRun);
+
     // Camera cuts
 
     // Relative change between two 4x4 matrices (16 floats each): |cur - prev| / |cur| (Frobenius norms). -1 when a

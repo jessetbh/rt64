@@ -321,6 +321,59 @@ TEST_CASE("camera cuts: a few odd pairs or too few pairs are not a cut") {
     CHECK(c.pairs == 0);
 }
 
+// Feeds a layer's pairs into an ObjectJumpCounter from a WCW_PAIR_LOG histogram of drawn-matrix changes (bins < 0.05,
+// 0.15, 0.3, 0.6, 1.2 and above), one representative change per bin.
+static ObjectJumpCounter objectJumpLayer(const std::vector<uint32_t> &bins) {
+    const float values[6] = { 0.02f, 0.1f, 0.2f, 0.45f, 0.9f, 2.0f };
+    ObjectJumpCounter c;
+    for (size_t b = 0; b < bins.size(); b++) {
+        for (uint32_t i = 0; i < bins[b]; i++) {
+            c.add(values[b]);
+        }
+    }
+
+    return c;
+}
+
+TEST_CASE("objects that jumped: the wrestlers moved into place after a cut are not interpolated (Revenge squashed wrestler, #6)") {
+    // Revenge attract, the frame after a detected camera cut: the camera held still (< 0.01) but the game moved the
+    // wrestlers, 39 of 94 pairs by 0.3 or more; the generated frame squashed one wrestler to a sliver.
+    CHECK(objectJumpLayer({ 11, 14, 30, 33, 6, 0 }).jumpedLayer());
+    // A cut the camera test missed (camera 0.17): 47 of 48 wrestler pairs jumped; the generated frame showed a third view.
+    CHECK(objectJumpLayer({ 1, 0, 0, 19, 28, 0 }).jumpedLayer());
+    // VPW2 attract: 46 of 113 pairs jumped, a giant arm in the generated frame.
+    CHECK(objectJumpLayer({ 59, 7, 1, 39, 5, 2 }).jumpedLayer());
+}
+
+TEST_CASE("objects that jumped: fast moves, small layers and a third of the pairs are not a cut") {
+    // WM2K and Revenge wrestler layers in fast moves: up to 0.44, a few pairs above 0.3.
+    CHECK(!objectJumpLayer({ 60, 51, 7, 2, 0, 0 }).jumpedLayer());
+    CHECK(!objectJumpLayer({ 45, 49, 0, 0, 0, 0 }).jumpedLayer());
+    CHECK(!objectJumpLayer({ 80, 0, 0, 0, 14, 0 }).jumpedLayer());
+    // VPW2's 4-object layer jumps twice a second on its own: too few pairs to call a cut.
+    CHECK(!objectJumpLayer({ 0, 0, 0, 0, 4, 0 }).jumpedLayer());
+    CHECK(!objectJumpLayer({ 0, 0, 0, 0, 0, ObjectJumpCounter::MinPairs - 1 }).jumpedLayer());
+    CHECK(objectJumpLayer({ 0, 0, 0, 0, 0, ObjectJumpCounter::MinPairs }).jumpedLayer());
+    // Exactly a third is not more than a third.
+    CHECK(!objectJumpLayer({ 20, 0, 0, 10, 0, 0 }).jumpedLayer());
+    CHECK(objectJumpLayer({ 19, 0, 0, 10, 0, 0 }).jumpedLayer());
+    // Pairs whose change can't be measured don't count.
+    ObjectJumpCounter c;
+    c.add(-1.0f);
+    CHECK(c.pairs == 0);
+    CHECK(c.jumped == 0);
+}
+
+TEST_CASE("cuts: a cut found in a run's last layer drops the run's generated frame (Revenge cut without wrestlers, #6)") {
+    // Revenge's cut into the ring showed up only in the 5th of 5 layers; layers 1-4 had already drawn the generated
+    // frame between the two shots, and the generated frame had no wrestlers. Drawing the remaining layer real wasn't
+    // enough: the whole run shows its real frame.
+    CHECK(dropRunGeneratedFrame(false, true));
+    CHECK(dropRunGeneratedFrame(true, false));
+    CHECK(dropRunGeneratedFrame(true, true));
+    CHECK(!dropRunGeneratedFrame(false, false));
+}
+
 TEST_CASE("short runs: publishShortRun") {
     CHECK(!publishShortRun(1, 3, 3));
     CHECK(!publishShortRun(3, 5, 5));

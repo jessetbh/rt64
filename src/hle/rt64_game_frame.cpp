@@ -263,11 +263,12 @@ namespace RT64 {
         lookAtInterpolationUsed = false;
         matched = true;
         wcwCameraCut.reset();
-        std::fill(std::begin(wcwXfBins), std::end(wcwXfBins), 0u);
-        wcwXfMax = 0.0f;
 
         thread_local std::unordered_map<uint32_t, ModifiedBuffers> workloadsModified;
         workloadsModified.clear();
+        wcwObjectJump.reset();
+        std::fill(std::begin(wcwXfBins), std::end(wcwXfBins), 0u);
+        wcwXfMax = 0.0f;
 
         for (uint32_t w = 0; w < workloads.size(); w++) {
             if (w >= prevFrame.workloads.size()) {
@@ -851,7 +852,9 @@ namespace RT64 {
 
                 curTransformMap.wcwCombinedLerp = finite && (den > 0.0) && (std::sqrt(num / den) < 0.3);
                 if (finite && (den > 0.0)) {
+                    // [wcw fix] Objects that jumped (WcwLogic::ObjectJumpCounter).
                     const float change = float(std::sqrt(num / den));
+                    wcwObjectJump.add(change);
                     const float edges[5] = { 0.05f, 0.15f, 0.3f, 0.6f, 1.2f };
                     uint32_t bin = 0;
                     while ((bin < 5) && (change >= edges[bin])) bin++;
