@@ -396,6 +396,54 @@ namespace RT64::WcwLogic {
     // runBeforePrevious is 0 when unknown.
     bool publishShortRun(uint32_t runLength, uint32_t previousRunLength, uint32_t runBeforePrevious);
 
+    // Multi-layer runs longer than expected
+
+    // The workload queued after a run's layer, as the render thread sees it when that layer decides whether to publish
+    // the run's generated frame: not queued yet, another layer of the same run (same colour address, or a workload
+    // that draws nothing), or the first layer of a new run.
+    enum class NextLayer {
+        Unknown,
+        SameRun,
+        NewRun
+    };
+
+    NextLayer nextLayer(bool queued, uint32_t nextColorAddress, bool nextDrawsNothing, uint32_t runColorAddress);
+
+    // Whether the run's generated frame is published at this layer. It waits for the run's expected length (the
+    // longest of the recent runs), but a run can be longer than that: Revenge's attract mode draws a 5-layer run
+    // among 3-layer ones, and publishing it at its 3rd layer showed a generated frame without the last 2 layers (a
+    // dark flash, generated 6.4 against real 8.2; aki-roadmap#6 cause 2). The game queues a run's layers ahead of the
+    // renderer, so the next workload usually says whether the run goes on: while it does, the publish waits for a
+    // later layer. Unknown keeps the expected-length rule.
+    bool publishRunAtLayer(uint32_t runLength, uint32_t expectedRunLength, NextLayer next);
+
+    // Camera cuts
+
+    // Relative change between two 4x4 matrices (16 floats each): |cur - prev| / |cur| (Frobenius norms). -1 when a
+    // value isn't finite or cur is zero.
+    float matrixChange(const float prev[16], const float cur[16]);
+
+    // Counts, over a layer's matched object pairs, how far each pair's camera matrix moved since the previous frame.
+    // A camera cut moves every object's camera at once; a pan or zoom moves it a few percent per game frame. On a cut
+    // the generated frame interpolated the camera between two unrelated shots and showed a third, made-up view (a
+    // stretched wrestler, the wrong part of the arena; 10-50% luminance off for one present, aki-roadmap#6 cause 3).
+    struct CameraCutCounter {
+        // A pair whose camera changed by more than this has jumped. In Revenge's attract mode (WCW_PAIR_LOG), 99.5% of
+        // layers moved their camera by at most 0.10 per game frame and none without a cut by more than 0.29;
+        // the cuts measured 0.33 to 2.1.
+        static constexpr float JumpChange = 0.25f;
+        // A cut needs this many pairs (so one odd object can't decide it) and most of them jumped.
+        static constexpr uint32_t MinPairs = 4;
+
+        uint32_t pairs = 0;
+        uint32_t jumped = 0;
+        float maxChange = 0.0f;
+
+        void reset();
+        void add(float change);
+        bool cut() const;
+    };
+
     // Widescreen (Aspect Ratio = Expand)
 
     // Whether a framebuffer pass draws the whole screen, so Expand aspect-corrects it (the pass's 2D keeps its proportions
