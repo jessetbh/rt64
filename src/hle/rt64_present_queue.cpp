@@ -10,6 +10,7 @@
 #include "common/rt64_wcw_logic.h"
 #include "common/rt64_wcw_perf.h"
 #include "render/rt64_hdr_output.h"
+#include "render/rt64_wcw_device_lost.h"
 #include "rhi/rt64_render_hooks.h"
 
 #include "rt64_workload_queue.h"
@@ -1242,7 +1243,7 @@ namespace RT64 {
 
                 // [wcw crt] The beam simulator presents every display refresh; the swap chain's
                 // vsync paces this loop while no new frame is queued.
-                if (!hasWork() && crtFilter->beamActive()) {
+                if (!hasWork() && crtFilter->beamActive() && !wcwSkipGpuWork()) {
                     cursorLock.unlock();
                     threadBeamPresent(swapChainValid);
                     continue;
@@ -1267,6 +1268,29 @@ namespace RT64 {
                         }
                     }
                 }
+            }
+
+            // [wcw] After device loss the swap chain can't be resized or presented (its buffers may already be
+            // released): present nothing, but complete each present so the workload thread and the game don't wait on
+            // it while the application quits.
+            if ((processCursor >= 0) && wcwSkipGpuWork()) {
+                std::unique_lock<std::mutex> threadLock(threadMutex);
+                Present &present = presents[processCursor];
+                ext.workloadQueue->waitForWorkloadId(present.workloadId);
+                skipInterpolation();
+                notifyPresentId(present);
+                if (!present.paused) {
+                    if (!present.fbOperations.empty()) {
+                        const std::scoped_lock lock(screenFbChangePoolMutex);
+                        screenFbChangePool.release(present.fbOperations.front().writeChanges.id);
+                        present.fbOperations.clear();
+                    }
+
+                    threadAdvanceBarrier();
+                }
+
+                processCursor = -1;
+                continue;
             }
 
             if (processCursor >= 0) {
@@ -1340,8 +1364,9 @@ namespace RT64 {
         }
 
         // Transition the active swap chain render target out of the present state to avoid live references to the resource.
+        // [wcw] Not on a lost device.
         uint32_t swapChainIndex = 0;
-        if (!ext.swapChain->isEmpty() && ext.swapChain->acquireTexture(acquiredSemaphore.get(), &swapChainIndex)) {
+        if (!wcwSkipGpuWork() && !ext.swapChain->isEmpty() && ext.swapChain->acquireTexture(acquiredSemaphore.get(), &swapChainIndex)) {
             RenderTexture *swapChainTexture = ext.swapChain->getTexture(swapChainIndex);
             ext.presentGraphicsWorker->commandList->begin();
             ext.presentGraphicsWorker->commandList->barriers(RenderBarrierStage::NONE, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::COLOR_WRITE));

@@ -17,6 +17,7 @@
 #include "common/rt64_thread.h"
 #include "common/rt64_tmem_hasher.h"
 #include "hle/rt64_workload_queue.h"
+#include "render/rt64_wcw_device_lost.h"
 
 #include "rt64_texture_cache.h"
 
@@ -1007,6 +1008,18 @@ namespace RT64 {
                 if (!streamResultQueue.empty()) {
                     streamResultQueueCopy.insert(streamResultQueueCopy.end(), streamResultQueue.begin(), streamResultQueue.end());
                     streamResultQueue.clear();
+                }
+
+                // [wcw] After device loss, upload nothing (creating and naming textures crashed on the dead device):
+                // drop the queue and wake anything waiting for the uploads, so the quit isn't blocked.
+                if (wcwSkipGpuWork()) {
+                    uploadQueue.clear();
+                    queueCopy.clear();
+                    resolvedPathQueueCopy.clear();
+                    streamResultQueueCopy.clear();
+                    queueLock.unlock();
+                    uploadQueueFinished.notify_all();
+                    continue;
                 }
             }
             
