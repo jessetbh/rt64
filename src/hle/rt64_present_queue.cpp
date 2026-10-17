@@ -851,6 +851,66 @@ namespace RT64 {
 
                             wcwPrevLum = lumNow;
                         }
+
+                        // [wcw hfr] WCW_LUM_WRONG=<percent>: aki-shot flicker's wrong-frame test, live. A game frame's
+                        // presents share a framebuffer address and its last present is the real frame. When the
+                        // generated presents' mean luminance is off the real frame's by more than the percentage and
+                        // outside the blend of the real frames before and after, save the real frame before, the
+                        // generated presents and the real frame (at most 120 files; meant for windowed runs).
+                        {
+                            static const double wcwLumWrong = getenv("WCW_LUM_WRONG") ? atof(getenv("WCW_LUM_WRONG")) : 0.0;
+                            struct WcwShot { int n; double lum; std::vector<uint8_t> px; };
+                            static std::vector<WcwShot> wcwGroup;
+                            static WcwShot wcwPrevReal{ 0, -1.0, {} };
+                            static uint32_t wcwGroupAddr = 0;
+                            static int wcwWrongSaved = 0;
+                            if ((wcwLumWrong > 0.0) && (wcwWrongSaved < 120)) {
+                                const uint32_t addr = present.screenVI.fbAddress();
+                                auto saveShot = [&](const WcwShot &s, const char *tag) {
+                                    char name[64]; snprintf(name, sizeof(name), "wcw_present_%04d_%s.bmp", s.n, tag);
+                                    FILE *bf = fopen(name, "wb");
+                                    if (bf == nullptr) return;
+                                    uint32_t imgSize = wcwRbW * wcwRbH * 4, fileSize = 54 + imgSize, off54 = 54, ihs = 40;
+                                    int32_t negH = -int32_t(wcwRbH);
+                                    uint16_t planes = 1, bpp = 32;
+                                    uint8_t hdr[54] = {};
+                                    hdr[0] = 'B'; hdr[1] = 'M';
+                                    memcpy(hdr + 2, &fileSize, 4); memcpy(hdr + 10, &off54, 4); memcpy(hdr + 14, &ihs, 4);
+                                    memcpy(hdr + 18, &wcwRbW, 4); memcpy(hdr + 22, &negH, 4);
+                                    memcpy(hdr + 26, &planes, 2); memcpy(hdr + 28, &bpp, 2); memcpy(hdr + 34, &imgSize, 4);
+                                    fwrite(hdr, 1, 54, bf);
+                                    fwrite(s.px.data(), 1, s.px.size(), bf);
+                                    fclose(bf);
+                                    wcwWrongSaved++;
+                                };
+                                if (!wcwGroup.empty() && (addr != wcwGroupAddr)) {
+                                    const WcwShot &real = wcwGroup.back();
+                                    if ((wcwGroup.size() >= 2) && (wcwPrevReal.lum > 3.0) && (real.lum > 3.0)) {
+                                        double gen = 0.0;
+                                        for (size_t g = 0; g + 1 < wcwGroup.size(); g++) gen += wcwGroup[g].lum;
+                                        gen /= double(wcwGroup.size() - 1);
+                                        const double lo = std::min(wcwPrevReal.lum, real.lum), hi = std::max(wcwPrevReal.lum, real.lum);
+                                        const bool off = std::fabs(gen / real.lum - 1.0) > wcwLumWrong / 100.0;
+                                        const bool blend = (gen >= lo - 0.02 * hi) && (gen <= hi + 0.02 * hi);
+                                        if (off && !blend) {
+                                            fprintf(stderr, "[wcw wrong] present %d prev %.2f gen %.2f real %.2f\n", wcwGroup.front().n, wcwPrevReal.lum, gen, real.lum);
+                                            saveShot(wcwPrevReal, "prev");
+                                            for (size_t g = 0; g + 1 < wcwGroup.size(); g++) saveShot(wcwGroup[g], "gen");
+                                            saveShot(real, "real");
+                                        }
+                                    }
+                                    wcwPrevReal = std::move(wcwGroup.back());
+                                    wcwGroup.clear();
+                                }
+                                wcwGroupAddr = addr;
+                                if (wcwGroup.size() < 8) {
+                                    WcwShot s{ wcwPresentN, double(sum) / cnt, {} };
+                                    s.px.resize(uint64_t(wcwRbW) * wcwRbH * 4);
+                                    for (uint32_t y = 0; y < wcwRbH; y++) memcpy(s.px.data() + uint64_t(y) * wcwRbW * 4, p + uint64_t(y) * wcwRbRow * 4, uint64_t(wcwRbW) * 4);
+                                    wcwGroup.push_back(std::move(s));
+                                }
+                            }
+                        }
                         if (wcwBmpWanted) {
                             char name[64]; snprintf(name, sizeof(name), "wcw_present_%04d.bmp", wcwPresentN);
                             FILE *bf = fopen(name, "wb");
