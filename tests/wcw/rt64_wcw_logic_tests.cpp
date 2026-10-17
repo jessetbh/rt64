@@ -357,10 +357,19 @@ TEST_CASE("generated frames: a trace is reused only with the same outside darkne
 TEST_CASE("generated frames: a pass's signature is stable across the renders of a game frame") {
     const uint32_t pass[] = { 24, 8, 8, 130 };
     CHECK_EQ(passSignature(pass, 4), passSignature(pass, 4));
-    // Order and count matter: the same draws in another order, or one draw fewer, are another pass.
-    const uint32_t reordered[] = { 8, 24, 8, 130 };
-    CHECK(passSignature(pass, 4) != passSignature(reordered, 4));
+    // Count and triangle counts matter: one draw fewer, or a draw with other triangles, is another pass.
     CHECK(passSignature(pass, 4) != passSignature(pass, 3));
+    const uint32_t changed[] = { 24, 8, 9, 130 };
+    CHECK(passSignature(pass, 4) != passSignature(changed, 4));
+}
+
+TEST_CASE("generated frames: the same draws in another order are the same pass (aki-roadmap#86)") {
+    // No Mercy sorts the wrestlers' draws again every game frame. A generated frame reuses the previous game frame's
+    // real trace, so with order in the signature the wrestler pass never matched and traced twice per game frame.
+    const uint32_t realFrame[] = { 24, 8, 8, 130, 52 };
+    const uint32_t nextFrame[] = { 130, 8, 52, 24, 8 };
+    CHECK_EQ(passSignature(realFrame, 5), passSignature(nextFrame, 5));
+    CHECK(!traceRender(true, reusableTrace(true, passSignature(realFrame, 5), passSignature(nextFrame, 5), false, false), 0));
 }
 
 // Ray-traced ambient occlusion
