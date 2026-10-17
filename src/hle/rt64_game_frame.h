@@ -132,6 +132,8 @@ namespace RT64 {
         bool matched = false;
         // [wcw fix] How far the matched objects' camera moved since the previous frame (cut detection).
         WcwLogic::CameraCutCounter wcwCameraCut;
+        // [wcw fix] Pairs whose drawn matrix jumped while the object stayed put (WcwLogic::MatrixSplitCounter).
+        WcwLogic::MatrixSplitCounter wcwMatrixSplit;
 
         bool areFramebufferPairsCompatible(const WorkloadQueue &workloadQueue, const GameIndices::FramebufferPair &first, const GameIndices::FramebufferPair &second);
         bool isSceneCompatible(const WorkloadQueue &workloadQueue, const GameScene &scene, const GameIndices::Projection &proj);

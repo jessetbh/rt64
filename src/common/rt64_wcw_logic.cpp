@@ -552,8 +552,29 @@ namespace RT64::WcwLogic {
         return (pairs >= MinPairs) && (jumped * 2 > pairs);
     }
 
-    bool primeGeneratedTargets(bool primeEnabled, bool generateInterpolatedFrames, bool usingMSAA, uint32_t runLength) {
-        return primeEnabled && generateInterpolatedFrames && !usingMSAA && (runLength == 1);
+    void MatrixSplitCounter::reset() {
+        *this = MatrixSplitCounter();
+    }
+
+    void MatrixSplitCounter::add(bool pairSplit) {
+        pairs++;
+        split += pairSplit ? 1 : 0;
+    }
+
+    bool MatrixSplitCounter::splitLayer() const {
+        return (pairs >= MinPairs) && (split * 2 > pairs);
+    }
+
+    bool splitPair(float drawnChange, float stillChange) {
+        return (drawnChange > SplitDrawnJump) && (stillChange >= 0.0f) && (stillChange <= SplitStillChange);
+    }
+
+    bool primeGeneratedTargets(bool primeEnabled, bool generateInterpolatedFrames, bool usingMSAA, uint32_t runLength, uint32_t generatedLayersBefore) {
+        if (!generateInterpolatedFrames || usingMSAA || (generatedLayersBefore > 0)) {
+            return false;
+        }
+
+        return (runLength == 1) ? primeEnabled : true;
     }
 
     bool framebufferPassCoversScreen(int32_t scissorWidth, int32_t scissorHeight, int32_t fbWidth, int32_t fbHeight) {

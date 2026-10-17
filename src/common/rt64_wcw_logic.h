@@ -411,9 +411,15 @@ namespace RT64::WcwLogic {
     HdrAdvice hdrAdvice(float paperWhiteNits, const HdrDisplay &display, const HdrCrt &crt);
 
     // Generated-frame priming: copying the game's buffer into a run's generated targets happens once per run, before
-    // its first layer draws the blended frame. Priming after the blend applied translucent full-screen layers
-    // (fades) twice; priming every layer replaced the earlier layers' draws with the blend (Revenge flicker).
-    bool primeGeneratedTargets(bool primeEnabled, bool generateInterpolatedFrames, bool usingMSAA, uint32_t runLength);
+    // its first generating layer draws the blended frame. Priming after the blend applied translucent full-screen
+    // layers (fades) twice; priming every layer replaced the earlier layers' draws with the blend (Revenge flicker).
+    // primeEnabled (the game's profile) primes runs whose first layer generates. A run whose earlier layers drew
+    // without generating (generatedLayersBefore 0 at runLength > 1) is primed whatever the profile: those layers
+    // drew only into the game's buffer, so without the copy the generated targets lack them and keep stale pixels.
+    // No Mercy's attract mode starts some runs with a fill-rect-only layer (not an interpolation target, see
+    // skipClearOnlyTargets): its generated frames showed an old frame's arena through the title text, a flash every
+    // game frame for ~1 s per loop (aki-roadmap#6).
+    bool primeGeneratedTargets(bool primeEnabled, bool generateInterpolatedFrames, bool usingMSAA, uint32_t runLength, uint32_t generatedLayersBefore);
 
     // Multi-layer runs that end early
 
@@ -589,5 +595,41 @@ namespace RT64::WcwLogic {
         bool shown = false;
         bool quit = false;
         double shownSeconds = 0.0;
+    };
+
+    // Frame interpolation: drawn matrices that jump while the objects stay put
+
+    // Whether a matched object pair split: its drawn matrix jumped while the object itself stayed put (its
+    // camera-independent matrix didn't move). The game moved part of the view from one matrix to another (No Mercy's
+    // attract mode does it on the last frame of each shot, for ~90% of the pairs): the real frames look the same, but
+    // interpolating between the two splits showed a third view (smoke and lights moved or gone, a wrestler missing;
+    // 10-60% luminance off for one present, aki-roadmap#6). The camera matrices don't jump, so CameraCutCounter
+    // misses it. drawnChange and stillChange are matrixChange values of the drawn and the camera-independent
+    // matrices; negative (not finite) never splits.
+    // A drawn matrix that changed by more than this has jumped (CameraCutCounter's threshold). The split pairs
+    // measured 0.75 to 1.5 (WCW_XF_LOG); ordinary motion stays under 0.3.
+    constexpr float SplitDrawnJump = 0.25f;
+    // The camera-independent matrix changed by at most this: the object stayed put. The split pairs measured up to
+    // 0.042 (wrestlers' limbs in motion).
+    constexpr float SplitStillChange = 0.1f;
+
+    bool splitPair(float drawnChange, float stillChange);
+
+    // Counts a layer's matched pairs and the split ones among them. When most pairs of a big layer split (the shot's
+    // scene: the attract mode's split layers had 34-185 pairs), the run's generated frame is dropped and the real
+    // frame shows for the whole game frame. The whole run: the layers before it (a 2-pair layer that split, the
+    // background) already drew their generated frames, and a 2-pair split there darkened the frame on its own.
+    // Leaving only the split pairs uninterpolated still showed the third view (the view itself is interpolated).
+    // Small layers aren't counted: in a match, layers of up to 13 pairs split on ~10% of game frames without a wrong
+    // frame (Raw quick match), and dropping those runs would have cost that many generated frames.
+    struct MatrixSplitCounter {
+        static constexpr uint32_t MinPairs = 20;
+
+        uint32_t pairs = 0;
+        uint32_t split = 0;
+
+        void reset();
+        void add(bool pairSplit);
+        bool splitLayer() const;
     };
 };

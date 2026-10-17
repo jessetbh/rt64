@@ -774,14 +774,14 @@ namespace RT64 {
             // (ported from the July World Tour fix, bd35fac). Games that clear each buffer in the PREVIOUS
             // frame submit no clear in this one, so a fresh override target keeps undefined (white)
             // content behind the re-rendered geometry: World Tour's title fade alternated grey/white.
-            static const bool wcwHfrPrimeEnv = getenv("WCW_HFR_PRIME") != nullptr;
-            const bool wcwHfrPrime = wcwInterpolationProfile().primeGeneratedFrames || wcwHfrPrimeEnv;
-            // The copy happens once per run, before its first layer draws the blended frame into the live target:
+            // The copy happens once per run, before its first generating layer draws the blended frame into the live target:
             // the generated targets then start from the same content as the game's buffer (usually the clear
             // the previous frame left). Priming each generated frame from the live target after the blend was
             // drawn applied translucent full-screen layers (fades) twice, and priming every layer replaced the
             // earlier layers' draws with the blended frame's.
-            if (wcwHfrPrime && (overrideTarget == nullptr) && !wcwPrimeTargets.empty() && !usingMSAA) {
+            // [wcw hfr] wcwPrimeTargets is filled by WcwLogic::primeGeneratedTargets, which also primes runs whose earlier
+            // layers drew without generating (whatever the profile).
+            if ((overrideTarget == nullptr) && !wcwPrimeTargets.empty() && !usingMSAA) {
                 WcwGpuScope wcwPrimeScope(ext.workloadGraphicsWorker->commandList.get(), WcwPerf::GpuPass::InterpPrime);
                 RenderTarget &liveTarget = targetManager.get(overrideTargetKey, true);
                 for (RenderTarget *primeTarget : wcwPrimeTargets) {
@@ -1106,6 +1106,8 @@ namespace RT64 {
         uint32_t wcwPendingBeforePrevRunLength = 0;
         // True once any layer of the current run has skipped its generated frame.
         bool wcwRunGenIncomplete = false;
+        // Layers of the current run that generated frames so far (WcwLogic::primeGeneratedTargets).
+        uint32_t wcwRunGeneratedLayers = 0;
         // True once a layer of the current run found a camera cut: the run's remaining layers draw the real frame
         // in every displayed frame (WcwLogic::CameraCutCounter).
         bool wcwRunCameraCut = false;
@@ -1256,6 +1258,7 @@ namespace RT64 {
                     wcwCompositeRunLength = 1;
                     wcwRunGenIncomplete = false;
                     wcwRunCameraCut = false;
+                    wcwRunGeneratedLayers = 0;
                     wcwRunSerialCounter++;
                 }
                 else {
@@ -1332,6 +1335,17 @@ namespace RT64 {
 
                 // [wcw hfr] WCW_PAIR_LOG=1: which earlier layer this one interpolates from.
                 {
+                    // WCW_DIAG_BUFFER=1: buffer stderr. Unbuffered, WCW_PAIR_LOG + WCW_RUN_LOG slowed No Mercy's matches to
+                    // ~4 presents/s (aki-roadmap#6), so the flicker they were meant to explain went away.
+                    static const bool wcwDiagBuffered = []() {
+                        if (getenv("WCW_DIAG_BUFFER") != nullptr) {
+                            setvbuf(stderr, nullptr, _IOFBF, 1 << 20);
+                        }
+
+                        return true;
+                    }();
+                    (void)(wcwDiagBuffered);
+
                     static const bool wcwPairLog = getenv("WCW_PAIR_LOG") != nullptr;
                     if (wcwPairLog && RT64::wcwInterpActive.load(std::memory_order_relaxed)) {
                         const GameFrame &pf = gameFrames[prevFrameIndex];
@@ -1515,12 +1529,21 @@ namespace RT64 {
                         wcwRunCameraCut = true;
                     }
 
+                    // [wcw fix] Most of the scene's pairs changed how their transform is split: drop the run's generated
+                    // frame, including the layers already drawn (WcwLogic::MatrixSplitCounter).
+                    static const bool wcwNoSplitRule = getenv("WCW_HFR_NOSPLIT") != nullptr;
+                    if (generateInterpolatedFrames && !wcwNoSplitRule && curFrame.wcwMatrixSplit.splitLayer()) {
+                        wcwRunCameraCut = true;
+                        wcwRunGenIncomplete = true;
+                    }
+
                     static const bool wcwPairLog = getenv("WCW_PAIR_LOG") != nullptr;
                     if (wcwPairLog && (curFrame.wcwCameraCut.pairs > 0)) {
-                        fprintf(stderr, "[wcw cut] t=%.3f serial %llu layer %u pairs %u jumped %u max %.3f%s\n",
+                        fprintf(stderr, "[wcw cut] t=%.3f serial %llu layer %u pairs %u jumped %u max %.3f split %u/%u%s%s\n",
                             std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(),
                             (unsigned long long)workload.wcwRunSerial, wcwCompositeRunLength, curFrame.wcwCameraCut.pairs,
-                            curFrame.wcwCameraCut.jumped, curFrame.wcwCameraCut.maxChange, curFrame.wcwCameraCut.cut() ? " CUT" : "");
+                            curFrame.wcwCameraCut.jumped, curFrame.wcwCameraCut.maxChange, curFrame.wcwMatrixSplit.split, curFrame.wcwMatrixSplit.pairs,
+                            curFrame.wcwCameraCut.cut() ? " CUT" : "", curFrame.wcwMatrixSplit.splitLayer() ? " SPLIT" : "");
                     }
 
                     const bool resetTicks = !generateInterpolatedFrames || (originalRateForTicks != workload.viOriginalRate) || (displayRateForTicks != workloadConfig.targetRate) || !displayRateAboveOriginal;
@@ -1653,14 +1676,16 @@ namespace RT64 {
                 const int64_t maxTimePerFrameMicro = adjustedTimeWindowMicro / displayFrames;
                 bool skippedFrames = false;
                 bool skipWorkloadNow = false;
-                // [wcw hfr] The run's first layer primes this run's generated targets (see threadRenderFrame).
+                // [wcw hfr] The run's first generating layer primes this run's generated targets (see threadRenderFrame).
                 wcwPrimeTargets.clear();
                 const bool wcwPrimeEnabled = wcwInterpolationProfile().primeGeneratedFrames || (getenv("WCW_HFR_PRIME") != nullptr);
-                if (WcwLogic::primeGeneratedTargets(wcwPrimeEnabled, generateInterpolatedFrames, usingMSAA, wcwCompositeRunLength)) {
+                if (WcwLogic::primeGeneratedTargets(wcwPrimeEnabled, generateInterpolatedFrames, usingMSAA, wcwCompositeRunLength, wcwRunGeneratedLayers)) {
                     for (uint32_t i = 0; (i + 1 < displayFrames) && (i < interpolatedTargets.size()); i++) {
                         wcwPrimeTargets.push_back(interpolatedTargets[i].get());
                     }
                 }
+
+                wcwRunGeneratedLayers += generateInterpolatedFrames ? 1 : 0;
 
                 uint32_t targetIndex = 0;
                 uint32_t framesRendered = 0;

@@ -259,6 +259,7 @@ namespace RT64 {
         lookAtInterpolationUsed = false;
         matched = true;
         wcwCameraCut.reset();
+        wcwMatrixSplit.reset();
 
         thread_local std::unordered_map<uint32_t, ModifiedBuffers> workloadsModified;
         workloadsModified.clear();
@@ -789,6 +790,16 @@ namespace RT64 {
         }
         const hlslpp::float4x4 &curTransform = curWorkload.drawData.worldTransformsPure[curTransformIndex];
         const hlslpp::float4x4 &prevTransform = prevWorkload.drawData.worldTransformsPure[prevTransformIndex];
+
+        // [wcw fix] Split detection: the drawn matrix jumped while the object stayed put (WcwLogic::MatrixSplitCounter).
+        {
+            float dc[16], dp[16], pc[16], pp[16];
+            hlslpp::store(hlslpp::float4x4(curWorkload.drawData.worldTransforms[curTransformIndex]), dc);
+            hlslpp::store(hlslpp::float4x4(prevWorkload.drawData.worldTransforms[prevTransformIndex]), dp);
+            hlslpp::store(curTransform, pc);
+            hlslpp::store(prevTransform, pp);
+            wcwMatrixSplit.add(WcwLogic::splitPair(WcwLogic::matrixChange(dp, dc), WcwLogic::matrixChange(pp, pc)));
+        }
         const uint32_t curGroupIndex = curWorkload.drawData.worldTransformGroups[curTransformIndex];
         const TransformGroup &curGroup = curWorkload.drawData.transformGroups[curGroupIndex];
         curTransformMap.rigidBody.updateLinear(prevTransform, curTransform, curGroup.positionInterpolation);
@@ -832,6 +843,36 @@ namespace RT64 {
             }
         }
         curTransformMap.rigidBody.updateDecomposition(curTransform, curGroup.decompose);
+        // [wcw hfr] WCW_XF_LOG=<first run serial>,<last run serial>: one line per matched pair, with how far its drawn,
+        // camera-independent and camera matrices moved (matrixChange; -2 = no camera matrix) and its translation.
+        {
+            static long long wcwXfFirst = -1, wcwXfLast = -1;
+            static bool wcwXfInit = false;
+            if (!wcwXfInit) {
+                wcwXfInit = true;
+                if (const char *e = getenv("WCW_XF_LOG")) {
+                    sscanf(e, "%lld,%lld", &wcwXfFirst, &wcwXfLast);
+                }
+            }
+
+            const long long serial = (long long)(curWorkload.wcwRunSerial);
+            if ((wcwXfFirst >= 0) && (serial >= wcwXfFirst) && (serial <= wcwXfLast)) {
+                float dp[16], dc[16], pp[16], pc[16], cp[16], cc[16];
+                hlslpp::store(hlslpp::float4x4(prevWorkload.drawData.worldTransforms[prevTransformIndex]), dp);
+                hlslpp::store(hlslpp::float4x4(curWorkload.drawData.worldTransforms[curTransformIndex]), dc);
+                hlslpp::store(prevTransform, pp);
+                hlslpp::store(curTransform, pc);
+                const bool haveCamera = (curTransformIndex < curWorkload.drawData.worldTransformsCamera.size()) && (prevTransformIndex < prevWorkload.drawData.worldTransformsCamera.size());
+                if (haveCamera) {
+                    hlslpp::store(hlslpp::float4x4(prevWorkload.drawData.worldTransformsCamera[prevTransformIndex]), cp);
+                    hlslpp::store(hlslpp::float4x4(curWorkload.drawData.worldTransformsCamera[curTransformIndex]), cc);
+                }
+
+                fprintf(stderr, "[wcw xf] serial %lld prev serial %llu cur %u prev %u drawn %.3f pure %.3f camera %.3f combined lerp %d t=(%.1f,%.1f,%.1f) prev t=(%.1f,%.1f,%.1f)\n",
+                    serial, (unsigned long long)prevWorkload.wcwRunSerial, curTransformIndex, prevTransformIndex, WcwLogic::matrixChange(dp, dc), WcwLogic::matrixChange(pp, pc),
+                    haveCamera ? WcwLogic::matrixChange(cp, cc) : -2.0f, int(curTransformMap.wcwCombinedLerp), pc[12], pc[13], pc[14], pp[12], pp[13], pp[14]);
+            }
+        }
         curTransformMap.prevTransformIndex = prevTransformIndex;
         curTransformMap.mapped = true;
         curTransformMap.usedPureMatrix = true;
