@@ -465,6 +465,10 @@ namespace RT64 {
     void WcwRaytracer::reset() {
         if (!active()) {
             wasActive = false;
+            releaseAll();
+        }
+        else {
+            releaseTextures();
         }
 
         sceneActive = false;
@@ -472,6 +476,88 @@ namespace RT64 {
         meshes.clear();
         meshIndexStarts.clear();
         meshTiles.clear();
+    }
+
+    void WcwRaytracer::releaseTextures() {
+        bool released = false;
+        for (Slot &slot : slots) {
+            const bool idle = WcwLogic::releaseSlotTextures(frameCounter, slot.builtFrame, true);
+            if (idle && slot.valid) {
+                // The scene went away (menu, entrance, another venue): its structure goes too. It's rebuilt if it returns.
+                slot.blas.reset();
+                slot.blasBuffer.reset();
+                slot.blasBufferSize = 0;
+                slot.valid = false;
+            }
+
+            if (slot.history == nullptr) {
+                continue;
+            }
+
+            const bool sizeMatches = (slot.historyWidth == traceWidth) && (slot.historyHeight == traceHeight);
+            if (WcwLogic::releaseSlotTextures(frameCounter, slot.builtFrame, sizeMatches)) {
+                slot.history.reset();
+                slot.historyWidth = 0;
+                slot.historyHeight = 0;
+                slot.historyValid = false;
+                slot.tracedPresent = UINT64_MAX;
+                released = true;
+            }
+        }
+
+        if (released) {
+            logTextureMemory();
+        }
+    }
+
+    void WcwRaytracer::releaseAll() {
+        if ((currentTexture == nullptr) && (tlasBuffer == nullptr)) {
+            return;
+        }
+
+        for (Slot &slot : slots) {
+            slot.history.reset();
+            slot.historyWidth = 0;
+            slot.historyHeight = 0;
+            slot.historyValid = false;
+            slot.tracedPresent = UINT64_MAX;
+            slot.blas.reset();
+            slot.blasBuffer.reset();
+            slot.blasBufferSize = 0;
+            slot.valid = false;
+        }
+
+        currentTexture.reset();
+        currentDistTexture.reset();
+        resolveTexture.reset();
+        outputWidth = 0;
+        outputHeight = 0;
+        traceWidth = 0;
+        traceHeight = 0;
+        tlas.reset();
+        tlasBuffer.reset();
+        tlasBufferSize = 0;
+        scratchBuffer.reset();
+        scratchBufferSize = 0;
+        logTextureMemory();
+    }
+
+    void WcwRaytracer::logTextureMemory() {
+        static const bool gpuLog = getenv("WCW_GPU_LOG") != nullptr;
+        uint32_t allocated = 0;
+        for (const Slot &slot : slots) {
+            allocated += (slot.history != nullptr) ? 1 : 0;
+        }
+
+        const bool shared = (currentTexture != nullptr);
+        const uint64_t bytes = shared ? WcwLogic::rtTextureBytes(traceWidth, traceHeight, allocated) : 0;
+        if (gpuLog && (bytes != loggedTextureBytes)) {
+            const uint64_t before = shared ? WcwLogic::rtTextureBytes(traceWidth, traceHeight, allocated, true) : 0;
+            fprintf(stderr, "[wcw rt] textures: %ux%u trace, %u slots, %.1f MB (%.1f MB before #72)\n", traceWidth, traceHeight, allocated,
+                double(bytes) / (1024.0 * 1024.0), double(before) / (1024.0 * 1024.0));
+        }
+
+        loggedTextureBytes = bytes;
     }
 
     bool WcwRaytracer::wantsScene() const {
@@ -785,29 +871,43 @@ namespace RT64 {
         wasActive = true;
 
         // Trace-resolution textures (traceScale of the color target).
-        if ((outputTexture == nullptr) || (outputWidth != colorTarget->width) || (outputHeight != colorTarget->height) || (frameScale != traceScale)) {
+        bool texturesChanged = false;
+        if ((currentTexture == nullptr) || (outputWidth != colorTarget->width) || (outputHeight != colorTarget->height) || (frameScale != traceScale)) {
             traceScale = frameScale;
             outputWidth = colorTarget->width;
             outputHeight = colorTarget->height;
             traceWidth = std::max(uint32_t(std::ceil(outputWidth * traceScale)), 1u);
             traceHeight = std::max(uint32_t(std::ceil(outputHeight * traceScale)), 1u);
-            outputTexture = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16G16B16A16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
-            currentTexture = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R32G32B32A32_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
-            currentAoTexture = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
+            // The textures' sizes and formats are WcwLogic::rtTextureBytes' (aki-roadmap#72).
+            currentTexture.reset();
+            currentDistTexture.reset();
+            resolveTexture.reset();
+            currentTexture = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16G16B16A16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
+            currentDistTexture = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R32_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
+            resolveTexture = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16G16B16A16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
+            texturesChanged = true;
         }
 
         Slot &slot = slots[currentSlot];
-        if ((slot.history[0] == nullptr) || (slot.historyWidth != traceWidth) || (slot.historyHeight != traceHeight)) {
+        if ((slot.history == nullptr) || (slot.historyWidth != traceWidth) || (slot.historyHeight != traceHeight)) {
             slot.historyWidth = traceWidth;
             slot.historyHeight = traceHeight;
-            for (auto &history : slot.history) {
-                history = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16G16B16A16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
-            }
-
-            slot.output = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16G16B16A16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
+            slot.history.reset();
+            slot.history = device->createTexture(RenderTextureDesc::Texture2D(traceWidth, traceHeight, 1, RenderFormat::R16G16B16A16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
             slot.tracedPresent = UINT64_MAX;
-
             slot.historyValid = false;
+            texturesChanged = true;
+        }
+
+        // The history holds what this mode writes: resolved shadows and AO, or a debug view's color.
+        if (slot.historyMode != mode) {
+            slot.historyMode = mode;
+            slot.tracedPresent = UINT64_MAX;
+            slot.historyValid = false;
+        }
+
+        if (texturesChanged) {
+            logTextureMemory();
         }
 
         // Composite pipeline matching the target's format and sample count; blend depends on the mode.
@@ -860,7 +960,7 @@ namespace RT64 {
         if (!traceGenerated && !WcwLogic::traceRender(generatedRender, haveTrace, slot.reusesSinceTrace)) {
             memcpy(traceRect, slot.tracedRect, sizeof(traceRect));
             traceRectEmpty = (traceRect[2] <= traceRect[0]) || (traceRect[3] <= traceRect[1]);
-            compositeSet->setTexture(0, slot.output.get(), RenderTextureLayout::SHADER_READ);
+            compositeSet->setTexture(0, slot.history.get(), RenderTextureLayout::SHADER_READ);
             slot.reusesSinceTrace++;
             generatedReuses++;
             return;
@@ -1076,7 +1176,7 @@ namespace RT64 {
         if (!noReuse && (slot.tracedPresent == lastPresentId) && (memcmp(&slot.tracedViewProj, &viewProj, sizeof(viewProj)) == 0) &&
             (memcmp(slot.tracedRect, traceRect, sizeof(traceRect)) == 0) && (slot.tracedMeshes == uint32_t(meshes.size())))
         {
-            compositeSet->setTexture(0, slot.output.get(), RenderTextureLayout::SHADER_READ);
+            compositeSet->setTexture(0, slot.history.get(), RenderTextureLayout::SHADER_READ);
             reusedTraces++;
             return;
         }
@@ -1103,9 +1203,13 @@ namespace RT64 {
         traceSet->setBuffer(2, worldPosBuffer, worldPosSize, &float4View);
         traceSet->setBuffer(3, faceIndicesBuffer, faceIndicesSize, &uintView);
         traceSet->setBuffer(4, meshStartsBuffer.get(), meshStartsBufferSize, &uintView);
-        traceSet->setTexture(5, slot.output.get(), RenderTextureLayout::GENERAL);
+        // The debug views write their color straight into the slot's history; the resolved modes write nothing there
+        // (the scratch is bound in its place) and the resolve fills the history.
+        const bool resolved = (mode == WCW_RT_MODE_SHADOW) || (mode == WCW_RT_MODE_AO);
+        RenderTexture *traceOutput = resolved ? resolveTexture.get() : slot.history.get();
+        traceSet->setTexture(5, traceOutput, RenderTextureLayout::GENERAL);
         traceSet->setTexture(6, currentTexture.get(), RenderTextureLayout::GENERAL);
-        traceSet->setTexture(13, currentAoTexture.get(), RenderTextureLayout::GENERAL);
+        traceSet->setTexture(13, currentDistTexture.get(), RenderTextureLayout::GENERAL);
         const RenderBufferStructuredView rdpTileView(sizeof(interop::RDPTile));
         const RenderBufferStructuredView gpuTileView(sizeof(interop::GPUTile));
         const RenderBufferStructuredView float2View(sizeof(float) * 2);
@@ -1116,13 +1220,13 @@ namespace RT64 {
         traceSet->setBuffer(11, (worldNormBuffer != nullptr) ? worldNormBuffer : worldPosBuffer, (worldNormBuffer != nullptr) ? worldNormSize : worldPosSize, &float4View);
         const RenderBufferStructuredView floatView(sizeof(float));
         traceSet->setBuffer(12, blueNoiseBuffer.get(), WcwLogic::BlueNoiseSize * WcwLogic::BlueNoiseSize * sizeof(float), &floatView);
-        compositeSet->setTexture(0, slot.output.get(), RenderTextureLayout::SHADER_READ);
+        compositeSet->setTexture(0, slot.history.get(), RenderTextureLayout::SHADER_READ);
 
         // Trace.
         worker->commandList->barriers(RenderBarrierStage::COMPUTE, {
-            RenderTextureBarrier(slot.output.get(), RenderTextureLayout::GENERAL),
+            RenderTextureBarrier(traceOutput, RenderTextureLayout::GENERAL),
             RenderTextureBarrier(currentTexture.get(), RenderTextureLayout::GENERAL),
-            RenderTextureBarrier(currentAoTexture.get(), RenderTextureLayout::GENERAL)
+            RenderTextureBarrier(currentDistTexture.get(), RenderTextureLayout::GENERAL)
         });
         if (timingPool != nullptr) {
             worker->commandList->writeTimestamp(timingPool.get(), StampTraceBegin);
@@ -1152,23 +1256,25 @@ namespace RT64 {
             }
         }
 
-        // Shadow mode: temporal resolve of the jittered samples into this slot's history.
-        if ((mode == WCW_RT_MODE_SHADOW) || (mode == WCW_RT_MODE_AO)) {
+        // Shadow mode: temporal resolve of the jittered samples against this slot's history, into the shared scratch,
+        // then the region it wrote is copied back into the history (WcwLogic::resolveRegion). The history then holds
+        // this pass everywhere it traced and its older passes elsewhere, for reprojection.
+        if (resolved) {
             WcwGpuScope wcwDenoiseScope(worker->commandList.get(), WcwPerf::GpuPass::RtDenoise);
-            RenderTexture *historyIn = slot.history[slot.historyIndex].get();
-            RenderTexture *historyOut = slot.history[slot.historyIndex ^ 1].get();
+            RenderTexture *historyIn = slot.history.get();
+            RenderTexture *historyOut = resolveTexture.get();
             resolveSet->setBuffer(0, paramsBuffer.get(), alignUp(sizeof(interop::WcwRtParams), 256));
             resolveSet->setTexture(1, currentTexture.get(), RenderTextureLayout::SHADER_READ);
-            resolveSet->setTexture(5, currentAoTexture.get(), RenderTextureLayout::SHADER_READ);
+            resolveSet->setTexture(5, currentDistTexture.get(), RenderTextureLayout::SHADER_READ);
             resolveSet->setTexture(2, historyIn, RenderTextureLayout::SHADER_READ);
             resolveSet->setTexture(3, historyOut, RenderTextureLayout::GENERAL);
-            resolveSet->setTexture(4, slot.output.get(), RenderTextureLayout::GENERAL);
+            // u4 is unused by the shader (the set keeps its binding order).
+            resolveSet->setTexture(4, historyOut, RenderTextureLayout::GENERAL);
             worker->commandList->barriers(RenderBarrierStage::COMPUTE, {
                 RenderTextureBarrier(currentTexture.get(), RenderTextureLayout::SHADER_READ),
-                RenderTextureBarrier(currentAoTexture.get(), RenderTextureLayout::SHADER_READ),
+                RenderTextureBarrier(currentDistTexture.get(), RenderTextureLayout::SHADER_READ),
                 RenderTextureBarrier(historyIn, RenderTextureLayout::SHADER_READ),
-                RenderTextureBarrier(historyOut, RenderTextureLayout::GENERAL),
-                RenderTextureBarrier(slot.output.get(), RenderTextureLayout::GENERAL)
+                RenderTextureBarrier(historyOut, RenderTextureLayout::GENERAL)
             });
 
             worker->commandList->setPipeline(resolvePipeline.get());
@@ -1176,7 +1282,19 @@ namespace RT64 {
             worker->commandList->setComputeDescriptorSet(resolveSet.get(), 0);
             worker->commandList->dispatch((rectWidth + 7) / 8, (rectHeight + 7) / 8, 1);
 
-            slot.historyIndex ^= 1;
+            uint32_t region[4];
+            WcwLogic::resolveRegion(traceRect, traceWidth, traceHeight, region);
+            if ((region[2] > region[0]) && (region[3] > region[1])) {
+                worker->commandList->barriers(RenderBarrierStage::COPY, {
+                    RenderTextureBarrier(historyOut, RenderTextureLayout::COPY_SOURCE),
+                    RenderTextureBarrier(historyIn, RenderTextureLayout::COPY_DEST)
+                });
+
+                const RenderBox box = RenderBox(int32_t(region[0]), int32_t(region[1]), int32_t(region[2]), int32_t(region[3]));
+                worker->commandList->copyTextureRegion(RenderTextureCopyLocation::Subresource(historyIn), RenderTextureCopyLocation::Subresource(historyOut),
+                    region[0], region[1], 0, &box);
+            }
+
             slot.historyValid = true;
             slot.prevViewProj = viewProj;
         }
@@ -1186,7 +1304,7 @@ namespace RT64 {
             timingWritten |= (1u << StampResolveEnd);
         }
 
-        worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(slot.output.get(), RenderTextureLayout::SHADER_READ));
+        worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(slot.history.get(), RenderTextureLayout::SHADER_READ));
     }
 
     void WcwRaytracer::recordComposite(RenderWorker *worker) {
@@ -1212,6 +1330,7 @@ namespace RT64 {
         interop::WcwRtCompositeCB compositeCB;
         compositeCB.scale = { float(traceWidth) / float(outputWidth), float(traceHeight) / float(outputHeight) };
         compositeCB.traceSize = { float(traceWidth), float(traceHeight) };
+        compositeCB.decodeHistory = ((mode == WCW_RT_MODE_SHADOW) || (mode == WCW_RT_MODE_AO)) ? 1u : 0u;
         worker->commandList->setGraphicsPushConstants(0, &compositeCB);
         worker->commandList->setGraphicsDescriptorSet(compositeSet.get(), 0);
         worker->commandList->setViewports(fullViewport);

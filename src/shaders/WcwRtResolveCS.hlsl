@@ -11,13 +11,14 @@
 #include "shared/rt64_wcw_rt.h"
 
 ConstantBuffer<WcwRtParams> gParams : register(b0);
-// (shadow factor RGB, hit distance (0 = no hit)) and the AO factor from the trace pass.
+// (shadow factor RGB, AO factor) and the hit distance (0 = no hit) from the trace pass.
 Texture2D<float4> gCurrent : register(t1);
-Texture2D<float> gCurrentAo : register(t5);
-// (shadow RGB, AO) history. With WCW_RT_DENOISE_SPLIT's old path, rgb holds the combined factor and a is 1.
+Texture2D<float> gCurrentDist : register(t5);
+// (shadow RGB, AO) history, a miss marked by WCW_RT_HISTORY_MISS. With WCW_RT_DENOISE_SPLIT's old path, rgb holds the
+// combined factor and a is 1. The output goes to a shared scratch (u3) and the region written is copied back into
+// the slot's history, which the composite reads (aki-roadmap#72). u4 is unused.
 Texture2D<float4> gHistoryIn : register(t2);
 RWTexture2D<float4> gHistoryOut : register(u3);
-RWTexture2D<float4> gOutput : register(u4);
 
 // A depth-aware tent filter's running sums for one term (RGB for the colored shadow term, x only for AO).
 struct FilterSums {
@@ -59,11 +60,10 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
     }
 
     const float4 current = gCurrent[pixel];
-    if (current.w <= 0.0f) {
-        // No hit: the trace's factor for the background (1, or outside darkness), stored at half scale.
-        gHistoryOut[pixel] = float4(1.0f, 1.0f, 1.0f, 1.0f);
-        const float3 missFactor = 0.5f * current.rgb;
-        gOutput[pixel] = float4(missFactor, 0.0f);
+    const float currentDist = gCurrentDist[pixel];
+    if (currentDist <= 0.0f) {
+        // No hit: the trace's factor for the background (1, or outside darkness). Reprojection reads it as (1, 1, 1, 1).
+        gHistoryOut[pixel] = float4(current.rgb, WCW_RT_HISTORY_MISS);
         return;
     }
 
@@ -87,13 +87,14 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
                 continue;
             }
 
-            const float4 sample = gCurrent[neighbor];
-            if (sample.w <= 0.0f) {
+            const float sampleDist = gCurrentDist[neighbor];
+            if (sampleDist <= 0.0f) {
                 continue;
             }
 
-            const float sampleAo = gCurrentAo[neighbor];
-            const float depth = exp(-abs(sample.w - current.w) / max(current.w * 0.01f, 0.5f));
+            const float4 sample = gCurrent[neighbor];
+            const float sampleAo = sample.a;
+            const float depth = exp(-abs(sampleDist - currentDist) / max(currentDist * 0.01f, 0.5f));
             if ((abs(x) <= shadowRadius) && (abs(y) <= shadowRadius)) {
                 const float spatial = float(shadowRadius + 1 - abs(x)) * float(shadowRadius + 1 - abs(y));
                 accumulate(shadowSums, combined ? (sample.rgb * sampleAo) : sample.rgb, spatial * depth);
@@ -119,7 +120,7 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
     const float4 farPoint = mul(gParams.invViewProj, float4(ndc, 1.0f, 1.0f));
     const float3 rayStart = nearPoint.xyz / nearPoint.w;
     const float3 rayDir = normalize(farPoint.xyz / farPoint.w - rayStart);
-    const float3 worldPos = rayStart + rayDir * current.w;
+    const float3 worldPos = rayStart + rayDir * currentDist;
 
     float3 shadowResult = shadowStats.mean;
     float aoResult = aoStats.mean.x;
@@ -130,7 +131,11 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
             const float2 prevLocal = float2(prevNdc.x * 0.5f + 0.5f, 0.5f - prevNdc.y * 0.5f);
             const float2 prevPixel = (gParams.viewport.xy + prevLocal * gParams.viewport.zw) * gParams.traceScale;
             if (all(prevPixel >= 0.0f) && all(prevPixel < float2(gParams.resolution))) {
-                const float4 history = gHistoryIn[int2(prevPixel)];
+                float4 history = gHistoryIn[int2(prevPixel)];
+                if (history.a < WCW_RT_HISTORY_MISS_BELOW) {
+                    history = float4(1.0f, 1.0f, 1.0f, 1.0f);
+                }
+
                 const float shadowAlpha = combined ? gParams.temporalAlpha : gParams.shadowTemporalAlpha;
                 shadowResult = lerp(clamp(history.rgb, shadowStats.low, shadowStats.high), shadowStats.mean, shadowAlpha);
                 if (!combined) {
@@ -140,9 +145,6 @@ void CSMain(uint2 dispatchPixel : SV_DispatchThreadID) {
         }
     }
 
+    // The composite encodes it for the 2x multiply blend (WcwRtCompositePS encodeTexel).
     gHistoryOut[pixel] = float4(shadowResult, aoResult);
-    // Stored at half scale: the composite's 2x multiply blend (dst * src * 2) applies factors up
-    // to 2, so glows can brighten.
-    const float3 encoded = min(shadowResult * aoResult, 2.0f) * 0.5f;
-    gOutput[pixel] = float4(encoded, 1.0f);
 }
