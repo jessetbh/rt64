@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 project(texture_packer)
 set(CMAKE_CXX_STANDARD 17)
 
-add_executable(texture_packer "texture_packer.cpp" "../../contrib/miniz/miniz.c")
+add_executable(texture_packer "texture_packer.cpp" "../../common/rt64_wcw_texdump.cpp" "../../contrib/miniz/miniz.c")
 
 target_include_directories(texture_packer PRIVATE "../../contrib")
 target_link_libraries(texture_packer PRIVATE libzstd_static)
