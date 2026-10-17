@@ -9,7 +9,11 @@
 
 #include "xxHash/xxh3.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <iterator>
 
 namespace RT64 {
     // GameFrame
@@ -260,6 +264,8 @@ namespace RT64 {
         matched = true;
         wcwCameraCut.reset();
         wcwMatrixSplit.reset();
+        std::fill(std::begin(wcwXfBins), std::end(wcwXfBins), 0u);
+        wcwXfMax = 0.0f;
 
         thread_local std::unordered_map<uint32_t, ModifiedBuffers> workloadsModified;
         workloadsModified.clear();
@@ -402,6 +408,22 @@ namespace RT64 {
         // elsewhere orthographic scenes are left unmatched.
         if (wcwInterpActive.load(std::memory_order_relaxed)) {
             matchScenes(orthographicScenes, prevFrame.orthographicScenes);
+        }
+
+        static const bool wcwPairLog = getenv("WCW_PAIR_LOG") != nullptr;
+        if (wcwPairLog && wcwInterpActive.load(std::memory_order_relaxed)) {
+            uint32_t unmapped = 0, total = 0;
+            for (uint32_t w : workloads) {
+                for (const GameFrameMap::TransformMap &t : frameMap.workloads[w].transforms) {
+                    total++;
+                    unmapped += t.mapped ? 0 : 1;
+                }
+            }
+
+            fprintf(stderr, "[wcw xf] t=%.3f xf %u unmapped %u bins %u %u %u %u %u %u max %.2f
+",
+                std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(), total, unmapped,
+                wcwXfBins[0], wcwXfBins[1], wcwXfBins[2], wcwXfBins[3], wcwXfBins[4], wcwXfBins[5], wcwXfMax);
         }
 
         if (!workloadsModified.empty()) {
@@ -840,6 +862,14 @@ namespace RT64 {
                 }
 
                 curTransformMap.wcwCombinedLerp = finite && (den > 0.0) && (std::sqrt(num / den) < 0.3);
+                if (finite && (den > 0.0)) {
+                    const float change = float(std::sqrt(num / den));
+                    const float edges[5] = { 0.05f, 0.15f, 0.3f, 0.6f, 1.2f };
+                    uint32_t bin = 0;
+                    while ((bin < 5) && (change >= edges[bin])) bin++;
+                    wcwXfBins[bin]++;
+                    wcwXfMax = std::max(wcwXfMax, change);
+                }
             }
         }
         curTransformMap.rigidBody.updateDecomposition(curTransform, curGroup.decompose);
