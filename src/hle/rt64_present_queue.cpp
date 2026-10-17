@@ -549,6 +549,29 @@ namespace RT64 {
                 }
             }
 
+            // [wcw] Below the display rate without interpolation, hold a frame that arrives early to the game's rate
+            // (WcwLogic::GameRatePacer): World Tour and VPW64 at 30 fps swapped a VI early or late at random, and
+            // their presents came 50/17 ms apart (aki-roadmap#87). WCW_PACE_GAME=0 turns it off.
+            static const bool wcwGamePaceOff = (getenv("WCW_PACE_GAME") != nullptr) && (strcmp(getenv("WCW_PACE_GAME"), "0") == 0);
+            static WcwLogic::GameRatePacer wcwGamePacer;
+            const uint32_t wcwGamePaceRate = (presentFrame && (framesToPresent == 1) && !wcwGamePaceOff) ?
+                wcwGamePacer.pacingRate(ext.appWindow->getRefreshRate(), targetRate, viOriginalRate, crtFilter->beamActive()) : 0;
+            if (wcwGamePaceRate > 0) {
+                WcwPerf::CpuScope wcwPacingScope(WcwPerf::CpuPhase::PacingWait);
+                const auto target = wcwGamePacer.target(std::chrono::steady_clock::now(), wcwGamePaceRate);
+                const auto coarse = target - std::chrono::milliseconds(1);
+                if (std::chrono::steady_clock::now() < coarse) {
+                    std::this_thread::sleep_until(coarse);
+                }
+
+                while (std::chrono::steady_clock::now() < target) {
+                    std::this_thread::yield();
+                }
+            }
+            else if (presentFrame) {
+                wcwGamePacer.reset();
+            }
+
             double wcwAcqMs = 0.0;
             if (presentFrame) {
                 auto wcwAcq0 = std::chrono::steady_clock::now();

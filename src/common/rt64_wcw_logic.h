@@ -228,6 +228,52 @@ namespace RT64::WcwLogic {
     // period first rounded every 120 fps frame up to 3 refreshes at 280 Hz (presents fell to ~92/s).
     bool sleepFramePeriodBeforePresent(bool havePreviousPresent, uint32_t targetRate, uint32_t viOriginalRate, bool beamActive);
 
+    // Present pacing below the display rate (aki-roadmap#87)
+
+    // Without frame interpolation, a game below the display rate (30 fps on 60 Hz) is presented when its frames
+    // arrive. World Tour and VPW64 swap at random one VI early or late: their SDK scheduler starts a frame's gfx task
+    // either at once or at the next retrace, depending on whether an audio task happens to finish after the task is
+    // posted (on hardware the gfx task was always posted late enough to wait for the next retrace). Their presents
+    // came 50/17 ms apart instead of 33/33 (~100 hitches/min). Whether to hold presents to the game's rate: the game
+    // runs at most 2/3 of the display rate (a frame spans 1.5 refreshes or more), with no interpolation (targetRate
+    // at or below the game rate) and without the beam simulator (it paces its own presents). 0 rates are unknown.
+    bool holdPresentsToGameRate(uint32_t displayRate, uint32_t targetRate, uint32_t viOriginalRate, bool beamActive);
+
+    // Holds a frame that arrives early until one game frame period after the previous present's target, so the
+    // presents settle at the later phase (on hardware's: the frame shows 1 VI later than at the early phase) and come
+    // one game frame apart. A late frame moves the grid to its arrival. A hold of a whole game frame period or more
+    // starts a new grid instead (the game sped up and the rate is stale), so latency never builds up.
+    // The grid advances GameRateSlackUs less than a game frame period: a step of exactly one period never gives the
+    // phase back (frames arriving a microsecond faster than the step held each one longer), while this lets it drift
+    // back to the arrivals in a few seconds when no late frame comes. Late frames (every ~10 frames in World Tour)
+    // re-anchor it long before the drift adds up to a refresh.
+    constexpr int64_t GameRateSlackUs = 100;
+
+    // The VI rate estimate (a 2-of-3 vote over the last frames' VI counts) reads 0 for the two frames after a late
+    // frame and its catch-up frame (VI counts 3, 1), and 20 after 3, 1, 3: exactly the frames to hold. Pacing
+    // turned off there and lost its grid, so ~40% of the 50/17 pairs stayed. The paced rate is kept through up to
+    // this many presents of a missing, too fast or slower reading; one that lasts longer is a real rate change.
+    constexpr uint32_t GameRateDropoutPresents = 4;
+
+    class GameRatePacer {
+    public:
+        // The rate to pace this present at, or 0 not to pace it (see holdPresentsToGameRate and
+        // GameRateDropoutPresents). A faster rate that can be paced is taken at once: a shorter period never adds a gap.
+        uint32_t pacingRate(uint32_t displayRate, uint32_t targetRate, uint32_t viOriginalRate, bool beamActive);
+
+        // When to present a frame that is ready at now, at a rate from pacingRate.
+        std::chrono::steady_clock::time_point target(std::chrono::steady_clock::time_point now, uint32_t rate);
+
+        // Forget the grid and the rate (pacing turned off, or a present that wasn't paced).
+        void reset();
+
+    private:
+        bool haveGrid = false;
+        std::chrono::steady_clock::time_point grid;
+        uint32_t pacedRate = 0;
+        uint32_t stalePresents = 0;
+    };
+
     // Frame interpolation
 
     // Displayed frames per game frame: display rate / game rate, rounded, at least 2 (2 for a 30 fps game at 60,

@@ -651,6 +651,215 @@ TEST_CASE("pacing: presents are spread evenly over the game frame") {
     CHECK(!sleepFramePeriodBeforePresent(true, 120, 30, true));
 }
 
+// Present pacing below the display rate (aki-roadmap#87)
+
+// Arrival times of a 30 fps game's frames on a 60 Hz VI: frame f is due at VI 2f, with jitterUs of noise. Every
+// lateEvery-th frame is one VI late and the next is back on time (World Tour / VPW64: 50 ms then 17 ms).
+static std::vector<std::chrono::steady_clock::time_point> gameArrivals(int frames, int lateEvery, int jitterUs) {
+    using namespace std::chrono;
+    const auto vi = microseconds(1000000 / 60);
+    std::vector<steady_clock::time_point> arrivals;
+    uint32_t seed = 87;
+    for (int f = 0; f < frames; f++) {
+        seed = seed * 1664525u + 1013904223u;
+        const int jitter = int(seed >> 8) % (2 * jitterUs + 1) - jitterUs;
+        const bool late = (lateEvery > 0) && (f > 0) && ((f % lateEvery) == 0);
+        arrivals.push_back(steady_clock::time_point{} + seconds(1) + vi * (2 * f + (late ? 1 : 0)) + microseconds(jitter));
+    }
+
+    return arrivals;
+}
+
+static std::vector<std::chrono::steady_clock::time_point> pacedPresents(const std::vector<std::chrono::steady_clock::time_point> &arrivals, uint32_t viRate) {
+    GameRatePacer pacer;
+    std::vector<std::chrono::steady_clock::time_point> presents;
+    for (const auto &arrival : arrivals) {
+        presents.push_back(pacer.target(arrival, viRate));
+    }
+
+    return presents;
+}
+
+static double msBetween(std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) {
+    return std::chrono::duration<double, std::milli>(b - a).count();
+}
+
+TEST_CASE("game rate pacing: frames swapped a VI early or late present 33 ms apart, not 50/17 (#87, World Tour / VPW64 at 30 fps)") {
+    const auto arrivals = gameArrivals(600, 9, 2000);
+    const auto presents = pacedPresents(arrivals, 30);
+
+    // Unpaced, the late frames and the frames after them come 50 and 17 ms apart.
+    int unpacedHitches = 0;
+    for (size_t i = 1; i < arrivals.size(); i++) {
+        unpacedHitches += (msBetween(arrivals[i - 1], arrivals[i]) > 45.0) ? 1 : 0;
+    }
+
+    CHECK(unpacedHitches > 50);
+
+    // Paced, after the first late frame the presents settle at its phase: one game frame apart, within the jitter.
+    double minMs = 1e9, maxMs = 0.0;
+    for (size_t i = 10; i < presents.size(); i++) {
+        CHECK(presents[i] >= arrivals[i]);
+        const double ms = msBetween(presents[i - 1], presents[i]);
+        minMs = std::min(minMs, ms);
+        maxMs = std::max(maxMs, ms);
+    }
+
+    CHECK(minMs > 33.0);
+    CHECK(maxMs < 38.0);
+
+    // A frame is held at most about one VI (plus jitter): the hardware's latency, never a whole game frame.
+    for (size_t i = 0; i < presents.size(); i++) {
+        CHECK(msBetween(arrivals[i], presents[i]) < 21.0);
+    }
+}
+
+// The present loop with rt64's VI rate estimate: a 2-of-3 vote over the last 3 frames' VI counts (60 / count),
+// 0 without a majority. Frame f arrives at VI viIndex[f] (+ jitterUs of noise).
+static std::vector<std::chrono::steady_clock::time_point> pacedPresentsWithEstimate(const std::vector<int> &viIndex, int jitterUs) {
+    using namespace std::chrono;
+    const auto vi = microseconds(1000000 / 60);
+    GameRatePacer pacer;
+    std::vector<int> counts;
+    std::vector<steady_clock::time_point> presents;
+    uint32_t seed = 87;
+    for (size_t f = 0; f < viIndex.size(); f++) {
+        seed = seed * 1664525u + 1013904223u;
+        const int jitter = (jitterUs > 0) ? (int(seed >> 8) % (2 * jitterUs + 1) - jitterUs) : 0;
+        const steady_clock::time_point arrival = steady_clock::time_point{} + seconds(1) + vi * viIndex[f] + microseconds(jitter);
+        if (f > 0) {
+            counts.push_back(viIndex[f] - viIndex[f - 1]);
+        }
+
+        uint32_t estimate = 0;
+        if (counts.size() >= 3) {
+            const int a = counts[counts.size() - 3], b = counts[counts.size() - 2], c = counts[counts.size() - 1];
+            const int vote = ((a == b) || (a == c)) ? a : ((b == c) ? b : 0);
+            estimate = (vote > 0) ? uint32_t(60 / vote) : 0;
+        }
+
+        const uint32_t rate = pacer.pacingRate(60, 0, estimate, false);
+        presents.push_back((rate > 0) ? pacer.target(arrival, rate) : arrival);
+    }
+
+    return presents;
+}
+
+// VI indices of a 30 fps game where every lateEvery-th frame is one VI late (3 VIs, then 1).
+static std::vector<int> viIndicesWithLateFrames(int frames, int lateEvery) {
+    std::vector<int> viIndex;
+    for (int f = 0; f < frames; f++) {
+        const bool late = (lateEvery > 0) && (f > 0) && ((f % lateEvery) == 0);
+        viIndex.push_back(2 * f + (late ? 1 : 0));
+    }
+
+    return viIndex;
+}
+
+TEST_CASE("game rate pacing: the rate estimate's dropout after a late frame doesn't stop pacing (#87, ~40% of the pairs stayed)") {
+    // After VI counts 3, 1 the vote reads 0 for two frames, the ones that must be held.
+    const auto presents = pacedPresentsWithEstimate(viIndicesWithLateFrames(600, 7), 2000);
+    for (size_t i = 20; i < presents.size(); i++) {
+        const double ms = msBetween(presents[i - 1], presents[i]);
+        CHECK(ms > 33.0);
+        CHECK(ms < 38.0);
+    }
+}
+
+TEST_CASE("game rate pacing: a stray 20 fps reading (VI counts 3, 1, 3) doesn't hold frames to 50 ms") {
+    // Late frames 2 apart give 3, 1, 3: the vote reads 20 for a frame.
+    std::vector<int> viIndex = viIndicesWithLateFrames(40, 0);
+    viIndex[20] += 1;
+    viIndex[22] += 1;
+    for (size_t f = 23; f < viIndex.size(); f++) {
+        viIndex[f] += 1;
+    }
+
+    const auto presents = pacedPresentsWithEstimate(viIndex, 0);
+    for (size_t i = 21; i < presents.size(); i++) {
+        CHECK(msBetween(presents[i - 1], presents[i]) < 38.0);
+    }
+}
+
+TEST_CASE("game rate pacing: a game that really goes to 60 fps stops being held after the dropout window") {
+    std::vector<int> viIndex = viIndicesWithLateFrames(30, 0);
+    for (int f = 1; f <= 40; f++) {
+        viIndex.push_back(viIndex.back() + 1);
+    }
+
+    const auto presents = pacedPresentsWithEstimate(viIndex, 0);
+    using namespace std::chrono;
+    const auto vi = microseconds(1000000 / 60);
+    for (size_t f = 30 + 3 + GameRateDropoutPresents + 1; f < viIndex.size(); f++) {
+        const steady_clock::time_point arrival = steady_clock::time_point{} + seconds(1) + vi * viIndex[f];
+        CHECK(msBetween(arrival, presents[f]) < 0.01);
+    }
+}
+
+TEST_CASE("game rate pacing: a steady game is presented as it arrives") {
+    const auto arrivals = gameArrivals(300, 0, 0);
+    const auto presents = pacedPresents(arrivals, 30);
+    for (size_t i = 0; i < presents.size(); i++) {
+        CHECK(msBetween(arrivals[i], presents[i]) < 0.01);
+    }
+}
+
+TEST_CASE("game rate pacing: when late frames stop, presents drift back to the arrivals without a long gap") {
+    using namespace std::chrono;
+    // 100 frames with a late one every 9th, then 600 steady frames.
+    auto arrivals = gameArrivals(100, 9, 0);
+    const auto steady = gameArrivals(700, 0, 0);
+    arrivals.insert(arrivals.end(), steady.begin() + 100, steady.end());
+    const auto presents = pacedPresents(arrivals, 30);
+    // From the first late frame on (it comes before the grid has its phase, a 50 ms gap no pacing can avoid).
+    for (size_t i = 10; i < presents.size(); i++) {
+        CHECK(msBetween(presents[i - 1], presents[i]) < 36.0);
+    }
+
+    CHECK(msBetween(arrivals.back(), presents.back()) < 0.01);
+}
+
+TEST_CASE("game rate pacing: a real slowdown is not held back further") {
+    using namespace std::chrono;
+    // Frames 2 VIs apart, then one that takes 4 VIs, then 2 VIs apart again: each is presented when it arrives.
+    const auto vi = microseconds(1000000 / 60);
+    const steady_clock::time_point start = steady_clock::time_point{} + seconds(1);
+    const std::vector<steady_clock::time_point> arrivals = { start, start + vi * 2, start + vi * 6, start + vi * 8, start + vi * 10 };
+    const auto presents = pacedPresents(arrivals, 30);
+    for (size_t i = 0; i < presents.size(); i++) {
+        CHECK(msBetween(arrivals[i], presents[i]) < 0.5);
+    }
+}
+
+TEST_CASE("game rate pacing: a game faster than its rate estimate never builds up latency") {
+    using namespace std::chrono;
+    // The rate still reads 30 while the game already runs at 60 (a menu): holds stay under a game frame period and
+    // reset instead of growing.
+    std::vector<steady_clock::time_point> arrivals;
+    for (int f = 0; f < 120; f++) {
+        arrivals.push_back(steady_clock::time_point{} + seconds(1) + microseconds(1000000 / 60) * f);
+    }
+
+    const auto presents = pacedPresents(arrivals, 30);
+    for (size_t i = 0; i < presents.size(); i++) {
+        CHECK(msBetween(arrivals[i], presents[i]) < 33.4);
+    }
+
+    CHECK(msBetween(arrivals.back(), presents.back()) < 33.4);
+}
+
+TEST_CASE("game rate pacing: only below the display rate, without interpolation or the beam simulator") {
+    CHECK(holdPresentsToGameRate(60, 30, 30, false));
+    CHECK(holdPresentsToGameRate(60, 0, 30, false));
+    CHECK(holdPresentsToGameRate(144, 30, 30, false));
+    CHECK(holdPresentsToGameRate(60, 20, 20, false));
+    CHECK(!holdPresentsToGameRate(60, 60, 30, false));
+    CHECK(!holdPresentsToGameRate(60, 30, 30, true));
+    CHECK(!holdPresentsToGameRate(60, 60, 60, false));
+    CHECK(!holdPresentsToGameRate(60, 30, 0, false));
+    CHECK(!holdPresentsToGameRate(0, 30, 30, false));
+}
+
 // Frame interpolation
 
 TEST_CASE("interpolation: frames per game frame") {
