@@ -455,6 +455,13 @@ namespace RT64::WcwLogic {
     // later layer. Unknown keeps the expected-length rule.
     bool publishRunAtLayer(uint32_t runLength, uint32_t expectedRunLength, NextLayer next);
 
+    // Whether a run's generated frame is dropped (the real frame shows for the whole game frame, as at 30 fps): a
+    // layer skipped its generated frame, or a layer found a cut (CameraCutCounter, MatrixSplitCounter). A cut found
+    // in a later layer comes after the earlier layers drew their share of the generated frame between the two shots:
+    // drawing only the remaining layers real left Revenge's cut into the ring (found in the 5th of 5 layers) with a
+    // generated frame of the ring without the wrestlers (aki-roadmap#6).
+    bool dropRunGeneratedFrame(bool layerSkipped, bool cutInRun);
+
     // Camera cuts
 
     // Relative change between two 4x4 matrices (16 floats each): |cur - prev| / |cur| (Frobenius norms). -1 when a

@@ -1340,16 +1340,6 @@ namespace RT64 {
 
                 // [wcw hfr] WCW_PAIR_LOG=1: which earlier layer this one interpolates from.
                 {
-                    // WCW_DIAG_BUFFER=1: buffer stderr. Unbuffered, WCW_PAIR_LOG + WCW_RUN_LOG slowed No Mercy's matches to
-                    // ~4 presents/s (aki-roadmap#6), so the flicker they were meant to explain went away.
-                    static const bool wcwDiagBuffered = []() {
-                        if (getenv("WCW_DIAG_BUFFER") != nullptr) {
-                            setvbuf(stderr, nullptr, _IOFBF, 1 << 20);
-                        }
-
-                        return true;
-                    }();
-                    (void)(wcwDiagBuffered);
 
                     static const bool wcwPairLog = getenv("WCW_PAIR_LOG") != nullptr;
                     if (wcwPairLog && RT64::wcwInterpActive.load(std::memory_order_relaxed)) {
@@ -1820,7 +1810,10 @@ namespace RT64 {
 
                         // A run where any layer skipped a generated frame publishes none of them: with more than one
                         // generated frame per game frame, layers could otherwise disagree on which frames they drew.
-                        const bool wcwDropNow = wcwRunGenIncomplete;
+                        // Nor does a run where a layer found a cut: the layers before it drew their share of the
+                        // generated frame between the two shots (WcwLogic::dropRunGeneratedFrame).
+                        static const bool wcwNoCutDrop = getenv("WCW_HFR_NOCUTDROP") != nullptr;
+                        const bool wcwDropNow = WcwLogic::dropRunGeneratedFrame(wcwRunGenIncomplete, wcwRunCameraCut && !wcwNoCutDrop);
                         if (wcwDropNow) {
                             wcwFlushNow = false;
                         }

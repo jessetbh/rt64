@@ -321,6 +321,16 @@ TEST_CASE("camera cuts: a few odd pairs or too few pairs are not a cut") {
     CHECK(c.pairs == 0);
 }
 
+TEST_CASE("cuts: a cut found in a run's last layer drops the run's generated frame (Revenge cut without wrestlers, #6)") {
+    // Revenge's cut into the ring showed up only in the 5th of 5 layers; layers 1-4 had already drawn the generated
+    // frame between the two shots, and it had no wrestlers. Drawing the remaining layer real wasn't enough: the whole
+    // run shows its real frame.
+    CHECK(dropRunGeneratedFrame(false, true));
+    CHECK(dropRunGeneratedFrame(true, false));
+    CHECK(dropRunGeneratedFrame(true, true));
+    CHECK(!dropRunGeneratedFrame(false, false));
+}
+
 TEST_CASE("short runs: publishShortRun") {
     CHECK(!publishShortRun(1, 3, 3));
     CHECK(!publishShortRun(3, 5, 5));

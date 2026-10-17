@@ -520,6 +520,10 @@ namespace RT64::WcwLogic {
         return (next != NextLayer::SameRun) && (runLength >= expectedRunLength);
     }
 
+    bool dropRunGeneratedFrame(bool layerSkipped, bool cutInRun) {
+        return layerSkipped || cutInRun;
+    }
+
     float matrixChange(const float prev[16], const float cur[16]) {
         double num = 0.0, den = 0.0;
         for (int k = 0; k < 16; k++) {
