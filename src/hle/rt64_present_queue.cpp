@@ -8,6 +8,7 @@
 
 #include "common/rt64_thread.h"
 #include "common/rt64_wcw_logic.h"
+#include "common/rt64_wcw_perf.h"
 #include "render/rt64_hdr_output.h"
 #include "render/rt64_wcw_device_lost.h"
 #include "rhi/rt64_render_hooks.h"
@@ -19,6 +20,18 @@
 #endif
 
 namespace RT64 {
+    // [wcw perf] WCW_PERF_LOG: a Present call, counted, and the time since the previous one.
+    static void wcwPerfPresentCall(WcwPerf::Clock::time_point start, WcwPerf::Clock::time_point end) {
+        static WcwPerf::Clock::time_point lastPresent;
+        WcwPerf::cpuPhase(WcwPerf::CpuPhase::PresentCall, start, end);
+        if (lastPresent != WcwPerf::Clock::time_point()) {
+            WcwPerf::cpuPhase(WcwPerf::CpuPhase::PresentInterval, lastPresent, end);
+        }
+
+        lastPresent = end;
+        WcwPerf::notePresent();
+    }
+
     static uint32_t beamWaitForVBlank(RenderWindow window, uint32_t refreshRate);
 
     // PresentQueue
@@ -109,6 +122,7 @@ namespace RT64 {
         }
 
         crtFilter = std::make_unique<CrtFilter>(nullptr, ext.device, crtShaderFormat);
+        wcwGpuTimer.setup(ext.device);
 
         presentThreadRunning = true;
         presentThread = new std::thread(&PresentQueue::threadLoop, this);
@@ -522,6 +536,7 @@ namespace RT64 {
                     wcwHfrFrameStart = std::chrono::steady_clock::now();
                 }
                 else {
+                    WcwPerf::CpuScope wcwPacingScope(WcwPerf::CpuPhase::PacingWait);
                     const auto target = WcwLogic::evenPresentTarget(wcwHfrFrameStart, int(i), int(framesToPresent), viOriginalRate);
                     threadBeamFillUntil(target, swapChainValid);
                     const auto coarse = target - std::chrono::milliseconds(1);
@@ -535,11 +550,38 @@ namespace RT64 {
                 }
             }
 
+            // [wcw] Below the display rate without interpolation, hold a frame that arrives early to the game's rate
+            // (WcwLogic::GameRatePacer): World Tour and VPW64 at 30 fps swapped a VI early or late at random, and
+            // their presents came 50/17 ms apart (aki-roadmap#87). WCW_PACE_GAME=0 turns it off.
+            static const bool wcwGamePaceOff = (getenv("WCW_PACE_GAME") != nullptr) && (strcmp(getenv("WCW_PACE_GAME"), "0") == 0);
+            static WcwLogic::GameRatePacer wcwGamePacer;
+            const uint32_t wcwGamePaceRate = (presentFrame && (framesToPresent == 1) && !wcwGamePaceOff) ?
+                wcwGamePacer.pacingRate(ext.appWindow->getRefreshRate(), targetRate, viOriginalRate, crtFilter->beamActive()) : 0;
+            if (wcwGamePaceRate > 0) {
+                WcwPerf::CpuScope wcwPacingScope(WcwPerf::CpuPhase::PacingWait);
+                const auto target = wcwGamePacer.target(std::chrono::steady_clock::now(), wcwGamePaceRate);
+                const auto coarse = target - std::chrono::milliseconds(1);
+                if (std::chrono::steady_clock::now() < coarse) {
+                    std::this_thread::sleep_until(coarse);
+                }
+
+                while (std::chrono::steady_clock::now() < target) {
+                    std::this_thread::yield();
+                }
+            }
+            else if (presentFrame) {
+                wcwGamePacer.reset();
+            }
+
             double wcwAcqMs = 0.0;
             if (presentFrame) {
                 auto wcwAcq0 = std::chrono::steady_clock::now();
                 swapChainValid = ext.swapChain->acquireTexture(acquiredSemaphore.get(), &swapChainIndex);
-                wcwAcqMs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - wcwAcq0).count() / 1000.0;
+                const auto wcwAcq1 = std::chrono::steady_clock::now();
+                wcwAcqMs = std::chrono::duration_cast<std::chrono::microseconds>(wcwAcq1 - wcwAcq0).count() / 1000.0;
+                if (WcwPerf::enabled()) {
+                    WcwPerf::cpuPhase(WcwPerf::CpuPhase::Acquire, wcwAcq0, wcwAcq1);
+                }
             }
 
             if (presentFrame && swapChainValid) {
@@ -547,11 +589,15 @@ namespace RT64 {
                 RenderTexture *swapChainTexture = ext.swapChain->getTexture(swapChainIndex);
                 RenderFramebuffer *swapChainFramebuffer = swapChainFramebuffers[swapChainIndex].get();
                 RenderCommandList *commandList = ext.presentGraphicsWorker->commandList.get();
+                const bool wcwPerf = WcwPerf::enabled();
+                const WcwPerf::Clock::time_point wcwRecordStart = wcwPerf ? WcwPerf::Clock::now() : WcwPerf::Clock::time_point();
                 commandList->begin();
+                wcwGpuTimer.begin(commandList);
                 commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::COLOR_WRITE));
                 
                 VIRenderer::RenderParams renderParams;
                 if (colorTarget != nullptr) {
+                    WcwGpuScope wcwResolveScope(commandList, WcwPerf::GpuPass::Resolve);
                     renderParams.device = ext.device;
                     renderParams.commandList = commandList;
                     renderParams.swapChain = ext.swapChain;
@@ -612,11 +658,14 @@ namespace RT64 {
                     crtParams.swapChainTexture = swapChainTexture;
                     crtParams.swapChainFramebuffer = swapChainFramebuffer;
                     crtParams.vi = renderParams;
+                    WcwGpuScope wcwBlitScope(commandList, WcwPerf::GpuPass::Crt);
                     if (!crtFilter->render(*viRenderer, crtParams)) {
+                        wcwBlitScope.switchTo(WcwPerf::GpuPass::Vi);
                         viRenderer->render(renderParams);
                     }
                 }
 
+                WcwGpuScope wcwUiScope(commandList, WcwPerf::GpuPass::Ui);
                 RenderHookDraw *drawHook = GetRenderHookDraw();
                 if (drawHook != nullptr) {
                     drawHook(commandList, swapChainFramebuffer);
@@ -627,6 +676,8 @@ namespace RT64 {
                     if (inspector != nullptr) {
                         inspector->draw(commandList);
                     }
+
+                    wcwUiScope.switchTo(WcwPerf::GpuPass::Diag);
 
                     // [wcw] DIAGNOSTIC (env WCW_PRESENT_LUM=1): copy the finished swapchain image
                     // into a readback buffer so the ACTUAL presented pixels can be verified CPU-side
@@ -681,12 +732,28 @@ namespace RT64 {
                     }
 
                     commandList->barriers(RenderBarrierStage::NONE, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::PRESENT));
+                    wcwGpuTimer.finish();
                     commandList->end();
                     const RenderCommandList *commandList = ext.presentGraphicsWorker->commandList.get();
                     RenderCommandSemaphore *waitSemaphore = acquiredSemaphore.get();
                     RenderCommandSemaphore *signalSemaphore = drawSemaphores[swapChainIndex].get();
+                    const WcwPerf::Clock::time_point wcwSubmit = wcwPerf ? WcwPerf::Clock::now() : WcwPerf::Clock::time_point();
                     ext.presentGraphicsWorker->commandQueue->executeCommandLists(&commandList, 1, &waitSemaphore, 1, &signalSemaphore, 1, ext.presentGraphicsWorker->commandFence.get());
                     ext.presentGraphicsWorker->wait();
+                    if (wcwPerf) {
+                        WcwPerf::cpuPhase(WcwPerf::CpuPhase::PresentRecord, wcwRecordStart, wcwSubmit);
+                        WcwPerf::cpuPhase(WcwPerf::CpuPhase::PresentGpuWait, wcwSubmit, WcwPerf::Clock::now());
+                        WcwPerf::GpuRow wcwRow;
+                        if (wcwGpuTimer.collect(wcwRow)) {
+                            wcwRow.tMs = WcwPerf::clockMs(wcwSubmit);
+                            wcwRow.present = true;
+                            // The present this frame is about to become.
+                            wcwRow.presentIndex = WcwPerf::presentCount() + 1;
+                            wcwRow.presentId = present.presentId;
+                            wcwRow.generated = (i > 0);
+                            WcwPerf::gpuRow(wcwRow);
+                        }
+                    }
 
                     if (wcwDoRead) {
                         const uint8_t *p = (const uint8_t *)(wcwReadback->map(0, nullptr));
@@ -760,8 +827,30 @@ namespace RT64 {
                             fprintf(lumf, "%d,%.1f,0x%X,0x%X,%.2f\n", wcwPresentN, msNow, present.screenVI.fbAddress(), wcw_addr, double(sum) / cnt);
                             fflush(lumf);
                         }
-                        const bool wcwBmpWanted = (wcwBmpEvery > 0) ? ((wcwPresentN >= wcwBmpStart) && ((wcwPresentN - wcwBmpStart) / wcwBmpEvery < wcwBmpCount))
+                        bool wcwBmpWanted = (wcwBmpEvery > 0) ? ((wcwPresentN >= wcwBmpStart) && ((wcwPresentN - wcwBmpStart) / wcwBmpEvery < wcwBmpCount))
                             : ((wcwPresentN >= wcwBmpStart) && (wcwPresentN < wcwBmpStart + wcwBmpCount));
+
+                        // [wcw hfr] WCW_LUM_JUMP=<percent>: also save a present whose luminance differs from the one before
+                        // it by more than that, and the present after it (flicker hunting; at most 80 files).
+                        {
+                            static const double wcwLumJump = getenv("WCW_LUM_JUMP") ? atof(getenv("WCW_LUM_JUMP")) : 0.0;
+                            static const int wcwLumJumpFrom = getenv("WCW_LUM_JUMP_FROM") ? atoi(getenv("WCW_LUM_JUMP_FROM")) : 0;
+                            static double wcwPrevLum = -1.0;
+                            static int wcwJumpNext = -1, wcwJumpSaved = 0;
+                            const double lumNow = double(sum) / cnt;
+                            if ((wcwLumJump > 0.0) && (wcwJumpSaved < 80) && (wcwPresentN >= wcwLumJumpFrom)) {
+                                const bool jump = (wcwPrevLum > 3.0) && (std::fabs(lumNow - wcwPrevLum) > wcwPrevLum * wcwLumJump / 100.0);
+                                if (jump || (wcwPresentN == wcwJumpNext)) {
+                                    wcwBmpWanted = true;
+                                    wcwJumpSaved++;
+                                    if (jump) {
+                                        wcwJumpNext = wcwPresentN + 1;
+                                    }
+                                }
+                            }
+
+                            wcwPrevLum = lumNow;
+                        }
                         if (wcwBmpWanted) {
                             char name[64]; snprintf(name, sizeof(name), "wcw_present_%04d.bmp", wcwPresentN);
                             FILE *bf = fopen(name, "wb");
@@ -807,10 +896,12 @@ namespace RT64 {
                 // Wait until the approximate time the next present should be at the current intended rate.
                 // [wcw crt] Not with the beam simulator (WcwLogic::sleepFramePeriodBeforePresent).
                 if (WcwLogic::sleepFramePeriodBeforePresent(presentTimestamp != Timestamp(), targetRate, viOriginalRate, crtFilter->beamActive())) {
+                    WcwPerf::CpuScope wcwSleepScope(WcwPerf::CpuPhase::PrePresentSleep);
                     Timer::preciseSleepUntil(presentTimestamp + std::chrono::nanoseconds(1'000'000'000 / targetRate));
                 }
 
                 if (presentWaitEnabled) {
+                    WcwPerf::CpuScope wcwSwapWaitScope(WcwPerf::CpuPhase::SwapChainWait);
                     ext.swapChain->wait();
                 }
 
@@ -821,7 +912,12 @@ namespace RT64 {
 
                 RenderCommandSemaphore *waitSemaphore = drawSemaphores[swapChainIndex].get();
                 presentTimestamp = Timer::current();
+                const WcwPerf::Clock::time_point wcwPresentStart = WcwPerf::enabled() ? WcwPerf::Clock::now() : WcwPerf::Clock::time_point();
                 swapChainValid = ext.swapChain->present(swapChainIndex, &waitSemaphore, 1);
+                if (WcwPerf::enabled()) {
+                    wcwPerfPresentCall(wcwPresentStart, WcwPerf::Clock::now());
+                }
+
                 presentProfiler.logAndRestart();
             }
         }
@@ -1089,7 +1185,12 @@ namespace RT64 {
         skippedTotal += skipped;
         phase(4);
         presentTimestamp = Timer::current();
+        const WcwPerf::Clock::time_point wcwPresentStart = WcwPerf::enabled() ? WcwPerf::Clock::now() : WcwPerf::Clock::time_point();
         swapChainValid = ext.swapChain->present(swapChainIndex, &signalSemaphore, 1);
+        if (WcwPerf::enabled()) {
+            wcwPerfPresentCall(wcwPresentStart, WcwPerf::Clock::now());
+        }
+
         phase(5);
 
         // [wcw crt] DIAGNOSTIC (env WCW_CRT_LOG=1): beam sub-frame presents per second.

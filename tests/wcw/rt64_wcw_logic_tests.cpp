@@ -46,14 +46,16 @@ static std::vector<bool> replayRuns(const std::vector<uint32_t> &lengths) {
     std::vector<bool> shown;
     std::vector<uint32_t> history;
     uint32_t previous = 0;
+    uint32_t beforePrevious = 0;
     for (uint32_t length : lengths) {
         uint32_t expected = 1;
         for (size_t i = (history.size() > 8) ? history.size() - 8 : 0; i < history.size(); i++) {
             expected = std::max(expected, history[i]);
         }
 
-        shown.push_back((length >= expected) || publishShortRun(length, previous));
+        shown.push_back((length >= expected) || publishShortRun(length, previous, beforePrevious));
         history.push_back(length);
+        beforePrevious = previous;
         previous = length;
     }
 
@@ -61,13 +63,34 @@ static std::vector<bool> replayRuns(const std::vector<uint32_t> &lengths) {
 }
 
 TEST_CASE("short runs: a run cut short after longer runs drops its generated frame (Revenge attract flashes)") {
-    // Run lengths from Revenge's attract mode (WCW_RUN_LOG, 60 fps). Both cut-short runs flashed in the flicker
-    // log: a 1-layer run after 3-layer runs (generated 55.9 against real 48.6) and a 3-layer run after a 5-layer
-    // one (generated 6.4 against real 8.2).
+    // Run lengths from Revenge's attract mode (WCW_RUN_LOG, 60 fps). A 1-layer run after 3-layer runs flashed in
+    // the flicker log (generated 55.9 against real 48.6). Revenge's other cut-short runs: 2 after 3s, 3 or 4 after 5s.
     const std::vector<bool> a = replayRuns({ 3, 3, 3, 3, 3, 3, 3, 3, 1, 1, 1, 1 });
     CHECK(!a[8]);
+    CHECK(!replayRuns({ 3, 3, 3, 3, 3, 3, 3, 3, 2 })[8]);
+    CHECK(!replayRuns({ 5, 5, 5, 5, 5, 5, 5, 5, 3 })[8]);
+    CHECK(!replayRuns({ 5, 5, 5, 5, 5, 5, 5, 5, 4 })[8]);
+    // Cut short right after a spike: still shorter than the run before the spike.
+    CHECK(!replayRuns({ 3, 3, 3, 3, 3, 3, 3, 4, 1 })[8]);
+}
+
+TEST_CASE("short runs: the steady run after a one-frame spike keeps its generated frame (#85, VPW2 stutter)") {
+    // VPW2 matches (WCW_RUN_LOG, 60 fps) draw 3 layers per frame and a 4th every ~16th frame. The 3-layer run after
+    // each 4-layer one lost its generated frame: a missed refresh ~2 times a second.
+    std::vector<uint32_t> vpw2;
+    for (int i = 0; i < 4; i++) {
+        vpw2.insert(vpw2.end(), { 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4 });
+    }
+    for (bool s : replayRuns(vpw2)) {
+        CHECK(s);
+    }
+
+    // Revenge's attract mode has the same spikes (3, 5, 3 and 3, 4, 3). Its flash there (generated 6.4 against
+    // real 8.2) is the 5-layer run's own frame, published at its 3rd layer (#6 cause 2), not the 3-layer run after it.
     const std::vector<bool> b = replayRuns({ 3, 3, 3, 3, 3, 3, 3, 5, 3, 3, 3, 3 });
-    CHECK(!b[8]);
+    CHECK(b[8]);
+    CHECK(replayRuns({ 3, 3, 3, 3, 3, 3, 3, 4, 3 })[8]);
+    CHECK(replayRuns({ 1, 1, 1, 1, 1, 1, 1, 3, 1 })[8]);
 }
 
 TEST_CASE("short runs: a scene's steady layer count keeps its generated frames") {
@@ -82,13 +105,163 @@ TEST_CASE("short runs: a scene's steady layer count keeps its generated frames")
     }
 }
 
+// Multi-layer runs longer than expected
+
+// Replays run lengths layer by layer through publishRunAtLayer: the expected length is the longest of the last 8
+// runs, and lookahead says whether the render thread could see the next workload (the game had queued it) when a
+// layer decided. Returns, per run, the layer that published its generated frame (0 = none: it waited for the next
+// run's start, where publishShortRun decides).
+static std::vector<uint32_t> replayLayers(const std::vector<uint32_t> &lengths, bool lookahead) {
+    std::vector<uint32_t> publishedAt;
+    std::vector<uint32_t> history;
+    for (uint32_t length : lengths) {
+        uint32_t expected = 1;
+        for (size_t i = (history.size() > 8) ? history.size() - 8 : 0; i < history.size(); i++) {
+            expected = std::max(expected, history[i]);
+        }
+
+        uint32_t at = 0;
+        for (uint32_t layer = 1; layer <= length; layer++) {
+            NextLayer next = NextLayer::Unknown;
+            if (lookahead) {
+                next = (layer < length) ? nextLayer(true, 0x100, false, 0x100) : nextLayer(true, 0x200, false, 0x100);
+            }
+
+            if (publishRunAtLayer(layer, expected, next)) {
+                at = layer;
+                break;
+            }
+        }
+
+        publishedAt.push_back(at);
+        history.push_back(length);
+    }
+
+    return publishedAt;
+}
+
+TEST_CASE("long runs: a run longer than expected publishes at its last layer (Revenge attract dark flash, #6 cause 2)") {
+    // Revenge's attract mode (WCW_RUN_LOG, 60 fps): a 5-layer run among 3-layer ones. Its generated frame was
+    // published at layer 3, before layers 4 and 5 drew (generated 6.4 against real 8.2).
+    const std::vector<uint32_t> runs = { 3, 3, 3, 3, 3, 3, 3, 5, 3, 3 };
+    CHECK(replayLayers(runs, true)[7] == 5);
+    // Without seeing the next workload, the expected-length rule publishes it early: the old behaviour.
+    CHECK(replayLayers(runs, false)[7] == 3);
+    // VPW2's 4-layer spike among 3-layer runs.
+    CHECK(replayLayers({ 3, 3, 3, 3, 4, 3 }, true)[4] == 4);
+}
+
+TEST_CASE("long runs: steady and short runs publish as before") {
+    for (uint32_t at : replayLayers({ 3, 3, 3, 3, 3, 3 }, true)) {
+        CHECK(at == 3);
+    }
+
+    // A run cut short still waits for the next run's start (publishShortRun decides there).
+    CHECK(replayLayers({ 3, 3, 3, 3, 1 }, true)[4] == 0);
+    CHECK(replayLayers({ 5, 5, 5, 5, 3 }, true)[4] == 0);
+    // Single-layer screens publish at once.
+    for (uint32_t at : replayLayers({ 1, 1, 1 }, true)) {
+        CHECK(at == 1);
+    }
+}
+
+TEST_CASE("long runs: nextLayer") {
+    CHECK(nextLayer(false, 0x100, false, 0x100) == NextLayer::Unknown);
+    CHECK(nextLayer(true, 0x100, false, 0x100) == NextLayer::SameRun);
+    CHECK(nextLayer(true, 0x200, false, 0x100) == NextLayer::NewRun);
+    // A workload that draws nothing joins the current run (it can't change the image).
+    CHECK(nextLayer(true, 0x200, true, 0x100) == NextLayer::SameRun);
+    CHECK(!publishRunAtLayer(3, 3, NextLayer::SameRun));
+    CHECK(publishRunAtLayer(3, 3, NextLayer::NewRun));
+    CHECK(publishRunAtLayer(3, 3, NextLayer::Unknown));
+    CHECK(!publishRunAtLayer(2, 3, NextLayer::NewRun));
+}
+
+// Camera cuts
+
+// A view matrix (row-major 4x4) looking along z from (x, 0, z), turned by yaw radians: the shape of the per-object
+// camera matrices the AKI games' matched pairs carry.
+static std::vector<float> cameraMatrix(float x, float z, float yaw) {
+    const float c = std::cos(yaw), s = std::sin(yaw);
+    return { c, 0.0f, -s, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, s, 0.0f, c, 0.0f, -x, -150.0f, -z, 1.0f };
+}
+
+TEST_CASE("camera cuts: matrixChange") {
+    const std::vector<float> a = cameraMatrix(0.0f, 600.0f, 0.3f);
+    CHECK(matrixChange(a.data(), a.data()) == 0.0f);
+    // A pan: a few units and a degree per game frame.
+    const std::vector<float> pan = cameraMatrix(4.0f, 604.0f, 0.3f + 0.0175f);
+    CHECK(matrixChange(a.data(), pan.data()) < 0.05f);
+    // A cut to the other side of the ring.
+    const std::vector<float> cut = cameraMatrix(-300.0f, -200.0f, 2.8f);
+    CHECK(matrixChange(a.data(), cut.data()) > CameraCutCounter::JumpChange);
+    std::vector<float> bad = a;
+    bad[5] = NAN;
+    CHECK(matrixChange(a.data(), bad.data()) < 0.0f);
+    const std::vector<float> zero(16, 0.0f);
+    CHECK(matrixChange(a.data(), zero.data()) < 0.0f);
+}
+
+TEST_CASE("camera cuts: a layer whose objects' cameras all jumped is a cut (Revenge attract made-up views, #6 cause 3)") {
+    // Revenge's attract mode cuts between shots every few seconds; the generated frame at each cut interpolated the
+    // camera between the two shots (a third view, 10-50% off in luminance). Every matched object's camera jumps.
+    const std::vector<float> before = cameraMatrix(0.0f, 600.0f, 0.3f);
+    const std::vector<float> after = cameraMatrix(-300.0f, -200.0f, 2.8f);
+    CameraCutCounter c;
+    for (int i = 0; i < 40; i++) {
+        c.add(matrixChange(before.data(), after.data()));
+    }
+
+    CHECK(c.cut());
+    CHECK(c.pairs == 40);
+
+    // A pan moves every camera a little: not a cut.
+    const std::vector<float> pan = cameraMatrix(4.0f, 604.0f, 0.32f);
+    c.reset();
+    for (int i = 0; i < 40; i++) {
+        c.add(matrixChange(before.data(), pan.data()));
+    }
+
+    CHECK(!c.cut());
+}
+
+TEST_CASE("camera cuts: a few odd pairs or too few pairs are not a cut") {
+    const std::vector<float> before = cameraMatrix(0.0f, 600.0f, 0.3f);
+    const std::vector<float> after = cameraMatrix(-300.0f, -200.0f, 2.8f);
+    const float jump = matrixChange(before.data(), after.data());
+    CameraCutCounter c;
+    // 10 of 40 pairs paired with the wrong object.
+    for (int i = 0; i < 40; i++) {
+        c.add((i < 10) ? jump : 0.01f);
+    }
+
+    CHECK(!c.cut());
+
+    // Too few pairs to tell (a 2D layer, a single object).
+    c.reset();
+    for (uint32_t i = 0; i + 1 < CameraCutCounter::MinPairs; i++) {
+        c.add(jump);
+    }
+
+    CHECK(!c.cut());
+
+    // Pairs whose change can't be measured don't count.
+    c.reset();
+    c.add(-1.0f);
+    CHECK(c.pairs == 0);
+}
+
 TEST_CASE("short runs: publishShortRun") {
-    CHECK(!publishShortRun(1, 3));
-    CHECK(!publishShortRun(3, 5));
-    CHECK(publishShortRun(3, 3));
-    CHECK(publishShortRun(4, 3));
-    // No previous run yet.
-    CHECK(publishShortRun(1, 0));
+    CHECK(!publishShortRun(1, 3, 3));
+    CHECK(!publishShortRun(3, 5, 5));
+    CHECK(publishShortRun(3, 3, 5));
+    CHECK(publishShortRun(4, 3, 3));
+    // The previous run was a spike.
+    CHECK(publishShortRun(3, 4, 3));
+    CHECK(!publishShortRun(2, 4, 3));
+    // No previous run yet, or none before it.
+    CHECK(publishShortRun(1, 0, 0));
+    CHECK(!publishShortRun(1, 3, 0));
 }
 
 TEST_CASE("trace area: only the pass that darkens the misses traces full screen (No Mercy arenas ran at ~7 fps)") {
@@ -184,10 +357,19 @@ TEST_CASE("generated frames: a trace is reused only with the same outside darkne
 TEST_CASE("generated frames: a pass's signature is stable across the renders of a game frame") {
     const uint32_t pass[] = { 24, 8, 8, 130 };
     CHECK_EQ(passSignature(pass, 4), passSignature(pass, 4));
-    // Order and count matter: the same draws in another order, or one draw fewer, are another pass.
-    const uint32_t reordered[] = { 8, 24, 8, 130 };
-    CHECK(passSignature(pass, 4) != passSignature(reordered, 4));
+    // Count and triangle counts matter: one draw fewer, or a draw with other triangles, is another pass.
     CHECK(passSignature(pass, 4) != passSignature(pass, 3));
+    const uint32_t changed[] = { 24, 8, 9, 130 };
+    CHECK(passSignature(pass, 4) != passSignature(changed, 4));
+}
+
+TEST_CASE("generated frames: the same draws in another order are the same pass (aki-roadmap#86)") {
+    // No Mercy sorts the wrestlers' draws again every game frame. A generated frame reuses the previous game frame's
+    // real trace, so with order in the signature the wrestler pass never matched and traced twice per game frame.
+    const uint32_t realFrame[] = { 24, 8, 8, 130, 52 };
+    const uint32_t nextFrame[] = { 130, 8, 52, 24, 8 };
+    CHECK_EQ(passSignature(realFrame, 5), passSignature(nextFrame, 5));
+    CHECK(!traceRender(true, reusableTrace(true, passSignature(realFrame, 5), passSignature(nextFrame, 5), false, false), 0));
 }
 
 // Ray-traced ambient occlusion
@@ -308,12 +490,31 @@ TEST_CASE("quality: Ultra traces every pixel with more rays than Quality") {
 }
 
 TEST_CASE("quality: trace resolution at 1080p and 4K") {
-    // Performance caps at 720 lines and Balanced at 1080, both at most half resolution; Quality and Ultra are full.
+    // Performance caps at 720 lines and Balanced at 1080, both at most half resolution; Quality is full up to 1440
+    // lines and Ultra is full.
     CHECK_NEAR(rtTraceScale(rtPreset(0), 1080), 0.5f, 1e-6f);
     CHECK_NEAR(rtTraceScale(rtPreset(1), 1080), 0.5f, 1e-6f);
+    CHECK_EQ(rtTraceScale(rtPreset(2), 1080), 1.0f);
     CHECK_NEAR(rtTraceScale(rtPreset(0), 2160), 720.0f / 2160.0f, 1e-6f);
     CHECK_NEAR(rtTraceScale(rtPreset(1), 2160), 0.5f, 1e-6f);
-    CHECK_EQ(rtTraceScale(rtPreset(2), 2160), 1.0f);
+    CHECK_NEAR(rtTraceScale(rtPreset(2), 2160), 1440.0f / 2160.0f, 1e-6f);
+    CHECK_EQ(rtTraceScale(rtPreset(3), 2160), 1.0f);
+}
+
+TEST_CASE("quality: Quality traces at most 1440 lines (a full 4K trace ran No Mercy's arenas at 38 fps, #84)") {
+    const RtPreset quality = rtPreset(uint32_t(RtQuality::Quality));
+    // Every pixel up to 1440 lines: 1080p, 1200 (5x 240) and 1440p targets are untouched.
+    CHECK_EQ(rtTraceScale(quality, 1200), 1.0f);
+    CHECK_EQ(rtTraceScale(quality, 1440), 1.0f);
+    // Above that the trace is 1440 lines tall: 4K (9x 240) and 5K-class (12x 240) targets.
+    for (uint32_t height : { 1680u, 2160u, 2880u }) {
+        CHECK_NEAR(rtTraceScale(quality, height) * float(height), 1440.0f, 1e-2f);
+    }
+    // Supersampled 2x at 4K (a 4320-line target) also traces 1440 lines, not the 2160 the output size allows.
+    CHECK_NEAR(rtTraceScale(quality, 4320, 2) * 4320.0f, 1440.0f, 1e-2f);
+    // Still more lines than Balanced at 4K, and Ultra still traces every one.
+    CHECK(rtTraceScale(quality, 2160) > rtTraceScale(rtPreset(uint32_t(RtQuality::Balanced)), 2160));
+    CHECK_EQ(rtTraceScale(rtPreset(uint32_t(RtQuality::Ultra)), 2160), 1.0f);
 }
 
 TEST_CASE("quality: a supersampled target traces at no more than the output size") {
@@ -622,6 +823,215 @@ TEST_CASE("pacing: presents are spread evenly over the game frame") {
     CHECK(!sleepFramePeriodBeforePresent(true, 30, 30, false));
     CHECK(sleepFramePeriodBeforePresent(true, 120, 30, false));
     CHECK(!sleepFramePeriodBeforePresent(true, 120, 30, true));
+}
+
+// Present pacing below the display rate (aki-roadmap#87)
+
+// Arrival times of a 30 fps game's frames on a 60 Hz VI: frame f is due at VI 2f, with jitterUs of noise. Every
+// lateEvery-th frame is one VI late and the next is back on time (World Tour / VPW64: 50 ms then 17 ms).
+static std::vector<std::chrono::steady_clock::time_point> gameArrivals(int frames, int lateEvery, int jitterUs) {
+    using namespace std::chrono;
+    const auto vi = microseconds(1000000 / 60);
+    std::vector<steady_clock::time_point> arrivals;
+    uint32_t seed = 87;
+    for (int f = 0; f < frames; f++) {
+        seed = seed * 1664525u + 1013904223u;
+        const int jitter = int(seed >> 8) % (2 * jitterUs + 1) - jitterUs;
+        const bool late = (lateEvery > 0) && (f > 0) && ((f % lateEvery) == 0);
+        arrivals.push_back(steady_clock::time_point{} + seconds(1) + vi * (2 * f + (late ? 1 : 0)) + microseconds(jitter));
+    }
+
+    return arrivals;
+}
+
+static std::vector<std::chrono::steady_clock::time_point> pacedPresents(const std::vector<std::chrono::steady_clock::time_point> &arrivals, uint32_t viRate) {
+    GameRatePacer pacer;
+    std::vector<std::chrono::steady_clock::time_point> presents;
+    for (const auto &arrival : arrivals) {
+        presents.push_back(pacer.target(arrival, viRate));
+    }
+
+    return presents;
+}
+
+static double msBetween(std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) {
+    return std::chrono::duration<double, std::milli>(b - a).count();
+}
+
+TEST_CASE("game rate pacing: frames swapped a VI early or late present 33 ms apart, not 50/17 (#87, World Tour / VPW64 at 30 fps)") {
+    const auto arrivals = gameArrivals(600, 9, 2000);
+    const auto presents = pacedPresents(arrivals, 30);
+
+    // Unpaced, the late frames and the frames after them come 50 and 17 ms apart.
+    int unpacedHitches = 0;
+    for (size_t i = 1; i < arrivals.size(); i++) {
+        unpacedHitches += (msBetween(arrivals[i - 1], arrivals[i]) > 45.0) ? 1 : 0;
+    }
+
+    CHECK(unpacedHitches > 50);
+
+    // Paced, after the first late frame the presents settle at its phase: one game frame apart, within the jitter.
+    double minMs = 1e9, maxMs = 0.0;
+    for (size_t i = 10; i < presents.size(); i++) {
+        CHECK(presents[i] >= arrivals[i]);
+        const double ms = msBetween(presents[i - 1], presents[i]);
+        minMs = std::min(minMs, ms);
+        maxMs = std::max(maxMs, ms);
+    }
+
+    CHECK(minMs > 33.0);
+    CHECK(maxMs < 38.0);
+
+    // A frame is held at most about one VI (plus jitter): the hardware's latency, never a whole game frame.
+    for (size_t i = 0; i < presents.size(); i++) {
+        CHECK(msBetween(arrivals[i], presents[i]) < 21.0);
+    }
+}
+
+// The present loop with rt64's VI rate estimate: a 2-of-3 vote over the last 3 frames' VI counts (60 / count),
+// 0 without a majority. Frame f arrives at VI viIndex[f] (+ jitterUs of noise).
+static std::vector<std::chrono::steady_clock::time_point> pacedPresentsWithEstimate(const std::vector<int> &viIndex, int jitterUs) {
+    using namespace std::chrono;
+    const auto vi = microseconds(1000000 / 60);
+    GameRatePacer pacer;
+    std::vector<int> counts;
+    std::vector<steady_clock::time_point> presents;
+    uint32_t seed = 87;
+    for (size_t f = 0; f < viIndex.size(); f++) {
+        seed = seed * 1664525u + 1013904223u;
+        const int jitter = (jitterUs > 0) ? (int(seed >> 8) % (2 * jitterUs + 1) - jitterUs) : 0;
+        const steady_clock::time_point arrival = steady_clock::time_point{} + seconds(1) + vi * viIndex[f] + microseconds(jitter);
+        if (f > 0) {
+            counts.push_back(viIndex[f] - viIndex[f - 1]);
+        }
+
+        uint32_t estimate = 0;
+        if (counts.size() >= 3) {
+            const int a = counts[counts.size() - 3], b = counts[counts.size() - 2], c = counts[counts.size() - 1];
+            const int vote = ((a == b) || (a == c)) ? a : ((b == c) ? b : 0);
+            estimate = (vote > 0) ? uint32_t(60 / vote) : 0;
+        }
+
+        const uint32_t rate = pacer.pacingRate(60, 0, estimate, false);
+        presents.push_back((rate > 0) ? pacer.target(arrival, rate) : arrival);
+    }
+
+    return presents;
+}
+
+// VI indices of a 30 fps game where every lateEvery-th frame is one VI late (3 VIs, then 1).
+static std::vector<int> viIndicesWithLateFrames(int frames, int lateEvery) {
+    std::vector<int> viIndex;
+    for (int f = 0; f < frames; f++) {
+        const bool late = (lateEvery > 0) && (f > 0) && ((f % lateEvery) == 0);
+        viIndex.push_back(2 * f + (late ? 1 : 0));
+    }
+
+    return viIndex;
+}
+
+TEST_CASE("game rate pacing: the rate estimate's dropout after a late frame doesn't stop pacing (#87, ~40% of the pairs stayed)") {
+    // After VI counts 3, 1 the vote reads 0 for two frames, the ones that must be held.
+    const auto presents = pacedPresentsWithEstimate(viIndicesWithLateFrames(600, 7), 2000);
+    for (size_t i = 20; i < presents.size(); i++) {
+        const double ms = msBetween(presents[i - 1], presents[i]);
+        CHECK(ms > 33.0);
+        CHECK(ms < 38.0);
+    }
+}
+
+TEST_CASE("game rate pacing: a stray 20 fps reading (VI counts 3, 1, 3) doesn't hold frames to 50 ms") {
+    // Late frames 2 apart give 3, 1, 3: the vote reads 20 for a frame.
+    std::vector<int> viIndex = viIndicesWithLateFrames(40, 0);
+    viIndex[20] += 1;
+    viIndex[22] += 1;
+    for (size_t f = 23; f < viIndex.size(); f++) {
+        viIndex[f] += 1;
+    }
+
+    const auto presents = pacedPresentsWithEstimate(viIndex, 0);
+    for (size_t i = 21; i < presents.size(); i++) {
+        CHECK(msBetween(presents[i - 1], presents[i]) < 38.0);
+    }
+}
+
+TEST_CASE("game rate pacing: a game that really goes to 60 fps stops being held after the dropout window") {
+    std::vector<int> viIndex = viIndicesWithLateFrames(30, 0);
+    for (int f = 1; f <= 40; f++) {
+        viIndex.push_back(viIndex.back() + 1);
+    }
+
+    const auto presents = pacedPresentsWithEstimate(viIndex, 0);
+    using namespace std::chrono;
+    const auto vi = microseconds(1000000 / 60);
+    for (size_t f = 30 + 3 + GameRateDropoutPresents + 1; f < viIndex.size(); f++) {
+        const steady_clock::time_point arrival = steady_clock::time_point{} + seconds(1) + vi * viIndex[f];
+        CHECK(msBetween(arrival, presents[f]) < 0.01);
+    }
+}
+
+TEST_CASE("game rate pacing: a steady game is presented as it arrives") {
+    const auto arrivals = gameArrivals(300, 0, 0);
+    const auto presents = pacedPresents(arrivals, 30);
+    for (size_t i = 0; i < presents.size(); i++) {
+        CHECK(msBetween(arrivals[i], presents[i]) < 0.01);
+    }
+}
+
+TEST_CASE("game rate pacing: when late frames stop, presents drift back to the arrivals without a long gap") {
+    using namespace std::chrono;
+    // 100 frames with a late one every 9th, then 600 steady frames.
+    auto arrivals = gameArrivals(100, 9, 0);
+    const auto steady = gameArrivals(700, 0, 0);
+    arrivals.insert(arrivals.end(), steady.begin() + 100, steady.end());
+    const auto presents = pacedPresents(arrivals, 30);
+    // From the first late frame on (it comes before the grid has its phase, a 50 ms gap no pacing can avoid).
+    for (size_t i = 10; i < presents.size(); i++) {
+        CHECK(msBetween(presents[i - 1], presents[i]) < 36.0);
+    }
+
+    CHECK(msBetween(arrivals.back(), presents.back()) < 0.01);
+}
+
+TEST_CASE("game rate pacing: a real slowdown is not held back further") {
+    using namespace std::chrono;
+    // Frames 2 VIs apart, then one that takes 4 VIs, then 2 VIs apart again: each is presented when it arrives.
+    const auto vi = microseconds(1000000 / 60);
+    const steady_clock::time_point start = steady_clock::time_point{} + seconds(1);
+    const std::vector<steady_clock::time_point> arrivals = { start, start + vi * 2, start + vi * 6, start + vi * 8, start + vi * 10 };
+    const auto presents = pacedPresents(arrivals, 30);
+    for (size_t i = 0; i < presents.size(); i++) {
+        CHECK(msBetween(arrivals[i], presents[i]) < 0.5);
+    }
+}
+
+TEST_CASE("game rate pacing: a game faster than its rate estimate never builds up latency") {
+    using namespace std::chrono;
+    // The rate still reads 30 while the game already runs at 60 (a menu): holds stay under a game frame period and
+    // reset instead of growing.
+    std::vector<steady_clock::time_point> arrivals;
+    for (int f = 0; f < 120; f++) {
+        arrivals.push_back(steady_clock::time_point{} + seconds(1) + microseconds(1000000 / 60) * f);
+    }
+
+    const auto presents = pacedPresents(arrivals, 30);
+    for (size_t i = 0; i < presents.size(); i++) {
+        CHECK(msBetween(arrivals[i], presents[i]) < 33.4);
+    }
+
+    CHECK(msBetween(arrivals.back(), presents.back()) < 33.4);
+}
+
+TEST_CASE("game rate pacing: only below the display rate, without interpolation or the beam simulator") {
+    CHECK(holdPresentsToGameRate(60, 30, 30, false));
+    CHECK(holdPresentsToGameRate(60, 0, 30, false));
+    CHECK(holdPresentsToGameRate(144, 30, 30, false));
+    CHECK(holdPresentsToGameRate(60, 20, 20, false));
+    CHECK(!holdPresentsToGameRate(60, 60, 30, false));
+    CHECK(!holdPresentsToGameRate(60, 30, 30, true));
+    CHECK(!holdPresentsToGameRate(60, 60, 60, false));
+    CHECK(!holdPresentsToGameRate(60, 30, 0, false));
+    CHECK(!holdPresentsToGameRate(0, 30, 30, false));
 }
 
 // Frame interpolation

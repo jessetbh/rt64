@@ -57,9 +57,11 @@ namespace RT64::WcwLogic {
     // frames that reused it since.
     bool traceRender(bool generated, bool haveTrace, uint32_t reusesSinceTrace);
 
-    // A pass's identity within a game frame: its draws' triangle counts, in order. A generated frame replays the
-    // real frame's draws, so the same pass has the same signature. Two passes can share a slot (similar scenes);
-    // reusing by slot alone composited one pass's trace for both, darkening generated frames ~5%.
+    // A pass's identity: its draws' triangle counts, in any order. A generated frame reuses the trace of the
+    // previous game frame's real frame, and No Mercy sorts the wrestlers' draws again every game frame: with the
+    // order in the signature the wrestler pass (the most expensive trace) never matched and traced twice per game
+    // frame at 60/120 fps (aki-roadmap#86). Two passes can share a slot (similar scenes); reusing by slot alone
+    // composited one pass's trace for both, darkening generated frames ~5%.
     uint64_t passSignature(const uint32_t *triangleCounts, size_t count);
 
     // Whether a slot's trace can stand in for this pass on a generated frame: the slot holds a trace (traced) of
@@ -112,7 +114,8 @@ namespace RT64::WcwLogic {
 
     // What a Ray Tracing Quality level traces. Performance and Balanced trace at reduced resolution (soft,
     // temporally resolved shadows don't need every pixel), capped at maxLines so 4K targets don't multiply the
-    // rays; Quality and Ultra trace every pixel. Higher levels add rays, and the AO look comes with the level.
+    // rays; Quality traces every pixel up to 1440 lines (so at 4K it traces two thirds of the lines), and Ultra
+    // traces every pixel at any size. Higher levels add rays, and the AO look comes with the level.
     struct RtPreset {
         // Trace resolution relative to the color target, before the line cap.
         float scale = 1.0f;
@@ -227,6 +230,52 @@ namespace RT64::WcwLogic {
     // simulator: its presents are paced to their even targets and then wait for a vblank, and sleeping a full
     // period first rounded every 120 fps frame up to 3 refreshes at 280 Hz (presents fell to ~92/s).
     bool sleepFramePeriodBeforePresent(bool havePreviousPresent, uint32_t targetRate, uint32_t viOriginalRate, bool beamActive);
+
+    // Present pacing below the display rate (aki-roadmap#87)
+
+    // Without frame interpolation, a game below the display rate (30 fps on 60 Hz) is presented when its frames
+    // arrive. World Tour and VPW64 swap at random one VI early or late: their SDK scheduler starts a frame's gfx task
+    // either at once or at the next retrace, depending on whether an audio task happens to finish after the task is
+    // posted (on hardware the gfx task was always posted late enough to wait for the next retrace). Their presents
+    // came 50/17 ms apart instead of 33/33 (~100 hitches/min). Whether to hold presents to the game's rate: the game
+    // runs at most 2/3 of the display rate (a frame spans 1.5 refreshes or more), with no interpolation (targetRate
+    // at or below the game rate) and without the beam simulator (it paces its own presents). 0 rates are unknown.
+    bool holdPresentsToGameRate(uint32_t displayRate, uint32_t targetRate, uint32_t viOriginalRate, bool beamActive);
+
+    // Holds a frame that arrives early until one game frame period after the previous present's target, so the
+    // presents settle at the later phase (on hardware's: the frame shows 1 VI later than at the early phase) and come
+    // one game frame apart. A late frame moves the grid to its arrival. A hold of a whole game frame period or more
+    // starts a new grid instead (the game sped up and the rate is stale), so latency never builds up.
+    // The grid advances GameRateSlackUs less than a game frame period: a step of exactly one period never gives the
+    // phase back (frames arriving a microsecond faster than the step held each one longer), while this lets it drift
+    // back to the arrivals in a few seconds when no late frame comes. Late frames (every ~10 frames in World Tour)
+    // re-anchor it long before the drift adds up to a refresh.
+    constexpr int64_t GameRateSlackUs = 100;
+
+    // The VI rate estimate (a 2-of-3 vote over the last frames' VI counts) reads 0 for the two frames after a late
+    // frame and its catch-up frame (VI counts 3, 1), and 20 after 3, 1, 3: exactly the frames to hold. Pacing
+    // turned off there and lost its grid, so ~40% of the 50/17 pairs stayed. The paced rate is kept through up to
+    // this many presents of a missing, too fast or slower reading; one that lasts longer is a real rate change.
+    constexpr uint32_t GameRateDropoutPresents = 4;
+
+    class GameRatePacer {
+    public:
+        // The rate to pace this present at, or 0 not to pace it (see holdPresentsToGameRate and
+        // GameRateDropoutPresents). A faster rate that can be paced is taken at once: a shorter period never adds a gap.
+        uint32_t pacingRate(uint32_t displayRate, uint32_t targetRate, uint32_t viOriginalRate, bool beamActive);
+
+        // When to present a frame that is ready at now, at a rate from pacingRate.
+        std::chrono::steady_clock::time_point target(std::chrono::steady_clock::time_point now, uint32_t rate);
+
+        // Forget the grid and the rate (pacing turned off, or a present that wasn't paced).
+        void reset();
+
+    private:
+        bool haveGrid = false;
+        std::chrono::steady_clock::time_point grid;
+        uint32_t pacedRate = 0;
+        uint32_t stalePresents = 0;
+    };
 
     // Frame interpolation
 
@@ -344,8 +393,59 @@ namespace RT64::WcwLogic {
     // usual layers this frame (Revenge's attract mode: 1 of 3, 3 of 5), and the generated frame lacks the rest:
     // a one-present flash (a missing overlay or darkening layer, ~15-20% luminance). Such a run's generated frame
     // is dropped and the real frame shows for the whole game frame, as at 30 fps. A run as long as the previous
-    // one is the scene's steady structure (fewer layers than the recent maximum) and is published.
-    bool publishShortRun(uint32_t runLength, uint32_t previousRunLength);
+    // one is the scene's steady structure (fewer layers than the recent maximum) and is published. So is a run as
+    // long as the one before the previous: the previous run was a one-frame spike (VPW2 matches draw a 4th layer
+    // every ~16th frame of 3), and dropping the steady run after it cost a present 1-3 times a second (#85).
+    // runBeforePrevious is 0 when unknown.
+    bool publishShortRun(uint32_t runLength, uint32_t previousRunLength, uint32_t runBeforePrevious);
+
+    // Multi-layer runs longer than expected
+
+    // The workload queued after a run's layer, as the render thread sees it when that layer decides whether to publish
+    // the run's generated frame: not queued yet, another layer of the same run (same colour address, or a workload
+    // that draws nothing), or the first layer of a new run.
+    enum class NextLayer {
+        Unknown,
+        SameRun,
+        NewRun
+    };
+
+    NextLayer nextLayer(bool queued, uint32_t nextColorAddress, bool nextDrawsNothing, uint32_t runColorAddress);
+
+    // Whether the run's generated frame is published at this layer. It waits for the run's expected length (the
+    // longest of the recent runs), but a run can be longer than that: Revenge's attract mode draws a 5-layer run
+    // among 3-layer ones, and publishing it at its 3rd layer showed a generated frame without the last 2 layers (a
+    // dark flash, generated 6.4 against real 8.2; aki-roadmap#6 cause 2). The game queues a run's layers ahead of the
+    // renderer, so the next workload usually says whether the run goes on: while it does, the publish waits for a
+    // later layer. Unknown keeps the expected-length rule.
+    bool publishRunAtLayer(uint32_t runLength, uint32_t expectedRunLength, NextLayer next);
+
+    // Camera cuts
+
+    // Relative change between two 4x4 matrices (16 floats each): |cur - prev| / |cur| (Frobenius norms). -1 when a
+    // value isn't finite or cur is zero.
+    float matrixChange(const float prev[16], const float cur[16]);
+
+    // Counts, over a layer's matched object pairs, how far each pair's camera matrix moved since the previous frame.
+    // A camera cut moves every object's camera at once; a pan or zoom moves it a few percent per game frame. On a cut
+    // the generated frame interpolated the camera between two unrelated shots and showed a third, made-up view (a
+    // stretched wrestler, the wrong part of the arena; 10-50% luminance off for one present, aki-roadmap#6 cause 3).
+    struct CameraCutCounter {
+        // A pair whose camera changed by more than this has jumped. In Revenge's attract mode (WCW_PAIR_LOG), 99.5% of
+        // layers moved their camera by at most 0.10 per game frame and none without a cut by more than 0.29;
+        // the cuts measured 0.33 to 2.1.
+        static constexpr float JumpChange = 0.25f;
+        // A cut needs this many pairs (so one odd object can't decide it) and most of them jumped.
+        static constexpr uint32_t MinPairs = 4;
+
+        uint32_t pairs = 0;
+        uint32_t jumped = 0;
+        float maxChange = 0.0f;
+
+        void reset();
+        void add(float change);
+        bool cut() const;
+    };
 
     // Widescreen (Aspect Ratio = Expand)
 

@@ -20,6 +20,7 @@
 
 #include "rt64_descriptor_sets.h"
 #include "rt64_render_worker.h"
+#include "rt64_wcw_gpu_timer.h"
 
 // TODO: Move to shared.
 
@@ -1575,8 +1576,10 @@ namespace RT64 {
 
             // [wcw rt] Hybrid ray tracing pass over the traced projection's raster result.
             if ((wcwRaytracer != nullptr) && (wcwSceneCursor++ == targetDrawCall.wcwRtSceneSlot)) {
+                WcwGpuScope wcwRtScope(worker->commandList.get(), WcwPerf::GpuPass::RtTrace);
                 wcwRaytracer->recordTrace(worker, targetDrawCall.fbStorage->colorTarget, descTextureSet->get());
                 worker->commandList->setFramebuffer(depthState ? targetDrawCall.fbStorage->colorWriteDepthRead.get() : targetDrawCall.fbStorage->colorDepthWrite.get());
+                wcwRtScope.switchTo(WcwPerf::GpuPass::RtComposite);
                 wcwRaytracer->recordComposite(worker);
             }
         }

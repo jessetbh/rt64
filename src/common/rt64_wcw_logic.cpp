@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace RT64::WcwLogic {
     bool shadowCasterFresh(uint64_t frameCounter, uint64_t builtFrame) {
@@ -33,7 +34,9 @@ namespace RT64::WcwLogic {
     }
 
     uint64_t passSignature(const uint32_t *triangleCounts, size_t count) {
-        // FNV-1a over the count and the triangle counts.
+        // FNV-1a over the count and the sorted triangle counts.
+        std::vector<uint32_t> sorted(triangleCounts, triangleCounts + count);
+        std::sort(sorted.begin(), sorted.end());
         uint64_t hash = 14695981039346656037ULL;
         auto mix = [&hash](uint64_t value) {
             for (uint32_t i = 0; i < 8; i++) {
@@ -43,8 +46,8 @@ namespace RT64::WcwLogic {
         };
 
         mix(count);
-        for (size_t i = 0; i < count; i++) {
-            mix(triangleCounts[i]);
+        for (uint32_t triangles : sorted) {
+            mix(triangles);
         }
 
         return hash;
@@ -103,7 +106,9 @@ namespace RT64::WcwLogic {
             break;
         case RtQuality::Quality:
             // The full look: Strong AO. With 4 rays and the separate AO cleanup it reads clean (before that cleanup,
-            // Strong mottled the mat next to the wrestlers).
+            // Strong mottled the mat next to the wrestlers). Every pixel up to 1440 lines: a full 4K trace cost ~22 ms
+            // of GPU per game frame in No Mercy's arenas (38 fps), and 1440 lines brings it back to ~60 (aki-roadmap#84).
+            preset.maxLines = 1440.0f;
             preset.samplesPerLight = 2;
             preset.ao = AoLevel::Strong;
             preset.aoSamples = 4;
@@ -310,6 +315,54 @@ namespace RT64::WcwLogic {
         return havePreviousPresent && (targetRate > 0) && (targetRate > viOriginalRate) && !beamActive;
     }
 
+    bool holdPresentsToGameRate(uint32_t displayRate, uint32_t targetRate, uint32_t viOriginalRate, bool beamActive) {
+        return (viOriginalRate > 0) && (displayRate > 0) && ((displayRate * 2) >= (viOriginalRate * 3)) && (targetRate <= viOriginalRate) && !beamActive;
+    }
+
+    uint32_t GameRatePacer::pacingRate(uint32_t displayRate, uint32_t targetRate, uint32_t viOriginalRate, bool beamActive) {
+        const bool paceable = holdPresentsToGameRate(displayRate, targetRate, viOriginalRate, beamActive);
+        if (paceable && (viOriginalRate >= pacedRate)) {
+            pacedRate = viOriginalRate;
+            stalePresents = 0;
+            return pacedRate;
+        }
+
+        // A missing, too fast or slower reading: keep the paced rate for a few presents.
+        if ((pacedRate > 0) && (stalePresents < GameRateDropoutPresents) && holdPresentsToGameRate(displayRate, targetRate, pacedRate, beamActive)) {
+            stalePresents++;
+            return pacedRate;
+        }
+
+        // The change lasted: a new rate, or no pacing.
+        if (paceable) {
+            pacedRate = viOriginalRate;
+            stalePresents = 0;
+            return pacedRate;
+        }
+
+        reset();
+        return 0;
+    }
+
+    std::chrono::steady_clock::time_point GameRatePacer::target(std::chrono::steady_clock::time_point now, uint32_t rate) {
+        const auto period = std::chrono::microseconds(1000000 / std::max(rate, 1u));
+        const auto step = period - std::chrono::microseconds(GameRateSlackUs);
+        std::chrono::steady_clock::time_point t = now;
+        if (haveGrid && ((grid + step) > now) && (((grid + step) - now) < period)) {
+            t = grid + step;
+        }
+
+        haveGrid = true;
+        grid = t;
+        return t;
+    }
+
+    void GameRatePacer::reset() {
+        haveGrid = false;
+        pacedRate = 0;
+        stalePresents = 0;
+    }
+
     uint32_t framesPerGameFrame(uint32_t targetRate, uint32_t viOriginalRate, uint32_t capOverride) {
         if (capOverride > 0) {
             return capOverride;
@@ -430,8 +483,52 @@ namespace RT64::WcwLogic {
         return HdrAdvice::Good;
     }
 
-    bool publishShortRun(uint32_t runLength, uint32_t previousRunLength) {
-        return runLength >= previousRunLength;
+    bool publishShortRun(uint32_t runLength, uint32_t previousRunLength, uint32_t runBeforePrevious) {
+        return (runLength >= previousRunLength) || ((runBeforePrevious > 0) && (runLength >= runBeforePrevious));
+    }
+
+    NextLayer nextLayer(bool queued, uint32_t nextColorAddress, bool nextDrawsNothing, uint32_t runColorAddress) {
+        if (!queued) {
+            return NextLayer::Unknown;
+        }
+
+        return (nextDrawsNothing || (nextColorAddress == runColorAddress)) ? NextLayer::SameRun : NextLayer::NewRun;
+    }
+
+    bool publishRunAtLayer(uint32_t runLength, uint32_t expectedRunLength, NextLayer next) {
+        return (next != NextLayer::SameRun) && (runLength >= expectedRunLength);
+    }
+
+    float matrixChange(const float prev[16], const float cur[16]) {
+        double num = 0.0, den = 0.0;
+        for (int k = 0; k < 16; k++) {
+            if (!std::isfinite(prev[k]) || !std::isfinite(cur[k])) {
+                return -1.0f;
+            }
+
+            num += double(cur[k] - prev[k]) * double(cur[k] - prev[k]);
+            den += double(cur[k]) * double(cur[k]);
+        }
+
+        return (den > 0.0) ? float(std::sqrt(num / den)) : -1.0f;
+    }
+
+    void CameraCutCounter::reset() {
+        *this = CameraCutCounter();
+    }
+
+    void CameraCutCounter::add(float change) {
+        if (change < 0.0f) {
+            return;
+        }
+
+        pairs++;
+        jumped += (change > JumpChange) ? 1 : 0;
+        maxChange = std::max(maxChange, change);
+    }
+
+    bool CameraCutCounter::cut() const {
+        return (pairs >= MinPairs) && (jumped * 2 > pairs);
     }
 
     bool primeGeneratedTargets(bool primeEnabled, bool generateInterpolatedFrames, bool usingMSAA, uint32_t runLength) {
