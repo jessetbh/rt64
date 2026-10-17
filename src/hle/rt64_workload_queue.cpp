@@ -1109,6 +1109,11 @@ namespace RT64 {
         // True once a layer of the current run found a camera cut: the run's remaining layers draw the real frame
         // in every displayed frame (WcwLogic::CameraCutCounter).
         bool wcwRunCameraCut = false;
+        // [wcw diag] The per-layer logs (WCW_PAIR_LOG, WCW_RUN_LOG) write thousands of lines a minute; unbuffered
+        // stderr made the renderer fall to 13-25 presents/s once a 3D scene started. Buffer stderr while they're on.
+        if ((getenv("WCW_PAIR_LOG") != nullptr) || (getenv("WCW_RUN_LOG") != nullptr)) {
+            setvbuf(stderr, nullptr, _IOFBF, 1 << 20);
+        }
         while (threadsRunning) {
             {
                 std::unique_lock<std::mutex> cursorLock(cursorMutex);
