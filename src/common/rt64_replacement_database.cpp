@@ -7,6 +7,7 @@
 #include <cinttypes>
 
 #include "rt64_filesystem_directory.h"
+#include "rt64_wcw_texdump.h"
 
 namespace RT64 {
     const std::string ReplacementDatabaseFilename = "rt64.json";
@@ -239,6 +240,31 @@ namespace RT64 {
             }
 
             textureIndex++;
+        }
+
+        // [wcw] A file named "<16 hex digits>.png/.dds" replaces the texture with that rt64 hash even without a database
+        // entry, so a texture dump's pack folder (its PNGs edited) loads as it is (aki-roadmap#48). Database entries win.
+        if (config.autoPath == ReplacementAutoPath::RT64) {
+            for (const std::string &relativePath : *fileSystem) {
+                uint64_t hash = 0;
+                if (WcwTexDump::hashFromFileName(relativePath, hash)) {
+                    const std::string relativePathForward = FileSystem::toForwardSlashes(relativePath);
+                    if (onlyDDS && !endsWith(toLower(relativePathForward), ".dds")) {
+                        continue;
+                    }
+
+                    // A .dds next to a .png of the same hash wins, as for database entries.
+                    auto it = resolvedPathMap.find(hash);
+                    const bool replacesPng = (it != resolvedPathMap.end()) && (it->second.fileSystemIndex == fileSystemIndex) &&
+                        endsWith(toLower(relativePathForward), ".dds") && endsWith(toLower(it->second.relativePath), ".png") &&
+                        (tmemHashToReplaceMap.find(hash) == tmemHashToReplaceMap.end());
+                    if (replacesPng) {
+                        resolvedPathMap.erase(it);
+                    }
+
+                    addResolvedPath(hash, relativePathForward, ReplacementOperation::Auto, ReplacementShift::Auto);
+                }
+            }
         }
     }
 
