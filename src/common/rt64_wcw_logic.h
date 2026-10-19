@@ -455,6 +455,13 @@ namespace RT64::WcwLogic {
     // later layer. Unknown keeps the expected-length rule.
     bool publishRunAtLayer(uint32_t runLength, uint32_t expectedRunLength, NextLayer next);
 
+    // Whether a run's generated frame is dropped (the real frame shows for the whole game frame, as at 30 fps): a
+    // layer skipped its generated frame, or a layer found a cut (CameraCutCounter, MatrixSplitCounter). A cut found
+    // in a later layer comes after the earlier layers drew their share of the generated frame between the two shots:
+    // drawing only the remaining layers real left Revenge's cut into the ring (found in the 5th of 5 layers) with a
+    // generated frame of the ring without the wrestlers (aki-roadmap#6).
+    bool dropRunGeneratedFrame(bool layerSkipped, bool cutInRun);
+
     // Camera cuts
 
     // Relative change between two 4x4 matrices (16 floats each): |cur - prev| / |cur| (Frobenius norms). -1 when a
@@ -622,14 +629,31 @@ namespace RT64::WcwLogic {
     // Leaving only the split pairs uninterpolated still showed the third view (the view itself is interpolated).
     // Small layers aren't counted: in a match, layers of up to 13 pairs split on ~10% of game frames without a wrong
     // frame (Raw quick match), and dropping those runs would have cost that many generated frames.
+    // A big layer also counts when more than a third of its pairs' drawn matrices jumped (by SplitJumpChange or more),
+    // whatever their camera-independent matrices did. Revenge moves the wrestlers into place the frame after a
+    // camera cut (39 of 94 pairs jumped, their camera-independent matrices moved too), and some Revenge and VPW2 cuts
+    // move the objects while the camera test sees < 0.25 (47 of 48, 46 of 113 pairs): the generated frames squashed a
+    // wrestler to a sliver, showed a third view or a giant arm (aki-roadmap#6). In the attract modes of WT, Revenge,
+    // VPW64, WM2K and VPW2 (WCW_PAIR_LOG), big layers jumped like that on 0.2-1.1% of game frames, nearly all at
+    // camera cuts.
+    constexpr float SplitJumpChange = 0.3f;
+    // Any layer, however small, counts when one of its pairs' drawn matrices changed more than tenfold: no motion does
+    // that. Revenge's cut into the ring left every other layer unmatched and showed only in a 6-pair layer (drawn
+    // matrices x309); its generated frame had no wrestlers. In five attract modes such pairs showed up on 1-70 game
+    // frames per 3 minutes, nearly all at camera cuts; ordinary motion stays under 1.5.
+    constexpr float SplitExtremeChange = 10.0f;
+
     struct MatrixSplitCounter {
         static constexpr uint32_t MinPairs = 20;
 
         uint32_t pairs = 0;
         uint32_t split = 0;
+        uint32_t jumped = 0;
+        uint32_t extreme = 0;
 
         void reset();
-        void add(bool pairSplit);
+        // drawnChange: the pair's drawn-matrix matrixChange (negative when unknown: not counted as jumped).
+        void add(bool pairSplit, float drawnChange = -1.0f);
         bool splitLayer() const;
     };
 };

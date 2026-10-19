@@ -520,6 +520,10 @@ namespace RT64::WcwLogic {
         return (next != NextLayer::SameRun) && (runLength >= expectedRunLength);
     }
 
+    bool dropRunGeneratedFrame(bool layerSkipped, bool cutInRun) {
+        return layerSkipped || cutInRun;
+    }
+
     float matrixChange(const float prev[16], const float cur[16]) {
         double num = 0.0, den = 0.0;
         for (int k = 0; k < 16; k++) {
@@ -556,13 +560,15 @@ namespace RT64::WcwLogic {
         *this = MatrixSplitCounter();
     }
 
-    void MatrixSplitCounter::add(bool pairSplit) {
+    void MatrixSplitCounter::add(bool pairSplit, float drawnChange) {
         pairs++;
         split += pairSplit ? 1 : 0;
+        jumped += (drawnChange >= SplitJumpChange) ? 1 : 0;
+        extreme += (drawnChange > SplitExtremeChange) ? 1 : 0;
     }
 
     bool MatrixSplitCounter::splitLayer() const {
-        return (pairs >= MinPairs) && (split * 2 > pairs);
+        return (extreme > 0) || ((pairs >= MinPairs) && ((split * 2 > pairs) || (jumped * 3 > pairs)));
     }
 
     bool splitPair(float drawnChange, float stillChange) {

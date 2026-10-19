@@ -145,5 +145,11 @@ namespace RT64 {
         void buildTransformIdMap(const Workload &workload, std::multimap<uint32_t, uint32_t> &idMap, std::vector<uint32_t> &ignoredIdVector) const;
         uint64_t hashFromCall(const GameCall &call, uint32_t matrixIdHash) const;
         bool isDebuggerCameraEnabled(const WorkloadQueue &workloadQueue);
+
+        // [wcw diag] WCW_PAIR_LOG: how far each matched object's drawn matrix moved since the previous frame
+        // (relative change, binned < 0.05 / 0.15 / 0.3 / 0.6 / 1.2 / more), and the transforms left unmatched.
+        uint32_t wcwXfBins[6] = {};
+        float wcwXfMax = 0.0f;
+
     };
 };
