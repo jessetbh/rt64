@@ -637,6 +637,11 @@ namespace RT64::WcwLogic {
     // VPW64, WM2K and VPW2 (WCW_PAIR_LOG), big layers jumped like that on 0.2-1.1% of game frames, nearly all at
     // camera cuts.
     constexpr float SplitJumpChange = 0.3f;
+    // Any layer, however small, counts when one of its pairs' drawn matrices changed more than tenfold: no motion does
+    // that. Revenge's cut into the ring left every other layer unmatched and showed only in a 6-pair layer (drawn
+    // matrices x309); its generated frame had no wrestlers. In five attract modes such pairs showed up on 1-70 game
+    // frames per 3 minutes, nearly all at camera cuts; ordinary motion stays under 1.5.
+    constexpr float SplitExtremeChange = 10.0f;
 
     struct MatrixSplitCounter {
         static constexpr uint32_t MinPairs = 20;
@@ -644,6 +649,7 @@ namespace RT64::WcwLogic {
         uint32_t pairs = 0;
         uint32_t split = 0;
         uint32_t jumped = 0;
+        uint32_t extreme = 0;
 
         void reset();
         // drawnChange: the pair's drawn-matrix matrixChange (negative when unknown: not counted as jumped).

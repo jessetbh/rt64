@@ -564,10 +564,11 @@ namespace RT64::WcwLogic {
         pairs++;
         split += pairSplit ? 1 : 0;
         jumped += (drawnChange >= SplitJumpChange) ? 1 : 0;
+        extreme += (drawnChange > SplitExtremeChange) ? 1 : 0;
     }
 
     bool MatrixSplitCounter::splitLayer() const {
-        return (pairs >= MinPairs) && ((split * 2 > pairs) || (jumped * 3 > pairs));
+        return (extreme > 0) || ((pairs >= MinPairs) && ((split * 2 > pairs) || (jumped * 3 > pairs)));
     }
 
     bool splitPair(float drawnChange, float stillChange) {

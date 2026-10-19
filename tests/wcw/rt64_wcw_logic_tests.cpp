@@ -1691,6 +1691,31 @@ TEST_CASE("matrix split: fast moves, small layers and a third of the objects jum
     CHECK(!c.splitLayer());
 }
 
+TEST_CASE("matrix split: a pair whose drawn matrix changed more than tenfold drops it, in any layer (Revenge cut, #6)") {
+    // Revenge's cut into the ring: every other layer was unmatched, a 6-pair layer's drawn matrices changed x309; the
+    // generated frame had no wrestlers.
+    MatrixSplitCounter c;
+    for (int i = 0; i < 6; i++) {
+        c.add(false, 309.0f);
+    }
+
+    CHECK(c.splitLayer());
+    c.reset();
+    c.add(false, 0.9f);
+    c.add(false, SplitExtremeChange + 1.0f);
+    CHECK(c.splitLayer());
+    // Fast motion and VPW2's jumping 4-object layer stay far below.
+    c.reset();
+    for (int i = 0; i < 4; i++) {
+        c.add(false, 1.5f);
+    }
+
+    CHECK(!c.splitLayer());
+    c.reset();
+    c.add(false, SplitExtremeChange);
+    CHECK(!c.splitLayer());
+}
+
 int main() {
     return WcwTest::runAll("rt64 wcw tests");
 }
