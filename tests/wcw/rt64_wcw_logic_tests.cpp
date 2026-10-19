@@ -1644,6 +1644,53 @@ TEST_CASE("matrix split: small layers and minorities don't drop it (match layers
     CHECK_EQ(c.split, 0u);
 }
 
+// Feeds a layer's pairs into a MatrixSplitCounter from a WCW_PAIR_LOG histogram of drawn-matrix changes (bins
+// < 0.05, 0.15, 0.3, 0.6, 1.2 and above), one representative change per bin; none of the pairs split.
+static MatrixSplitCounter jumpLayerOf(const std::vector<uint32_t> &bins) {
+    const float values[6] = { 0.02f, 0.1f, 0.2f, 0.45f, 0.9f, 2.0f };
+    MatrixSplitCounter c;
+    for (size_t b = 0; b < bins.size(); b++) {
+        for (uint32_t i = 0; i < bins[b]; i++) {
+            c.add(false, values[b]);
+        }
+    }
+
+    return c;
+}
+
+TEST_CASE("matrix split: a big layer where more than a third of the objects jumped drops it (Revenge, VPW2, #6)") {
+    // Revenge attract, the frame after a camera cut: the game moved the wrestlers into place, 39 of 94 pairs by 0.3
+    // or more (their camera-independent matrices moved too, so they don't split); a wrestler was squashed to a sliver.
+    CHECK(jumpLayerOf({ 11, 14, 30, 33, 6, 0 }).splitLayer());
+    // A cut the camera test missed (camera 0.17): 47 of 48 pairs jumped; the generated frame showed a third view.
+    CHECK(jumpLayerOf({ 1, 0, 0, 19, 28, 0 }).splitLayer());
+    // VPW2 attract: 46 of 113 and 41 of 108 pairs jumped, a giant arm in the generated frame.
+    CHECK(jumpLayerOf({ 59, 7, 1, 39, 5, 2 }).splitLayer());
+    CHECK(jumpLayerOf({ 60, 7, 0, 0, 33, 8 }).splitLayer());
+}
+
+TEST_CASE("matrix split: fast moves, small layers and a third of the objects jumping don't drop it") {
+    // WM2K and Revenge wrestler layers in fast moves: a few pairs at 0.3 or more.
+    CHECK(!jumpLayerOf({ 60, 51, 7, 2, 0, 0 }).splitLayer());
+    CHECK(!jumpLayerOf({ 45, 49, 0, 0, 0, 0 }).splitLayer());
+    CHECK(!jumpLayerOf({ 80, 0, 0, 0, 14, 0 }).splitLayer());
+    // VPW2's 4-object layer jumps twice a second on its own; small layers don't count.
+    CHECK(!jumpLayerOf({ 0, 0, 0, 0, 4, 0 }).splitLayer());
+    CHECK(!jumpLayerOf({ 0, 0, 0, 0, 0, MatrixSplitCounter::MinPairs - 1 }).splitLayer());
+    CHECK(jumpLayerOf({ 0, 0, 0, 0, 0, MatrixSplitCounter::MinPairs }).splitLayer());
+    // Exactly a third is not more than a third.
+    CHECK(!jumpLayerOf({ 20, 0, 0, 10, 0, 0 }).splitLayer());
+    CHECK(jumpLayerOf({ 19, 0, 0, 10, 0, 0 }).splitLayer());
+    // A change that can't be measured is not a jump.
+    MatrixSplitCounter c;
+    for (uint32_t i = 0; i < 40; i++) {
+        c.add(false, -1.0f);
+    }
+
+    CHECK_EQ(c.jumped, 0u);
+    CHECK(!c.splitLayer());
+}
+
 int main() {
     return WcwTest::runAll("rt64 wcw tests");
 }

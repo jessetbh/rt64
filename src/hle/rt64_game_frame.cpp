@@ -819,7 +819,8 @@ namespace RT64 {
             hlslpp::store(hlslpp::float4x4(prevWorkload.drawData.worldTransforms[prevTransformIndex]), dp);
             hlslpp::store(curTransform, pc);
             hlslpp::store(prevTransform, pp);
-            wcwMatrixSplit.add(WcwLogic::splitPair(WcwLogic::matrixChange(dp, dc), WcwLogic::matrixChange(pp, pc)));
+            const float drawnChange = WcwLogic::matrixChange(dp, dc);
+            wcwMatrixSplit.add(WcwLogic::splitPair(drawnChange, WcwLogic::matrixChange(pp, pc)), drawnChange);
         }
         const uint32_t curGroupIndex = curWorkload.drawData.worldTransformGroups[curTransformIndex];
         const TransformGroup &curGroup = curWorkload.drawData.transformGroups[curGroupIndex];
