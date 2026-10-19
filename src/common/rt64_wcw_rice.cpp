@@ -216,6 +216,9 @@ namespace RT64 {
             const std::string *path = nullptr;
             if (hasPalette) {
                 if ((path = lookup(crc, paletteCrc, KeyPalette)) != nullptr) return path;
+                // Packs dumped with Rice Video name TLUT textures in non-CI formats (IA8 + TLUT in No Mercy) with a
+                // zero palette CRC (TNA vs ROH: all 29 such files).
+                if ((paletteCrc != 0) && (path = lookup(crc, 0, KeyPalette)) != nullptr) return path;
                 if ((path = lookup(crc, 0, KeyAnyPalette)) != nullptr) return path;
                 if ((path = lookup(crc, 0, KeyNoPalette)) != nullptr) return path;
                 if ((path = lookup(0, paletteCrc, KeyAnyTexture)) != nullptr) return path;

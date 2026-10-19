@@ -107,7 +107,8 @@ namespace RT64 {
             bool empty() const { return entries.empty(); }
             size_t size() const { return entries.size(); }
 
-            // The best file for a texture: exact key with palette, crc#fmt#siz#$, crc#fmt#siz (packs that name CI
+            // The best file for a texture: exact key with palette, crc#fmt#siz#00000000 (Rice Video names TLUT textures
+            // in non-CI formats with a zero palette CRC), crc#fmt#siz#$, crc#fmt#siz (packs that name CI
             // textures without a palette CRC), then $#fmt#siz#palcrc. hasPalette = the texture is paletted (CI4/CI8 or
             // TLUT on). Returns nullptr when nothing matches.
             const std::string *find(uint32_t crc, uint32_t paletteCrc, uint8_t fmt, uint8_t siz, bool hasPalette) const;

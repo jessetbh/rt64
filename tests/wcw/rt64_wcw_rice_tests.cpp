@@ -124,6 +124,18 @@ TEST_CASE("rice: index lookup order, first file wins, _a ignored, whole texture 
     CHECK((path != nullptr) && (*path == "G#$#2#0#66666666_all.png"));
 }
 
+TEST_CASE("rice: a paletted texture matches a name with a zero palette CRC (Rice Video's IA + TLUT names)") {
+    // TNA vs ROH names IA8 textures drawn with a TLUT "crc#3#1#00000000"; the game's palette CRC is not zero.
+    Index index;
+    CHECK(index.add("WWF No Mercy#0B8FDC27#3#1#00000000_ciByRGBA.png"));
+    const std::string *path = index.find(0x0B8FDC27, 0x4F18C34B, 3, 1, true);
+    CHECK((path != nullptr) && (*path == "WWF No Mercy#0B8FDC27#3#1#00000000_ciByRGBA.png"));
+    // The exact palette still wins over the zero one.
+    CHECK(index.add("WWF No Mercy#0B8FDC27#3#1#4F18C34B_ciByRGBA.png"));
+    path = index.find(0x0B8FDC27, 0x4F18C34B, 3, 1, true);
+    CHECK((path != nullptr) && (*path == "WWF No Mercy#0B8FDC27#3#1#4F18C34B_ciByRGBA.png"));
+}
+
 TEST_CASE("rice: CRC of hand-computed buffers") {
     // One row of one word: the word rotated in (crc was 0), then the last word XOR row 0 added again.
     uint8_t one[8] = { 0, 0, 0, 0, 0x44, 0x33, 0x22, 0x11 };
