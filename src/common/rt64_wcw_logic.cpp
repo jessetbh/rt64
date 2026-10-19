@@ -726,6 +726,14 @@ namespace RT64::WcwLogic {
         }
     }
 
+    bool presentSamplesInterpolatedUnlocked(int32_t frame, int32_t framesToPresent, bool usingMSAA) {
+        return (framesToPresent > 1) && (usingMSAA || (frame > 0));
+    }
+
+    bool regrowsPresentableTargets(bool hasOverrideTarget, bool hasPrimeTargets) {
+        return hasOverrideTarget || hasPrimeTargets;
+    }
+
     DeviceLostWork deviceLostWork(bool deviceLost) {
         return deviceLost ? DeviceLostWork::SkipGpuWork : DeviceLostWork::Render;
     }

@@ -563,6 +563,20 @@ namespace RT64::WcwLogic {
     // window). Matches rt64's G_EX_ORIGIN_LEFT / RIGHT rect origins.
     float hudShiftNdc(HudAnchor anchor, float centredWidthFraction, float placement);
 
+    // Interpolated target lifetimes (aki-roadmap#4)
+
+    // Whether present frame `frame` of framesToPresent samples an interpolated target without workloadMutex: every
+    // generated frame, and with MSAA also the first one (an interpolated copy; taking workloadMutex there would
+    // deadlock on the workload queue). The present then holds wcwInterpolatedTargetsMutex while it records and waits
+    // for its GPU work.
+    bool presentSamplesInterpolatedUnlocked(int32_t frame, int32_t framesToPresent, bool usingMSAA);
+
+    // Whether a workload frame can regrow targets the present may be showing outside workloadMutex: it renders into
+    // an interpolated target (the override), or primes the generated targets. It then regrows them under
+    // wcwInterpolatedTargetsMutex. Regrowing freed the old texture right away, while the present queue could still
+    // be reading it (an MSAA present, or a generated frame after a timed-out set-reuse wait).
+    bool regrowsPresentableTargets(bool hasOverrideTarget, bool hasPrimeTargets);
+
     // Graphics device loss
 
     // What a renderer thread does with its next piece of work (a display list, a workload, a present, a texture
