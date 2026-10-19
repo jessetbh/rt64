@@ -69,7 +69,7 @@ namespace RT64 {
         if (const char *dumpDirectory = getenv("WCW_TEX_DUMP")) {
             if (dumpDirectory[0] != '\0') {
                 const std::filesystem::path directory = std::filesystem::u8path(dumpDirectory);
-                if (TextureManager::prepareDumpDirectory(directory)) {
+                if (textureManager.prepareDumpDirectory(directory)) {
                     dumpingTexturesDirectory = directory;
                 }
             }
@@ -2322,8 +2322,7 @@ namespace RT64 {
                     else if (dumpTextures) {
                         if (dumpingTexturesDirectory.empty()) {
                             dumpingTexturesDirectory = FileDialog::getDirectoryPath();
-                            textureManager.dumpedSet.clear();
-                            if (!dumpingTexturesDirectory.empty() && !TextureManager::prepareDumpDirectory(dumpingTexturesDirectory)) {
+                            if (!dumpingTexturesDirectory.empty() && !textureManager.prepareDumpDirectory(dumpingTexturesDirectory)) {
                                 dumpingTexturesDirectory.clear();
                             }
                         }

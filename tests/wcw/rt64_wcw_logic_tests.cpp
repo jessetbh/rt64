@@ -1522,6 +1522,18 @@ TEST_CASE("widescreen: negative screen x and the int16 range survive the convers
     CHECK(unpackX(modifiedScreenXYForAspect(packXY(8000.0f, 0.0f), 0.0f, 2.0f)) == 8191.75f);
 }
 
+// Texture dumps (#98)
+
+TEST_CASE("texture dump: a second dump session keeps the PNGs already in the pack (it overwrote the player's edits)") {
+    // The pack folder held <hash>.png from the first session (maybe edited): refresh the raw files only.
+    CHECK(texDumpWrite(false, true) == TexDumpWrite::SidecarsOnly);
+    // A texture with no file in the pack gets its PNG.
+    CHECK(texDumpWrite(false, false) == TexDumpWrite::All);
+    // Once per session, either way.
+    CHECK(texDumpWrite(true, false) == TexDumpWrite::Nothing);
+    CHECK(texDumpWrite(true, true) == TexDumpWrite::Nothing);
+}
+
 // Graphics device loss
 
 TEST_CASE("device loss: renderer threads render until the device is lost, then skip all GPU work") {
