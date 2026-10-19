@@ -716,15 +716,19 @@ namespace RT64::WcwLogic {
     }
 
     bool MissDarkening::darkenThisPass(const void *target, uint64_t presentId, size_t meshCount) {
+        if (presentId != maxPresent) {
+            maxPresent = presentId;
+            recentMax *= MaxDecay;
+        }
+
         Target &t = targets[target];
         if (presentId != t.present) {
             t.present = presentId;
             t.darkened = false;
-            t.recentMax *= MaxDecay;
         }
 
-        t.recentMax = std::max(t.recentMax, float(meshCount));
-        if (t.darkened || (float(meshCount) < ArenaShare * t.recentMax)) {
+        recentMax = std::max(recentMax, float(meshCount));
+        if (t.darkened || (float(meshCount) < ArenaShare * recentMax)) {
             return false;
         }
 

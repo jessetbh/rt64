@@ -304,6 +304,35 @@ TEST_CASE("outside darkness: a present carrying both swap targets' frames keeps 
     CHECK_EQ(framesWithoutDarkening, 0u);
 }
 
+TEST_CASE("outside darkness: generated and real frames of a present agree after a cut to a smaller arena pass (crowd flickered)") {
+    // 60 fps: each present draws a generated frame to the game framebuffers (two, in turn) and then the real frame to
+    // the slot targets (three, serial % 3), with the same passes. No Mercy's attract cuts from an arena pass of 180
+    // meshes to one of 140.
+    MissDarkening darkening;
+    const int framebuffers[2] = { 0, 0 };
+    const int slots[3] = { 0, 0, 0 };
+    const size_t wide[] = { 9, 8, 2, 180, 3 };
+    const size_t close[] = { 9, 4, 2, 140, 3 };
+    uint32_t disagreements = 0;
+    for (uint64_t present = 0; present < 120; present++) {
+        const size_t *frame = (present < 40) ? wide : close;
+        uint32_t generated = 0;
+        uint32_t real = 0;
+        for (size_t i = 0; i < 5; i++) {
+            generated += darkening.darkenThisPass(&framebuffers[present % 2], present, frame[i]) ? (1u << i) : 0u;
+        }
+
+        for (size_t i = 0; i < 5; i++) {
+            real += darkening.darkenThisPass(&slots[present % 3], present, frame[i]) ? (1u << i) : 0u;
+        }
+
+        // The first present has no recent maximum yet when its generated frame's first pass runs.
+        disagreements += ((present > 0) && (generated != real)) ? 1 : 0;
+    }
+
+    CHECK_EQ(disagreements, 0u);
+}
+
 // Colored light (rt-color): "color", "keyColor", "fillColor", [x, y, z, weight, r, g, b] lights and
 // [x, y, z, intensity, range, r, g, b] glows.
 
