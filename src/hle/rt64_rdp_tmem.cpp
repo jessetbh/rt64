@@ -124,8 +124,7 @@ namespace RT64 {
         if (WcwRice::logEnabled()) {
             static uint32_t logged = 0;
             if (++logged <= 5000) {
-                fprintf(stderr, "[wcw rice] key %s (%dx%d, bpl %d, rdram %08x, load %s)
-", WcwRice::textureKeyToString(result).c_str(),
+                fprintf(stderr, "[wcw rice] key %s (%dx%d, bpl %d, rdram %08x, load %s)\n", WcwRice::textureKeyToString(result).c_str(),
                     geometry.width, geometry.height, geometry.bytesPerRow, geometry.rdramStart, (load.type == WcwRice::LoadType::Tile) ? "tile" : "block");
             }
         }
