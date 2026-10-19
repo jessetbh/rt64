@@ -160,13 +160,15 @@ namespace RT64 {
     // 
     //                  Length      Hash                    Known instances               
     //     
-    static std::array<GBISegment, 98> textSegments = {
+    static std::array<GBISegment, 99> textSegments = {
             // [wcw2k] WM2000's "F3DLX.Rej xbus 2.08" (AKI 1999): bytes past 0x1000 of the
             // text are VOLATILE at runtime (hashed differently seconds apart mid-run —
             // self-modified or yield-state spill), so match on the stable 0x1000-byte
             // prefix. (The tables are std::sort'ed by length at init, so cumulative
             // hashing hits the 0x1000 checkpoint first regardless of position here.)
             GBISegment{ 0x1000,     0x748B4244A299527EULL,  { &F3DLX2_XBUS_2_08_REJ } },
+            // [wcw fullconv] ECW House Party Mixtape's F3DLX.Rej xbus 2.08 text (WM2000's data).
+            GBISegment{ 0x1000,     0x33A4793135455458ULL,  { &F3DLX2_XBUS_2_08_REJ } },
             // [wcw fullconv] No Mercy's own "F3DLX.Rej xbus 2.08" (stock No Mercy only uses F3DEX2;
             // No Mercy Plus switches to this one). Same stable-prefix match as WM2000's above.
             GBISegment{ 0x1000,     0x99BFB7250167370AULL,  { &F3DLX2_XBUS_2_08_REJ } },
