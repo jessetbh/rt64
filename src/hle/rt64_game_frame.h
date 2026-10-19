@@ -132,6 +132,8 @@ namespace RT64 {
         bool matched = false;
         // [wcw fix] How far the matched objects' camera moved since the previous frame (cut detection).
         WcwLogic::CameraCutCounter wcwCameraCut;
+        // [wcw fix] Pairs whose drawn matrix jumped while the object stayed put (WcwLogic::MatrixSplitCounter).
+        WcwLogic::MatrixSplitCounter wcwMatrixSplit;
 
         bool areFramebufferPairsCompatible(const WorkloadQueue &workloadQueue, const GameIndices::FramebufferPair &first, const GameIndices::FramebufferPair &second);
         bool isSceneCompatible(const WorkloadQueue &workloadQueue, const GameScene &scene, const GameIndices::Projection &proj);
@@ -143,5 +145,11 @@ namespace RT64 {
         void buildTransformIdMap(const Workload &workload, std::multimap<uint32_t, uint32_t> &idMap, std::vector<uint32_t> &ignoredIdVector) const;
         uint64_t hashFromCall(const GameCall &call, uint32_t matrixIdHash) const;
         bool isDebuggerCameraEnabled(const WorkloadQueue &workloadQueue);
+
+        // [wcw diag] WCW_PAIR_LOG: how far each matched object's drawn matrix moved since the previous frame
+        // (relative change, binned < 0.05 / 0.15 / 0.3 / 0.6 / 1.2 / more), and the transforms left unmatched.
+        uint32_t wcwXfBins[6] = {};
+        float wcwXfMax = 0.0f;
+
     };
 };

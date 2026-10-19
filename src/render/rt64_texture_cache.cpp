@@ -16,6 +16,7 @@
 #include "common/rt64_load_types.h"
 #include "common/rt64_thread.h"
 #include "common/rt64_tmem_hasher.h"
+#include "common/rt64_wcw_logic.h"
 #include "hle/rt64_workload_queue.h"
 #include "render/rt64_wcw_device_lost.h"
 
@@ -824,7 +825,7 @@ namespace RT64 {
         return true;
     }
 
-    bool TextureCache::setLowMipCache(RenderDevice *device, RenderCommandList *commandList, const uint8_t *bytes, size_t byteCount, std::unique_ptr<RenderBuffer> &dstUploadResource, std::unordered_map<std::string, LowMipCacheTexture> &dstTextureMap, uint64_t &totalMemory) {
+    bool TextureCache::setLowMipCache(RenderDevice *device, RenderCommandList *commandList, const uint8_t *bytes, size_t byteCount, std::unique_ptr<RenderBuffer> &dstUploadResource, uint32_t fileSystemIndex, std::unordered_map<std::string, LowMipCacheTexture> &dstTextureMap, uint64_t &totalMemory) {
         dstUploadResource = device->createBuffer(RenderBufferDesc::UploadBuffer(byteCount));
 
         // Upload the entire file to the GPU to copy data from it directly.
@@ -867,8 +868,9 @@ namespace RT64 {
                 }
             };
 
-            std::string cachePathForward = FileSystem::toForwardSlashes(cachePath);
-            const bool skipTexture = (dstTextureMap.find(cachePathForward) != dstTextureMap.end());
+            // [wcw] Per pack: another pack's texture at the same path is a different texture (aki-roadmap#99).
+            const std::string cacheKey = WcwLogic::lowMipCacheKey(fileSystemIndex, FileSystem::toForwardSlashes(cachePath));
+            const bool skipTexture = (dstTextureMap.find(cacheKey) != dstTextureMap.end());
             if (skipTexture) {
                 for (uint32_t i = 0; i < cacheHeader->mipCount; i++) {
                     alignToTexturePlacement(byteCursor);
@@ -900,7 +902,7 @@ namespace RT64 {
                 }
 
                 totalMemory += newTexture->memorySize;
-                texturesLoaded.emplace_back(cachePathForward, newTexture);
+                texturesLoaded.emplace_back(cacheKey, newTexture);
             }
         }
 
@@ -1089,6 +1091,7 @@ namespace RT64 {
                     newTexture->loadTile = upload.loadTile;
                     newTexture->tlut = upload.tlut;
                     newTexture->decodeTMEM = upload.decodeTMEM;
+                    newTexture->riceKey = upload.riceKey;
 
                     if (!upload.bytesTMEM.empty()) {
                         void *dstData = tmemUploadResources[i]->map();
@@ -1125,7 +1128,7 @@ namespace RT64 {
                         beforeDecodeBarriers.emplace_back(dstTexture->texture.get(), RenderTextureLayout::GENERAL);
                     }
 
-                    addResolvedPaths(upload.hash, upload.width, upload.height, upload.tlut, upload.loadTile, upload.bytesTMEM, upload.decodeTMEM, resolvedPathQueueCopy);
+                    addResolvedPaths(upload.hash, upload.width, upload.height, upload.tlut, upload.loadTile, upload.bytesTMEM, upload.decodeTMEM, upload.riceKey, resolvedPathQueueCopy);
                 }
 
                 replacementMapAdditions.clear();
@@ -1135,7 +1138,7 @@ namespace RT64 {
 
                     // Look for the low mip cache version if it exists if we can't use the real replacement yet.
                     if ((replacementTexture == nullptr) && (resolvedPath.resolvedOperation == ReplacementOperation::Stream)) {
-                        auto lowMipCacheIt = textureMap.replacementMap.lowMipCacheTextures.find(resolvedPath.relativePath);
+                        auto lowMipCacheIt = textureMap.replacementMap.lowMipCacheTextures.find(WcwLogic::lowMipCacheKey(resolvedPath.fileSystemIndex, resolvedPath.relativePath));
                         if (lowMipCacheIt != textureMap.replacementMap.lowMipCacheTextures.end()) {
                             lowMipCacheTexture = lowMipCacheIt->second.texture;
 
@@ -1271,7 +1274,7 @@ namespace RT64 {
         }
     }
 
-    void TextureCache::queueGPUUploadTMEM(uint64_t hash, uint64_t creationFrame, const uint8_t *bytes, int bytesCount, int width, int height, uint32_t tlut, const LoadTile &loadTile, bool decodeTMEM) {
+    void TextureCache::queueGPUUploadTMEM(uint64_t hash, uint64_t creationFrame, const uint8_t *bytes, int bytesCount, int width, int height, uint32_t tlut, const LoadTile &loadTile, bool decodeTMEM, const WcwRice::TextureKey &riceKey) {
         assert(!decodeTMEM || ((width > 0) && (height > 0)));
 
         TextureUpload newUpload;
@@ -1283,6 +1286,7 @@ namespace RT64 {
         newUpload.loadTile = loadTile;
         newUpload.bytesTMEM = (bytes != nullptr) ? std::vector<uint8_t>(bytes, bytes + bytesCount) : std::vector<uint8_t>();
         newUpload.decodeTMEM = decodeTMEM;
+        newUpload.riceKey = riceKey;
 
         {
             std::unique_lock queueLock(uploadQueueMutex);
@@ -1299,7 +1303,7 @@ namespace RT64 {
         });
     }
 
-    void TextureCache::addResolvedPaths(uint64_t hash, uint32_t width, uint32_t height, uint32_t tlut, const LoadTile &loadTile, const std::vector<uint8_t> &bytesTMEM, bool decodeTMEM, std::vector<ReplacementResolvedPath> &resolvedPaths, uint64_t exclusiveDbHash) {
+    void TextureCache::addResolvedPaths(uint64_t hash, uint32_t width, uint32_t height, uint32_t tlut, const LoadTile &loadTile, const std::vector<uint8_t> &bytesTMEM, bool decodeTMEM, const WcwRice::TextureKey &riceKey, std::vector<ReplacementResolvedPath> &resolvedPaths, uint64_t exclusiveDbHash) {
         uint64_t hashes[TMEMHasher::CurrentHashVersion + 1] = {};
         for (uint32_t v : textureMap.replacementMap.resolvedHashVersions) {
             if (decodeTMEM && v < TMEMHasher::CurrentHashVersion) {
@@ -1319,6 +1323,30 @@ namespace RT64 {
                 if (it != fsResolvedPaths.end()) {
                     // Stop searching for replacements as soon as we find one.
                     resolvedPaths.emplace_back(it->second);
+                    break;
+                }
+            }
+
+            // [wcw] A Rice / GLideN64-named file in the same pack (aki-roadmap#93), at the pack's priority. Not part of
+            // an exclusive reload of one database (those only concern rt64 hashes).
+            if (riceKey.valid && (exclusiveDbHash == 0) && (uint32_t(i) < textureMap.replacementMap.fileSystemRiceIndexes.size())) {
+                const WcwRice::Index &riceIndex = textureMap.replacementMap.fileSystemRiceIndexes[i];
+                const std::string *ricePath = riceIndex.empty() ? nullptr : riceIndex.find(riceKey.crc, riceKey.paletteCrc, riceKey.fmt, riceKey.siz, riceKey.hasPalette);
+                if (ricePath != nullptr) {
+                    ReplacementResolvedPath resolvedPath;
+                    resolvedPath.fileSystemIndex = uint32_t(i);
+                    resolvedPath.textureHash = hash;
+                    resolvedPath.relativePath = *ricePath;
+                    resolvedPath.originalOperation = ReplacementOperation::Stream;
+                    resolvedPath.resolvedOperation = ReplacementOperation::Stream;
+                    resolvedPath.originalShift = ReplacementShift::None;
+                    resolvedPath.resolvedShift = ReplacementShift::None;
+                    resolvedPaths.emplace_back(resolvedPath);
+                    const uint32_t matches = ++textureMap.replacementMap.riceMatches;
+                    if (WcwRice::logEnabled() || (matches <= 10) || ((matches % 100) == 0)) {
+                        fprintf(stderr, "[wcw rice] match #%u %s %016llx -> pack %d %s\n", matches, WcwRice::textureKeyToString(riceKey).c_str(), (unsigned long long)(hash), i, ricePath->c_str());
+                    }
+
                     break;
                 }
             }
@@ -1460,7 +1488,7 @@ namespace RT64 {
             for (size_t i = 0; i < textureMap.textures.size(); i++) {
                 if (textureMap.textures[i] != nullptr) {
                     Texture *texture = textureMap.textures[i];
-                    addResolvedPaths(textureMap.hashes[i], texture->width, texture->height, texture->tlut, texture->loadTile, texture->bytesTMEM, texture->decodeTMEM, resolvedPathQueue, exclusiveDbHash);
+                    addResolvedPaths(textureMap.hashes[i], texture->width, texture->height, texture->tlut, texture->loadTile, texture->bytesTMEM, texture->decodeTMEM, texture->riceKey, resolvedPathQueue, exclusiveDbHash);
                 }
             }
         }
@@ -1547,7 +1575,7 @@ namespace RT64 {
 
                 if (fileSystems[i]->load(ReplacementLowMipCacheFilename, mipCacheBytes)) {
                     uploadBuffers.emplace_back();
-                    if (!setLowMipCache(copyWorker->device, loaderCommandList.get(), mipCacheBytes.data(), mipCacheBytes.size(), uploadBuffers.back(), textureMap.replacementMap.lowMipCacheTextures, totalMemory)) {
+                    if (!setLowMipCache(copyWorker->device, loaderCommandList.get(), mipCacheBytes.data(), mipCacheBytes.size(), uploadBuffers.back(), uint32_t(i), textureMap.replacementMap.lowMipCacheTextures, totalMemory)) {
                         fprintf(stderr, "Failed to load low mip cache.\n");
                     }
                 }
@@ -1569,8 +1597,32 @@ namespace RT64 {
             textureMap.replacementMap.resolvedHashVersions.insert(textureMap.replacementMap.resolvedHashVersions.end(), knownHashVersions.begin(), knownHashVersions.end());
         }
 
+        // [wcw] Index each pack's Rice / GLideN64-named files (aki-roadmap#93), in case-insensitive path order so the
+        // first file of a duplicated key wins as in GLideN64. Any pack can hold them; rt64.json needs no entries.
+        std::vector<WcwRice::Index> fileSystemRiceIndexes(fileSystems.size());
+        for (size_t i = 0; i < fileSystems.size(); i++) {
+            std::vector<std::string> sortedPaths;
+            for (const std::string &relativePath : *fileSystems[i]) {
+                if (relativePath.find('#') != std::string::npos) {
+                    sortedPaths.emplace_back(FileSystem::toForwardSlashes(relativePath));
+                }
+            }
+
+            std::sort(sortedPaths.begin(), sortedPaths.end(), WcwRice::pathLess);
+            size_t riceNames = 0;
+            for (const std::string &relativePath : sortedPaths) {
+                riceNames += fileSystemRiceIndexes[i].add(relativePath) ? 1 : 0;
+            }
+
+            if (riceNames > 0) {
+                fprintf(stderr, "[wcw rice] pack %zu: %zu Rice-named files, %zu keys indexed\n", i, riceNames, fileSystemRiceIndexes[i].size());
+            }
+        }
+
         // Store the file systems in the replacement map.
         uint32_t fileSystemCount = uint32_t(fileSystems.size());
+        textureMap.replacementMap.fileSystemRiceIndexes = std::move(fileSystemRiceIndexes);
+        textureMap.replacementMap.riceMatches = 0;
         textureMap.replacementMap.fileSystems = std::move(fileSystems);
         textureMap.replacementMap.fileSystemResolvedPaths = std::move(fileSystemResolvedPaths);
         textureMap.replacementMap.fileSystemHashVersions = std::move(fileSystemHashVersions);

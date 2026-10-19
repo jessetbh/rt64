@@ -520,6 +520,10 @@ namespace RT64::WcwLogic {
         return (next != NextLayer::SameRun) && (runLength >= expectedRunLength);
     }
 
+    bool dropRunGeneratedFrame(bool layerSkipped, bool cutInRun) {
+        return layerSkipped || cutInRun;
+    }
+
     float matrixChange(const float prev[16], const float cur[16]) {
         double num = 0.0, den = 0.0;
         for (int k = 0; k < 16; k++) {
@@ -552,8 +556,31 @@ namespace RT64::WcwLogic {
         return (pairs >= MinPairs) && (jumped * 2 > pairs);
     }
 
-    bool primeGeneratedTargets(bool primeEnabled, bool generateInterpolatedFrames, bool usingMSAA, uint32_t runLength) {
-        return primeEnabled && generateInterpolatedFrames && !usingMSAA && (runLength == 1);
+    void MatrixSplitCounter::reset() {
+        *this = MatrixSplitCounter();
+    }
+
+    void MatrixSplitCounter::add(bool pairSplit, float drawnChange) {
+        pairs++;
+        split += pairSplit ? 1 : 0;
+        jumped += (drawnChange >= SplitJumpChange) ? 1 : 0;
+        extreme += (drawnChange > SplitExtremeChange) ? 1 : 0;
+    }
+
+    bool MatrixSplitCounter::splitLayer() const {
+        return (extreme > 0) || ((pairs >= MinPairs) && ((split * 2 > pairs) || (jumped * 3 > pairs)));
+    }
+
+    bool splitPair(float drawnChange, float stillChange) {
+        return (drawnChange > SplitDrawnJump) && (stillChange >= 0.0f) && (stillChange <= SplitStillChange);
+    }
+
+    bool primeGeneratedTargets(bool primeEnabled, bool generateInterpolatedFrames, bool usingMSAA, uint32_t runLength, uint32_t generatedLayersBefore) {
+        if (!generateInterpolatedFrames || usingMSAA || (generatedLayersBefore > 0)) {
+            return false;
+        }
+
+        return (runLength == 1) ? primeEnabled : true;
     }
 
     bool framebufferPassCoversScreen(int32_t scissorWidth, int32_t scissorHeight, int32_t fbWidth, int32_t fbHeight) {
@@ -697,6 +724,11 @@ namespace RT64::WcwLogic {
         default:
             return 0.0f;
         }
+    }
+
+    std::string lowMipCacheKey(uint32_t fileSystemIndex, const std::string &relativePath) {
+        // '|' can't appear in a pack's file paths.
+        return std::to_string(fileSystemIndex) + "|" + relativePath;
     }
 
     DeviceLostWork deviceLostWork(bool deviceLost) {

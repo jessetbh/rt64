@@ -321,6 +321,16 @@ TEST_CASE("camera cuts: a few odd pairs or too few pairs are not a cut") {
     CHECK(c.pairs == 0);
 }
 
+TEST_CASE("cuts: a cut found in a run's last layer drops the run's generated frame (Revenge cut without wrestlers, #6)") {
+    // Revenge's cut into the ring showed up only in the 5th of 5 layers; layers 1-4 had already drawn the generated
+    // frame between the two shots, and it had no wrestlers. Drawing the remaining layer real wasn't enough: the whole
+    // run shows its real frame.
+    CHECK(dropRunGeneratedFrame(false, true));
+    CHECK(dropRunGeneratedFrame(true, false));
+    CHECK(dropRunGeneratedFrame(true, true));
+    CHECK(!dropRunGeneratedFrame(false, false));
+}
+
 TEST_CASE("short runs: publishShortRun") {
     CHECK(!publishShortRun(1, 3, 3));
     CHECK(!publishShortRun(3, 5, 5));
@@ -1173,12 +1183,12 @@ TEST_CASE("interpolation: skipped frames advance the display ticks") {
 }
 
 TEST_CASE("priming: only the first layer of a run primes (Revenge flicker)") {
-    CHECK(primeGeneratedTargets(true, true, false, 1));
-    CHECK(!primeGeneratedTargets(true, true, false, 2));
-    CHECK(!primeGeneratedTargets(true, true, false, 3));
-    CHECK(!primeGeneratedTargets(false, true, false, 1));
-    CHECK(!primeGeneratedTargets(true, false, false, 1));
-    CHECK(!primeGeneratedTargets(true, true, true, 1));
+    CHECK(primeGeneratedTargets(true, true, false, 1, 0));
+    CHECK(!primeGeneratedTargets(true, true, false, 2, 1));
+    CHECK(!primeGeneratedTargets(true, true, false, 3, 2));
+    CHECK(!primeGeneratedTargets(false, true, false, 1, 0));
+    CHECK(!primeGeneratedTargets(true, false, false, 1, 0));
+    CHECK(!primeGeneratedTargets(true, true, true, 1, 0));
 }
 
 TEST_CASE("matrix slots: double-buffered slots 0x40 apart share one identity") {
@@ -1522,6 +1532,16 @@ TEST_CASE("widescreen: negative screen x and the int16 range survive the convers
     CHECK(unpackX(modifiedScreenXYForAspect(packXY(8000.0f, 0.0f), 0.0f, 2.0f)) == 8191.75f);
 }
 
+// Texture packs (#99)
+
+TEST_CASE("low-mip cache: stacked packs with the same file name keep their own low mips (keyed by path alone)") {
+    CHECK(lowMipCacheKey(0, "0123456789abcdef.dds") != lowMipCacheKey(1, "0123456789abcdef.dds"));
+    CHECK(lowMipCacheKey(1, "0123456789abcdef.dds") == lowMipCacheKey(1, "0123456789abcdef.dds"));
+    CHECK(lowMipCacheKey(1, "a.dds") != lowMipCacheKey(1, "b.dds"));
+    // The index can't run into the path: pack 1 "1/a.dds" vs pack 11 "/a.dds".
+    CHECK(lowMipCacheKey(1, "1/a.dds") != lowMipCacheKey(11, "/a.dds"));
+}
+
 // Graphics device loss
 
 TEST_CASE("device loss: renderer threads render until the device is lost, then skip all GPU work") {
@@ -1552,6 +1572,158 @@ TEST_CASE("device loss: an unanswered message doesn't block the quit (test runs 
     // Only one quit, even when the player closes the message afterwards.
     CHECK(q.update(true, 50.0 + DeviceLostMessageSeconds + 1.0, true) == DeviceLossQuit::Action::None);
     CHECK(q.update(true, 1000.0, false) == DeviceLossQuit::Action::None);
+}
+
+// No Mercy flicker (aki-roadmap#6)
+
+TEST_CASE("priming: a run whose first layer didn't generate primes at its first generating layer, whatever the profile") {
+    // No Mercy's attract runs: layer 1 is 80 fill rects (no interpolation target, so no generated frames), layers 2
+    // and 3 generate. Priming only at layer 1 left the generated targets with an old frame's arena behind the title.
+    CHECK(primeGeneratedTargets(false, true, false, 2, 0));
+    CHECK(primeGeneratedTargets(true, true, false, 2, 0));
+    CHECK(!primeGeneratedTargets(false, true, false, 3, 1));
+    CHECK(!primeGeneratedTargets(true, true, false, 3, 1));
+    // The fill layer itself generates nothing to prime.
+    CHECK(!primeGeneratedTargets(false, false, false, 1, 0));
+    // MSAA presents its own copies.
+    CHECK(!primeGeneratedTargets(false, true, true, 2, 0));
+}
+
+TEST_CASE("priming: a run whose first layer generates keeps the profile's choice") {
+    CHECK(!primeGeneratedTargets(false, true, false, 1, 0));
+    CHECK(primeGeneratedTargets(true, true, false, 1, 0));
+}
+
+TEST_CASE("matrix split: a drawn matrix that jumps while the object stays put is a split pair") {
+    // No Mercy's attract mode, the run before a shot change (WCW_XF_LOG): the split pairs' drawn matrices moved
+    // 0.75-1.5 while their camera-independent matrices moved 0-0.042, in layers of 2 pairs as well as 137.
+    CHECK(splitPair(0.752f, 0.0f));
+    CHECK(splitPair(1.275f, 0.0f));
+    CHECK(splitPair(1.5f, 0.042f));
+    CHECK(splitPair(SplitDrawnJump + 0.01f, SplitStillChange));
+}
+
+TEST_CASE("matrix split: ordinary motion and objects that really moved aren't split pairs") {
+    // The runs before it: every drawn matrix moved under 0.3 (most under 0.1).
+    CHECK(!splitPair(0.02f, 0.01f));
+    CHECK(!splitPair(SplitDrawnJump, 0.0f));
+    // An object that really moved (a throw, a fast swing) moves its camera-independent matrix too.
+    CHECK(!splitPair(0.8f, 0.5f));
+    CHECK(!splitPair(0.8f, SplitStillChange + 0.01f));
+    // Non-finite changes (matrixChange -1) never split.
+    CHECK(!splitPair(-1.0f, 0.0f));
+    CHECK(!splitPair(1.0f, -1.0f));
+}
+
+static MatrixSplitCounter splitLayerOf(uint32_t pairs, uint32_t split) {
+    MatrixSplitCounter c;
+    for (uint32_t i = 0; i < pairs; i++) {
+        c.add(i < split);
+    }
+
+    return c;
+}
+
+TEST_CASE("matrix split: a scene layer where most pairs split drops the run's generated frame") {
+    // The shot's last frame in No Mercy's attract mode (WCW_PAIR_LOG): the scene layers split 141/141, 161/185,
+    // 118/118 and 34/34.
+    CHECK(splitLayerOf(141, 141).splitLayer());
+    CHECK(splitLayerOf(185, 161).splitLayer());
+    CHECK(splitLayerOf(118, 118).splitLayer());
+    CHECK(splitLayerOf(34, 34).splitLayer());
+    CHECK(splitLayerOf(MatrixSplitCounter::MinPairs, MatrixSplitCounter::MinPairs / 2 + 1).splitLayer());
+}
+
+TEST_CASE("matrix split: small layers and minorities don't drop it (match layers split without a wrong frame)") {
+    // Raw quick match: layers of 2-13 pairs split 2/2, 8/10, 9/9, 11/13 on ~10% of game frames; no wrong frames.
+    CHECK(!splitLayerOf(2, 2).splitLayer());
+    CHECK(!splitLayerOf(10, 8).splitLayer());
+    CHECK(!splitLayerOf(9, 9).splitLayer());
+    CHECK(!splitLayerOf(13, 11).splitLayer());
+    CHECK(!splitLayerOf(MatrixSplitCounter::MinPairs - 1, MatrixSplitCounter::MinPairs - 1).splitLayer());
+    // A cut's scene layer where only part split (18/69), and half isn't most.
+    CHECK(!splitLayerOf(69, 18).splitLayer());
+    CHECK(!splitLayerOf(40, 20).splitLayer());
+    // The layers of a steady shot.
+    CHECK(!splitLayerOf(141, 0).splitLayer());
+    CHECK(!splitLayerOf(0, 0).splitLayer());
+
+    MatrixSplitCounter c = splitLayerOf(141, 141);
+    c.reset();
+    CHECK_EQ(c.pairs, 0u);
+    CHECK_EQ(c.split, 0u);
+}
+
+// Feeds a layer's pairs into a MatrixSplitCounter from a WCW_PAIR_LOG histogram of drawn-matrix changes (bins
+// < 0.05, 0.15, 0.3, 0.6, 1.2 and above), one representative change per bin; none of the pairs split.
+static MatrixSplitCounter jumpLayerOf(const std::vector<uint32_t> &bins) {
+    const float values[6] = { 0.02f, 0.1f, 0.2f, 0.45f, 0.9f, 2.0f };
+    MatrixSplitCounter c;
+    for (size_t b = 0; b < bins.size(); b++) {
+        for (uint32_t i = 0; i < bins[b]; i++) {
+            c.add(false, values[b]);
+        }
+    }
+
+    return c;
+}
+
+TEST_CASE("matrix split: a big layer where more than a third of the objects jumped drops it (Revenge, VPW2, #6)") {
+    // Revenge attract, the frame after a camera cut: the game moved the wrestlers into place, 39 of 94 pairs by 0.3
+    // or more (their camera-independent matrices moved too, so they don't split); a wrestler was squashed to a sliver.
+    CHECK(jumpLayerOf({ 11, 14, 30, 33, 6, 0 }).splitLayer());
+    // A cut the camera test missed (camera 0.17): 47 of 48 pairs jumped; the generated frame showed a third view.
+    CHECK(jumpLayerOf({ 1, 0, 0, 19, 28, 0 }).splitLayer());
+    // VPW2 attract: 46 of 113 and 41 of 108 pairs jumped, a giant arm in the generated frame.
+    CHECK(jumpLayerOf({ 59, 7, 1, 39, 5, 2 }).splitLayer());
+    CHECK(jumpLayerOf({ 60, 7, 0, 0, 33, 8 }).splitLayer());
+}
+
+TEST_CASE("matrix split: fast moves, small layers and a third of the objects jumping don't drop it") {
+    // WM2K and Revenge wrestler layers in fast moves: a few pairs at 0.3 or more.
+    CHECK(!jumpLayerOf({ 60, 51, 7, 2, 0, 0 }).splitLayer());
+    CHECK(!jumpLayerOf({ 45, 49, 0, 0, 0, 0 }).splitLayer());
+    CHECK(!jumpLayerOf({ 80, 0, 0, 0, 14, 0 }).splitLayer());
+    // VPW2's 4-object layer jumps twice a second on its own; small layers don't count.
+    CHECK(!jumpLayerOf({ 0, 0, 0, 0, 4, 0 }).splitLayer());
+    CHECK(!jumpLayerOf({ 0, 0, 0, 0, 0, MatrixSplitCounter::MinPairs - 1 }).splitLayer());
+    CHECK(jumpLayerOf({ 0, 0, 0, 0, 0, MatrixSplitCounter::MinPairs }).splitLayer());
+    // Exactly a third is not more than a third.
+    CHECK(!jumpLayerOf({ 20, 0, 0, 10, 0, 0 }).splitLayer());
+    CHECK(jumpLayerOf({ 19, 0, 0, 10, 0, 0 }).splitLayer());
+    // A change that can't be measured is not a jump.
+    MatrixSplitCounter c;
+    for (uint32_t i = 0; i < 40; i++) {
+        c.add(false, -1.0f);
+    }
+
+    CHECK_EQ(c.jumped, 0u);
+    CHECK(!c.splitLayer());
+}
+
+TEST_CASE("matrix split: a pair whose drawn matrix changed more than tenfold drops it, in any layer (Revenge cut, #6)") {
+    // Revenge's cut into the ring: every other layer was unmatched, a 6-pair layer's drawn matrices changed x309; the
+    // generated frame had no wrestlers.
+    MatrixSplitCounter c;
+    for (int i = 0; i < 6; i++) {
+        c.add(false, 309.0f);
+    }
+
+    CHECK(c.splitLayer());
+    c.reset();
+    c.add(false, 0.9f);
+    c.add(false, SplitExtremeChange + 1.0f);
+    CHECK(c.splitLayer());
+    // Fast motion and VPW2's jumping 4-object layer stay far below.
+    c.reset();
+    for (int i = 0; i < 4; i++) {
+        c.add(false, 1.5f);
+    }
+
+    CHECK(!c.splitLayer());
+    c.reset();
+    c.add(false, SplitExtremeChange);
+    CHECK(!c.splitLayer());
 }
 
 int main() {

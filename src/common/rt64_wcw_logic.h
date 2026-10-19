@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdint>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
 #include <array>
@@ -411,9 +412,15 @@ namespace RT64::WcwLogic {
     HdrAdvice hdrAdvice(float paperWhiteNits, const HdrDisplay &display, const HdrCrt &crt);
 
     // Generated-frame priming: copying the game's buffer into a run's generated targets happens once per run, before
-    // its first layer draws the blended frame. Priming after the blend applied translucent full-screen layers
-    // (fades) twice; priming every layer replaced the earlier layers' draws with the blend (Revenge flicker).
-    bool primeGeneratedTargets(bool primeEnabled, bool generateInterpolatedFrames, bool usingMSAA, uint32_t runLength);
+    // its first generating layer draws the blended frame. Priming after the blend applied translucent full-screen
+    // layers (fades) twice; priming every layer replaced the earlier layers' draws with the blend (Revenge flicker).
+    // primeEnabled (the game's profile) primes runs whose first layer generates. A run whose earlier layers drew
+    // without generating (generatedLayersBefore 0 at runLength > 1) is primed whatever the profile: those layers
+    // drew only into the game's buffer, so without the copy the generated targets lack them and keep stale pixels.
+    // No Mercy's attract mode starts some runs with a fill-rect-only layer (not an interpolation target, see
+    // skipClearOnlyTargets): its generated frames showed an old frame's arena through the title text, a flash every
+    // game frame for ~1 s per loop (aki-roadmap#6).
+    bool primeGeneratedTargets(bool primeEnabled, bool generateInterpolatedFrames, bool usingMSAA, uint32_t runLength, uint32_t generatedLayersBefore);
 
     // Multi-layer runs that end early
 
@@ -448,6 +455,13 @@ namespace RT64::WcwLogic {
     // renderer, so the next workload usually says whether the run goes on: while it does, the publish waits for a
     // later layer. Unknown keeps the expected-length rule.
     bool publishRunAtLayer(uint32_t runLength, uint32_t expectedRunLength, NextLayer next);
+
+    // Whether a run's generated frame is dropped (the real frame shows for the whole game frame, as at 30 fps): a
+    // layer skipped its generated frame, or a layer found a cut (CameraCutCounter, MatrixSplitCounter). A cut found
+    // in a later layer comes after the earlier layers drew their share of the generated frame between the two shots:
+    // drawing only the remaining layers real left Revenge's cut into the ring (found in the 5th of 5 layers) with a
+    // generated frame of the ring without the wrestlers (aki-roadmap#6).
+    bool dropRunGeneratedFrame(bool layerSkipped, bool cutInRun);
 
     // Camera cuts
 
@@ -550,6 +564,13 @@ namespace RT64::WcwLogic {
     // window). Matches rt64's G_EX_ORIGIN_LEFT / RIGHT rect origins.
     float hudShiftNdc(HudAnchor anchor, float centredWidthFraction, float placement);
 
+    // Texture packs (aki-roadmap#99)
+
+    // The low-mip cache key of a streamed replacement: its pack (the file system index) and its path in that pack.
+    // Keyed by the path alone, stacked packs with the same file names (hash-named DDS packs) showed each other's low
+    // mip while the real texture streamed in.
+    std::string lowMipCacheKey(uint32_t fileSystemIndex, const std::string &relativePath);
+
     // Graphics device loss
 
     // What a renderer thread does with its next piece of work (a display list, a workload, a present, a texture
@@ -589,5 +610,58 @@ namespace RT64::WcwLogic {
         bool shown = false;
         bool quit = false;
         double shownSeconds = 0.0;
+    };
+
+    // Frame interpolation: drawn matrices that jump while the objects stay put
+
+    // Whether a matched object pair split: its drawn matrix jumped while the object itself stayed put (its
+    // camera-independent matrix didn't move). The game moved part of the view from one matrix to another (No Mercy's
+    // attract mode does it on the last frame of each shot, for ~90% of the pairs): the real frames look the same, but
+    // interpolating between the two splits showed a third view (smoke and lights moved or gone, a wrestler missing;
+    // 10-60% luminance off for one present, aki-roadmap#6). The camera matrices don't jump, so CameraCutCounter
+    // misses it. drawnChange and stillChange are matrixChange values of the drawn and the camera-independent
+    // matrices; negative (not finite) never splits.
+    // A drawn matrix that changed by more than this has jumped (CameraCutCounter's threshold). The split pairs
+    // measured 0.75 to 1.5 (WCW_XF_LOG); ordinary motion stays under 0.3.
+    constexpr float SplitDrawnJump = 0.25f;
+    // The camera-independent matrix changed by at most this: the object stayed put. The split pairs measured up to
+    // 0.042 (wrestlers' limbs in motion).
+    constexpr float SplitStillChange = 0.1f;
+
+    bool splitPair(float drawnChange, float stillChange);
+
+    // Counts a layer's matched pairs and the split ones among them. When most pairs of a big layer split (the shot's
+    // scene: the attract mode's split layers had 34-185 pairs), the run's generated frame is dropped and the real
+    // frame shows for the whole game frame. The whole run: the layers before it (a 2-pair layer that split, the
+    // background) already drew their generated frames, and a 2-pair split there darkened the frame on its own.
+    // Leaving only the split pairs uninterpolated still showed the third view (the view itself is interpolated).
+    // Small layers aren't counted: in a match, layers of up to 13 pairs split on ~10% of game frames without a wrong
+    // frame (Raw quick match), and dropping those runs would have cost that many generated frames.
+    // A big layer also counts when more than a third of its pairs' drawn matrices jumped (by SplitJumpChange or more),
+    // whatever their camera-independent matrices did. Revenge moves the wrestlers into place the frame after a
+    // camera cut (39 of 94 pairs jumped, their camera-independent matrices moved too), and some Revenge and VPW2 cuts
+    // move the objects while the camera test sees < 0.25 (47 of 48, 46 of 113 pairs): the generated frames squashed a
+    // wrestler to a sliver, showed a third view or a giant arm (aki-roadmap#6). In the attract modes of WT, Revenge,
+    // VPW64, WM2K and VPW2 (WCW_PAIR_LOG), big layers jumped like that on 0.2-1.1% of game frames, nearly all at
+    // camera cuts.
+    constexpr float SplitJumpChange = 0.3f;
+    // Any layer, however small, counts when one of its pairs' drawn matrices changed more than tenfold: no motion does
+    // that. Revenge's cut into the ring left every other layer unmatched and showed only in a 6-pair layer (drawn
+    // matrices x309); its generated frame had no wrestlers. In five attract modes such pairs showed up on 1-70 game
+    // frames per 3 minutes, nearly all at camera cuts; ordinary motion stays under 1.5.
+    constexpr float SplitExtremeChange = 10.0f;
+
+    struct MatrixSplitCounter {
+        static constexpr uint32_t MinPairs = 20;
+
+        uint32_t pairs = 0;
+        uint32_t split = 0;
+        uint32_t jumped = 0;
+        uint32_t extreme = 0;
+
+        void reset();
+        // drawnChange: the pair's drawn-matrix matrixChange (negative when unknown: not counted as jumped).
+        void add(bool pairSplit, float drawnChange = -1.0f);
+        bool splitLayer() const;
     };
 };

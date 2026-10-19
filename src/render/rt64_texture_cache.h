@@ -44,6 +44,7 @@ namespace RT64 {
         LoadTile loadTile;
         std::vector<uint8_t> bytesTMEM;
         bool decodeTMEM;
+        WcwRice::TextureKey riceKey;
     };
 
     struct LowMipCacheTexture {
@@ -80,6 +81,7 @@ namespace RT64 {
         LoadedTextureReverseMap loadedTextureReverseMap;
         std::list<Texture *> unusedTextureList;
         std::vector<uint32_t> resolvedHashVersions;
+        // [wcw] Keyed by WcwLogic::lowMipCacheKey: pack and path (aki-roadmap#99).
         std::unordered_map<std::string, LowMipCacheTexture> lowMipCacheTextures;
         std::vector<std::unique_ptr<FileSystem>> fileSystems;
         std::vector<std::unordered_map<uint64_t, ReplacementResolvedPath>> fileSystemResolvedPaths;
@@ -92,6 +94,10 @@ namespace RT64 {
         uint64_t maxTexturePoolSize = 0;
         ReplacementDatabase directoryDatabase;
         bool fileSystemIsDirectory = false;
+        // [wcw] Rice / GLideN64-named files of each pack (aki-roadmap#93), matched when a texture's rt64 hash has no
+        // entry in that pack. riceMatches counts textures matched this way since the packs were loaded.
+        std::vector<WcwRice::Index> fileSystemRiceIndexes;
+        uint32_t riceMatches = 0;
 
         ReplacementMap();
         ~ReplacementMap();
@@ -233,9 +239,9 @@ namespace RT64 {
         TextureCache(RenderWorker *directWorker, RenderWorker *copyWorker, uint32_t threadCount, const ShaderLibrary *shaderLibrary);
         ~TextureCache();
         void uploadThreadLoop();
-        void queueGPUUploadTMEM(uint64_t hash, uint64_t creationFrame, const uint8_t *bytes, int bytesCount, int width, int height, uint32_t tlut, const LoadTile &loadTile, bool decodeTMEM);
+        void queueGPUUploadTMEM(uint64_t hash, uint64_t creationFrame, const uint8_t *bytes, int bytesCount, int width, int height, uint32_t tlut, const LoadTile &loadTile, bool decodeTMEM, const WcwRice::TextureKey &riceKey = WcwRice::TextureKey());
         void waitForGPUUploads();
-        void addResolvedPaths(uint64_t hash, uint32_t width, uint32_t height, uint32_t tlut, const LoadTile &loadTile, const std::vector<uint8_t> &bytesTMEM, bool decodeTMEM, std::vector<ReplacementResolvedPath> &resolvedPaths, uint64_t exclusiveDbHash = 0);
+        void addResolvedPaths(uint64_t hash, uint32_t width, uint32_t height, uint32_t tlut, const LoadTile &loadTile, const std::vector<uint8_t> &bytesTMEM, bool decodeTMEM, const WcwRice::TextureKey &riceKey, std::vector<ReplacementResolvedPath> &resolvedPaths, uint64_t exclusiveDbHash = 0);
         bool useTexture(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex, interop::float2 &textureScale, interop::float3 &textureDimensions, bool &textureReplaced, bool &hasMipmaps, bool &shiftedByHalf);
         bool useTexture(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex);
         bool addReplacement(uint64_t hash, const std::string &relativePath, ReplacementShift shift);
@@ -262,7 +268,7 @@ namespace RT64 {
         Texture *getTexture(uint32_t textureIndex);
         static void setRGBA32(Texture *dstTexture, RenderDevice *device, RenderCommandList *commandList, const uint8_t *bytes, size_t byteCount, uint32_t width, uint32_t height, uint32_t rowPitch, std::unique_ptr<RenderBuffer> &dstUploadResource, RenderPool *uploadResourcePool = nullptr, std::mutex *uploadResourcePoolMutex = nullptr);
         static bool setDDS(Texture *dstTexture, RenderDevice *device, RenderCommandList *commandList, const uint8_t *bytes, size_t byteCount, std::unique_ptr<RenderBuffer> &dstUploadResource, RenderPool *uploadResourcePool = nullptr, std::mutex *uploadResourcePoolMutex = nullptr);
-        static bool setLowMipCache(RenderDevice *device, RenderCommandList *commandList, const uint8_t *bytes, size_t byteCount, std::unique_ptr<RenderBuffer> &dstUploadResource, std::unordered_map<std::string, LowMipCacheTexture> &dstTextureMap, uint64_t &totalMemory);
+        static bool setLowMipCache(RenderDevice *device, RenderCommandList *commandList, const uint8_t *bytes, size_t byteCount, std::unique_ptr<RenderBuffer> &dstUploadResource, uint32_t fileSystemIndex, std::unordered_map<std::string, LowMipCacheTexture> &dstTextureMap, uint64_t &totalMemory);
         static Texture *loadTextureFromBytes(RenderDevice *device, RenderCommandList *commandList, const std::vector<uint8_t> &fileBytes, std::unique_ptr<RenderBuffer> &dstUploadResource, RenderPool *resourcePool = nullptr, std::mutex *uploadResourcePoolMutex = nullptr);
     };
 };

@@ -9,7 +9,11 @@
 
 #include "xxHash/xxh3.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <iterator>
 
 namespace RT64 {
     // GameFrame
@@ -259,6 +263,9 @@ namespace RT64 {
         lookAtInterpolationUsed = false;
         matched = true;
         wcwCameraCut.reset();
+        wcwMatrixSplit.reset();
+        std::fill(std::begin(wcwXfBins), std::end(wcwXfBins), 0u);
+        wcwXfMax = 0.0f;
 
         thread_local std::unordered_map<uint32_t, ModifiedBuffers> workloadsModified;
         workloadsModified.clear();
@@ -401,6 +408,21 @@ namespace RT64 {
         // elsewhere orthographic scenes are left unmatched.
         if (wcwInterpActive.load(std::memory_order_relaxed)) {
             matchScenes(orthographicScenes, prevFrame.orthographicScenes);
+        }
+
+        static const bool wcwPairLog = getenv("WCW_PAIR_LOG") != nullptr;
+        if (wcwPairLog && wcwInterpActive.load(std::memory_order_relaxed)) {
+            uint32_t unmapped = 0, total = 0;
+            for (uint32_t w : workloads) {
+                for (const GameFrameMap::TransformMap &t : frameMap.workloads[w].transforms) {
+                    total++;
+                    unmapped += t.mapped ? 0 : 1;
+                }
+            }
+
+            fprintf(stderr, "[wcw xf] t=%.3f xf %u unmapped %u bins %u %u %u %u %u %u max %.2f\n",
+                std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(), total, unmapped,
+                wcwXfBins[0], wcwXfBins[1], wcwXfBins[2], wcwXfBins[3], wcwXfBins[4], wcwXfBins[5], wcwXfMax);
         }
 
         if (!workloadsModified.empty()) {
@@ -789,6 +811,17 @@ namespace RT64 {
         }
         const hlslpp::float4x4 &curTransform = curWorkload.drawData.worldTransformsPure[curTransformIndex];
         const hlslpp::float4x4 &prevTransform = prevWorkload.drawData.worldTransformsPure[prevTransformIndex];
+
+        // [wcw fix] Split detection: the drawn matrix jumped while the object stayed put (WcwLogic::MatrixSplitCounter).
+        {
+            float dc[16], dp[16], pc[16], pp[16];
+            hlslpp::store(hlslpp::float4x4(curWorkload.drawData.worldTransforms[curTransformIndex]), dc);
+            hlslpp::store(hlslpp::float4x4(prevWorkload.drawData.worldTransforms[prevTransformIndex]), dp);
+            hlslpp::store(curTransform, pc);
+            hlslpp::store(prevTransform, pp);
+            const float drawnChange = WcwLogic::matrixChange(dp, dc);
+            wcwMatrixSplit.add(WcwLogic::splitPair(drawnChange, WcwLogic::matrixChange(pp, pc)), drawnChange);
+        }
         const uint32_t curGroupIndex = curWorkload.drawData.worldTransformGroups[curTransformIndex];
         const TransformGroup &curGroup = curWorkload.drawData.transformGroups[curGroupIndex];
         curTransformMap.rigidBody.updateLinear(prevTransform, curTransform, curGroup.positionInterpolation);
@@ -829,9 +862,47 @@ namespace RT64 {
                 }
 
                 curTransformMap.wcwCombinedLerp = finite && (den > 0.0) && (std::sqrt(num / den) < 0.3);
+                if (finite && (den > 0.0)) {
+                    const float change = float(std::sqrt(num / den));
+                    const float edges[5] = { 0.05f, 0.15f, 0.3f, 0.6f, 1.2f };
+                    uint32_t bin = 0;
+                    while ((bin < 5) && (change >= edges[bin])) bin++;
+                    wcwXfBins[bin]++;
+                    wcwXfMax = std::max(wcwXfMax, change);
+                }
             }
         }
         curTransformMap.rigidBody.updateDecomposition(curTransform, curGroup.decompose);
+        // [wcw hfr] WCW_XF_LOG=<first run serial>,<last run serial>: one line per matched pair, with how far its drawn,
+        // camera-independent and camera matrices moved (matrixChange; -2 = no camera matrix) and its translation.
+        {
+            static long long wcwXfFirst = -1, wcwXfLast = -1;
+            static bool wcwXfInit = false;
+            if (!wcwXfInit) {
+                wcwXfInit = true;
+                if (const char *e = getenv("WCW_XF_LOG")) {
+                    sscanf(e, "%lld,%lld", &wcwXfFirst, &wcwXfLast);
+                }
+            }
+
+            const long long serial = (long long)(curWorkload.wcwRunSerial);
+            if ((wcwXfFirst >= 0) && (serial >= wcwXfFirst) && (serial <= wcwXfLast)) {
+                float dp[16], dc[16], pp[16], pc[16], cp[16], cc[16];
+                hlslpp::store(hlslpp::float4x4(prevWorkload.drawData.worldTransforms[prevTransformIndex]), dp);
+                hlslpp::store(hlslpp::float4x4(curWorkload.drawData.worldTransforms[curTransformIndex]), dc);
+                hlslpp::store(prevTransform, pp);
+                hlslpp::store(curTransform, pc);
+                const bool haveCamera = (curTransformIndex < curWorkload.drawData.worldTransformsCamera.size()) && (prevTransformIndex < prevWorkload.drawData.worldTransformsCamera.size());
+                if (haveCamera) {
+                    hlslpp::store(hlslpp::float4x4(prevWorkload.drawData.worldTransformsCamera[prevTransformIndex]), cp);
+                    hlslpp::store(hlslpp::float4x4(curWorkload.drawData.worldTransformsCamera[curTransformIndex]), cc);
+                }
+
+                fprintf(stderr, "[wcw xf] serial %lld prev serial %llu cur %u prev %u drawn %.3f pure %.3f camera %.3f combined lerp %d t=(%.1f,%.1f,%.1f) prev t=(%.1f,%.1f,%.1f)\n",
+                    serial, (unsigned long long)prevWorkload.wcwRunSerial, curTransformIndex, prevTransformIndex, WcwLogic::matrixChange(dp, dc), WcwLogic::matrixChange(pp, pc),
+                    haveCamera ? WcwLogic::matrixChange(cp, cc) : -2.0f, int(curTransformMap.wcwCombinedLerp), pc[12], pc[13], pc[14], pp[12], pp[13], pp[14]);
+            }
+        }
         curTransformMap.prevTransformIndex = prevTransformIndex;
         curTransformMap.mapped = true;
         curTransformMap.usedPureMatrix = true;

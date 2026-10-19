@@ -21,8 +21,9 @@ function(preprocess INFILE OUTFILE OPTIONS)
     if (CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
         if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
             add_custom_command(OUTPUT ${OUTFILE}
-                COMMAND clang -x c -E -P ${INFILE} -o ${OUTFILE} ${OPTIONS}
-                DEPENDS ${INFILE})
+                COMMAND clang -x c -E -P ${INFILE} -o ${OUTFILE} ${OPTIONS} -MD -MF ${OUTFILE}.d -MT ${OUTFILE}
+                DEPENDS ${INFILE}
+                DEPFILE ${OUTFILE}.d)
         else()
             add_custom_command(OUTPUT ${OUTFILE}
                 COMMAND ${CMAKE_CXX_COMPILER} /Zs /EP ${INFILE} ${OPTIONS} > ${OUTFILE}
@@ -30,8 +31,9 @@ function(preprocess INFILE OUTFILE OPTIONS)
         endif()
     else()
         add_custom_command(OUTPUT ${OUTFILE}
-            COMMAND ${CMAKE_CXX_COMPILER} -x c -E -P ${INFILE} -o ${OUTFILE} ${OPTIONS}
-            DEPENDS ${INFILE})
+            COMMAND ${CMAKE_CXX_COMPILER} -x c -E -P ${INFILE} -o ${OUTFILE} ${OPTIONS} -MD -MF ${OUTFILE}.d -MT ${OUTFILE}
+            DEPENDS ${INFILE}
+            DEPFILE ${OUTFILE}.d)
     endif()
 endfunction()
 
@@ -110,10 +112,16 @@ set (DXC_CS_OPTS "${DXC_COMMON_OPTS}" "-E" "CSMain" "-T cs_6_3")
 set (DXC_GS_OPTS "${DXC_COMMON_OPTS}" "-E" "GSMain" "-T gs_6_3")
 set (DXC_RT_OPTS "${DXC_COMMON_OPTS}" "-D" "RT_SHADER" "-T" "lib_6_3" "-fspv-target-env=vulkan1.1spirv1.4" "-fspv-extension=SPV_KHR_ray_tracing" "-fspv-extension=SPV_EXT_descriptor_indexing")
 
+# [wcw] Shaders rebuild when a header they include changes (aki-roadmap#104): each DXC step first writes the
+# includes to a depfile (DXC's -MF lists them without compiling), then compiles. Before, only the .hlsl was a
+# dependency, so a change to a shared struct (WcwRtParams) left the shaders that didn't change with the old layout.
+
 function(build_shader_spirv_impl TARGETOBJ FILENAME TARGET_NAME OUTNAME)
     add_custom_command(OUTPUT ${OUTNAME}.spv
+        COMMAND ${DXC} ${DXC_SPV_OPTS} ${ARGN} ${FILENAME} /Fo ${OUTNAME}.spv -MF ${OUTNAME}.spv.d
         COMMAND ${DXC} ${DXC_SPV_OPTS} ${ARGN} ${FILENAME} /Fo ${OUTNAME}.spv
-        DEPENDS ${FILENAME})
+        DEPENDS ${FILENAME}
+        DEPFILE ${OUTNAME}.spv.d)
     add_custom_command(OUTPUT ${OUTNAME}.spirv.c
         COMMAND file_to_c ${OUTNAME}.spv ${TARGET_NAME}BlobSPIRV ${OUTNAME}.spirv.c ${OUTNAME}.spirv.h
         DEPENDS ${OUTNAME}.spv file_to_c
@@ -123,8 +131,10 @@ endfunction()
 
 function(build_shader_dxil_impl TARGETOBJ FILENAME TARGET_NAME OUTNAME)
     add_custom_command(OUTPUT ${OUTNAME}.dxil
+        COMMAND ${DXC} ${DXC_DXIL_OPTS} ${ARGN} ${FILENAME} /Fo ${OUTNAME}.dxil -MF ${OUTNAME}.dxil.d
         COMMAND ${DXC} ${DXC_DXIL_OPTS} ${ARGN} ${FILENAME} /Fo ${OUTNAME}.dxil
-        DEPENDS ${FILENAME})
+        DEPENDS ${FILENAME}
+        DEPFILE ${OUTNAME}.dxil.d)
     add_custom_command(OUTPUT ${OUTNAME}.dxil.c
         COMMAND file_to_c ${OUTNAME}.dxil ${TARGET_NAME}BlobDXIL ${OUTNAME}.dxil.c ${OUTNAME}.dxil.h
         DEPENDS ${OUTNAME}.dxil file_to_c
@@ -134,8 +144,10 @@ endfunction()
 
 function(build_shader_msl_impl TARGETOBJ FILENAME TARGET_NAME OUTNAME)
     add_custom_command(OUTPUT ${OUTNAME}.spv
+            COMMAND ${DXC} ${DXC_SPV_OPTS} ${ARGN} ${FILENAME} /Fo ${OUTNAME}.spv -MF ${OUTNAME}.spv.d
             COMMAND ${DXC} ${DXC_SPV_OPTS} ${ARGN} ${FILENAME} /Fo ${OUTNAME}.spv
-            DEPENDS ${FILENAME})
+            DEPENDS ${FILENAME}
+            DEPFILE ${OUTNAME}.spv.d)
     add_custom_command(OUTPUT ${OUTNAME}.metal
             COMMAND spirv_cross_msl ${OUTNAME}.spv ${OUTNAME}.metal
             DEPENDS ${OUTNAME}.spv spirv_cross_msl)
@@ -321,6 +333,7 @@ set (SOURCES
     "${PROJECT_SOURCE_DIR}/src/common/rt64_user_paths.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_logic.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_perf.cpp"
+    "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_rice.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_texdump.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_venues.cpp"
 
@@ -461,8 +474,10 @@ if (RT64_WCW_TESTS AND NOT CMAKE_CROSSCOMPILING)
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_sharp_texel_tests.cpp"
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_perf_tests.cpp"
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_texdump_tests.cpp"
+        "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_rice_tests.cpp"
         "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_logic.cpp"
         "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_perf.cpp"
+        "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_rice.cpp"
         "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_texdump.cpp"
         "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_venues.cpp"
         "${PROJECT_SOURCE_DIR}/src/common/rt64_replacement_database.cpp"

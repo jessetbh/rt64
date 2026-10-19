@@ -404,13 +404,16 @@ namespace RT64 {
 
     void to_json(json &j, const ReplacementShiftFilter &shiftFilter) {
         j["wildcard"] = shiftFilter.wildcard;
-        j["operation"] = shiftFilter.shift;
+        // [wcw] Written as "shift", the key from_json reads; it was written as "operation", so a saved database lost
+        // its shift filters (aki-roadmap#99).
+        j["shift"] = shiftFilter.shift;
     }
 
     void from_json(const json &j, ReplacementShiftFilter &shiftFilter) {
         ReplacementShiftFilter defaultFilter;
         shiftFilter.wildcard = FileSystem::toForwardSlashes(j.value("wildcard", defaultFilter.wildcard));
-        shiftFilter.shift = j.value("shift", defaultFilter.shift);
+        // [wcw] Databases saved before the fix hold the shift under "operation".
+        shiftFilter.shift = j.contains("shift") ? j.value("shift", defaultFilter.shift) : j.value("operation", defaultFilter.shift);
     }
 
     void to_json(json &j, const ReplacementDatabase &db) {
