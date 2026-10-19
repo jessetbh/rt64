@@ -160,7 +160,7 @@ namespace RT64 {
     // 
     //                  Length      Hash                    Known instances               
     //     
-    static std::array<GBISegment, 97> textSegments = {
+    static std::array<GBISegment, 98> textSegments = {
             // [wcw2k] WM2000's "F3DLX.Rej xbus 2.08" (AKI 1999): bytes past 0x1000 of the
             // text are VOLATILE at runtime (hashed differently seconds apart mid-run —
             // self-modified or yield-state spill), so match on the stable 0x1000-byte
@@ -233,6 +233,9 @@ namespace RT64 {
             // but the 3D ucode's DATA hashes identically to F3DEX2_XBUS_2_08's 0x420-byte
             // entry below — same GBI command set for both, per family.
             GBISegment{ 0x13A0,     0x60BF253FA40991C0ULL,  { &F3DEX2_XBUS_2_08 } },
+            // [wcw fullconv] ECW House Party Mixtape (a WM2000 hack): its F3DEX2 xbus 2.08 text differs
+            // again, the data is the stock F3DEX2_XBUS_2_08 0x420 bytes.
+            GBISegment{ 0x13A0,     0x492C293EFFC7BD31ULL,  { &F3DEX2_XBUS_2_08 } },
             GBISegment{ 0x1198,     0xD5E0AABE069BA75CULL,  { &F3DLX2_XBUS_2_08_REJ } }, // Needs confirmation.
             GBISegment{ 0x1370,     0xCFCF197526613F82ULL,  { &F3DEX2_NON_FIFO_2_03 } }, // Needs confirmation.
             GBISegment{ 0x1390,     0xDF624201BC21895EULL,  { &F3DEX2_NON_FIFO_2_04 } }, // Needs confirmation.
