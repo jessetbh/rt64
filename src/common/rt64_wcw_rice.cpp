@@ -186,6 +186,12 @@ namespace RT64 {
             }
 
             if (parsed.suffix == Suffix::Alpha) {
+                const std::string lower = toLower(relativePath);
+                const size_t suffix = lower.rfind("_a.");
+                if ((suffix != std::string::npos) && (lower.compare(lower.size() - 4, 4, ".png") == 0)) {
+                    alphaTwins.emplace(lower.substr(0, suffix), relativePath);
+                }
+
                 return true;
             }
 
@@ -199,6 +205,34 @@ namespace RT64 {
             }
 
             return true;
+        }
+
+        const std::string *Index::alphaFor(const std::string &rgbPath) const {
+            if (!isRgbFile(rgbPath)) {
+                return nullptr;
+            }
+
+            const std::string lower = toLower(rgbPath);
+            auto it = alphaTwins.find(lower.substr(0, lower.rfind("_rgb.")));
+            return (it != alphaTwins.end()) ? &it->second : nullptr;
+        }
+
+        bool isRgbFile(const std::string &relativePath) {
+            const size_t slash = relativePath.find_last_of("/\\");
+            ParsedName parsed;
+            return parseFileName((slash == std::string::npos) ? relativePath : relativePath.substr(slash + 1), parsed) && (parsed.suffix == Suffix::Rgb);
+        }
+
+        void mergeAlpha(uint8_t *rgba, const uint8_t *alphaRgba, size_t pixelCount) {
+            for (size_t i = 0; i < pixelCount; i++) {
+                rgba[i * 4 + 3] = alphaRgba[i * 4];
+            }
+        }
+
+        void makeOpaque(uint8_t *rgba, size_t pixelCount) {
+            for (size_t i = 0; i < pixelCount; i++) {
+                rgba[i * 4 + 3] = 0xFF;
+            }
         }
 
         const std::string *Index::find(uint32_t crc, uint32_t paletteCrc, uint8_t fmt, uint8_t siz, bool hasPalette) const {

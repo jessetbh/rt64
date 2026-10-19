@@ -75,6 +75,9 @@ namespace RT64 {
             uint8_t siz = 0;
             uint32_t crc = 0;
             uint32_t paletteCrc = 0;
+            // The Jabo Direct3D8 name of the same texture (common/rt64_wcw_jabo.h): MD5, 16 bytes.
+            bool jaboValid = false;
+            uint8_t jabo[16] = {};
         };
 
         struct ParsedName {
@@ -98,14 +101,18 @@ namespace RT64 {
         bool logEnabled();
 
         // A texture pack's Rice-named files. Feed it the pack's relative paths; like GLideN64, the first file added for
-        // a key wins (add them in case-insensitive path order), _a alpha files are ignored (no RGB + A merge: the _rgb
-        // file is used alone) and a whole-texture file beats an _rgb one for the same key.
+        // a key wins (add them in case-insensitive path order) and a whole-texture file beats an _rgb one for the same
+        // key. An _rgb file's alpha comes from its _a twin (same folder and name, "_a" for "_rgb"), see alphaFor.
         class Index {
         public:
             // Returns true when the path was a Rice name (whether or not it won its key).
             bool add(const std::string &relativePath);
             bool empty() const { return entries.empty(); }
             size_t size() const { return entries.size(); }
+
+            // For an _rgb file: its _a twin's path, or nullptr when the pack has none (GLideN64 then treats the
+            // texture as opaque). Only PNG twins count (rt64 can't load BMP). nullptr for any other file.
+            const std::string *alphaFor(const std::string &rgbPath) const;
 
             // The best file for a texture: exact key with palette, crc#fmt#siz#00000000 (Rice Video names TLUT textures
             // in non-CI formats with a zero palette CRC), crc#fmt#siz#$, crc#fmt#siz (packs that name CI
@@ -120,7 +127,20 @@ namespace RT64 {
             };
 
             std::unordered_map<Key, Entry, KeyHasher> entries;
+            // Lowercase path up to the suffix ("dir/name#...#..") -> the _a file's path.
+            std::unordered_map<std::string, std::string> alphaTwins;
         };
+
+        // Whether a path names a Rice _rgb file (the color half of an _rgb + _a pair).
+        bool isRgbFile(const std::string &relativePath);
+
+        // GLideN64's _rgb + _a merge (TxHiResLoader.cpp: "use R comp for alpha. this is what Rice uses"): every pixel
+        // of 'rgba' (RGBA8) takes the R component of the same pixel of 'alphaRgba' (RGBA8) as its alpha. Both hold
+        // 'pixelCount' pixels; the caller rejects the pair when their sizes differ, as GLideN64 does.
+        void mergeAlpha(uint8_t *rgba, const uint8_t *alphaRgba, size_t pixelCount);
+
+        // An _rgb file without its _a twin is drawn opaque (GLideN64: "treat as opaque texture").
+        void makeOpaque(uint8_t *rgba, size_t pixelCount);
 
         // Rice's CRC (RiceCRC32 in GLideN64's TxUtil.cpp, Rice Video's CalculateRDRAMCRC): rows from the last to the first,
         // 32-bit words from the end of the row to its start, each XORed with its byte offset, rotated in; the row's

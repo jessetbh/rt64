@@ -92,7 +92,7 @@ TEST_CASE("rice: rejects names that aren't Rice names") {
     CHECK(!parseFileName("game#$#2#1_all.png", parsed));
 }
 
-TEST_CASE("rice: index lookup order, first file wins, _a ignored, whole texture beats _rgb") {
+TEST_CASE("rice: index lookup order, first file wins, _a isn't a key of its own, whole texture beats _rgb") {
     Index index;
     CHECK(index.add("Pack/A/G#11111111#2#1#22222222_ciByRGBA.png"));
     CHECK(index.add("Pack/B/G#11111111#2#1#22222222_ciByRGBA.png"));
@@ -122,6 +122,40 @@ TEST_CASE("rice: index lookup order, first file wins, _a ignored, whole texture 
     CHECK((path != nullptr) && (*path == "G#55555555#2#1#$_all.png"));
     path = index.find(0x77777777, 0x66666666, 2, 0, true);
     CHECK((path != nullptr) && (*path == "G#$#2#0#66666666_all.png"));
+}
+
+TEST_CASE("rice: an _rgb file finds its _a twin in the same folder, case-insensitively, PNG only") {
+    Index index;
+    CHECK(index.add("Pack/Ring/G#AAAAAAAA#0#2_rgb.png"));
+    CHECK(index.add("Pack/Ring/g#aaaaaaaa#0#2_A.PNG"));
+    CHECK(index.add("Pack/Ring/G#BBBBBBBB#2#1#CCCCCCCC_rgb.png"));
+    CHECK(index.add("Pack/Ring/G#BBBBBBBB#2#1#CCCCCCCC_a.bmp")); // rt64 can't load BMP: no twin
+    CHECK(index.add("Pack/Other/G#DDDDDDDD#0#2_a.png"));
+    CHECK(index.add("Pack/Ring/G#DDDDDDDD#0#2_rgb.png"));        // its _a is in another folder: no twin
+    CHECK(index.add("Pack/Ring/G#EEEEEEEE#0#2_all.png"));
+
+    const std::string *alpha = index.alphaFor("Pack/Ring/G#AAAAAAAA#0#2_rgb.png");
+    CHECK((alpha != nullptr) && (*alpha == "Pack/Ring/g#aaaaaaaa#0#2_A.PNG"));
+    CHECK(index.alphaFor("Pack/Ring/G#BBBBBBBB#2#1#CCCCCCCC_rgb.png") == nullptr);
+    CHECK(index.alphaFor("Pack/Ring/G#DDDDDDDD#0#2_rgb.png") == nullptr);
+    // Only _rgb files have twins.
+    CHECK(index.alphaFor("Pack/Ring/G#EEEEEEEE#0#2_all.png") == nullptr);
+    CHECK(isRgbFile("Pack/Ring/G#AAAAAAAA#0#2_RGB.png"));
+    CHECK(!isRgbFile("Pack/Ring/G#AAAAAAAA#0#2_all.png"));
+    CHECK(!isRgbFile("Pack/Ring/notes_rgb.png"));
+}
+
+TEST_CASE("rice: _rgb + _a merge takes the _a image's R component as alpha; a lone _rgb is opaque") {
+    // Two RGBA8 pixels each.
+    uint8_t rgb[8] = { 10, 20, 30, 40, 50, 60, 70, 80 };
+    const uint8_t alpha[8] = { 200, 1, 2, 3, 0, 9, 9, 9 };
+    mergeAlpha(rgb, alpha, 2);
+    const uint8_t merged[8] = { 10, 20, 30, 200, 50, 60, 70, 0 };
+    CHECK(memcmp(rgb, merged, sizeof(rgb)) == 0);
+
+    makeOpaque(rgb, 2);
+    const uint8_t opaque[8] = { 10, 20, 30, 255, 50, 60, 70, 255 };
+    CHECK(memcmp(rgb, opaque, sizeof(rgb)) == 0);
 }
 
 TEST_CASE("rice: a paletted texture matches a name with a zero palette CRC (Rice Video's IA + TLUT names)") {
