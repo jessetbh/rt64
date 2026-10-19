@@ -222,6 +222,12 @@ namespace RT64::WcwLogic {
     // pass before it and under 20 for the rest). Choosing by position flickered the crowd: at 60 fps the real and
     // interpolated frames go to alternating targets with their passes interleaved, and when a present carried both swap
     // targets' frames the arena pass moved from pass 3 to pass 8, so whole frames had no darkening pass.
+    // The recent maximum is shared by all targets and decays once per present. Kept per target, it decayed once per
+    // present that drew to that target: generated frames go to the two game framebuffers in turn and real frames to
+    // three slot targets, so after a cut to a smaller arena pass (No Mercy's attract: 180 to 144 meshes) the generated
+    // frames' targets dropped below ArenaShare a few game frames before the real frames' did. For those frames the
+    // generated frame darkened the misses and the real frame didn't: the crowd went dark and lit at 60 fps for up to
+    // 9 game frames (gen/real luminance 0.65, aki-roadmap#6).
     class MissDarkening {
     public:
         static constexpr float ArenaShare = 0.8f;
@@ -235,10 +241,11 @@ namespace RT64::WcwLogic {
         struct Target {
             uint64_t present = UINT64_MAX;
             bool darkened = false;
-            float recentMax = 0.0f;
         };
 
         std::unordered_map<const void *, Target> targets;
+        uint64_t maxPresent = UINT64_MAX;
+        float recentMax = 0.0f;
     };
 
     // Which venue's lighting applies, from the world textures each game frame draws (update() once per present, which
