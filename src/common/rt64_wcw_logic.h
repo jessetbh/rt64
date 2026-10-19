@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdint>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
 #include <array>
@@ -562,6 +563,13 @@ namespace RT64::WcwLogic {
     // anchor: all the way to the window edge at placement 1, part of the way for a clamped mode (16:9 in a 21:9
     // window). Matches rt64's G_EX_ORIGIN_LEFT / RIGHT rect origins.
     float hudShiftNdc(HudAnchor anchor, float centredWidthFraction, float placement);
+
+    // Texture packs (aki-roadmap#99)
+
+    // The low-mip cache key of a streamed replacement: its pack (the file system index) and its path in that pack.
+    // Keyed by the path alone, stacked packs with the same file names (hash-named DDS packs) showed each other's low
+    // mip while the real texture streamed in.
+    std::string lowMipCacheKey(uint32_t fileSystemIndex, const std::string &relativePath);
 
     // Graphics device loss
 

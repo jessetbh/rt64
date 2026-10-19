@@ -16,6 +16,7 @@
 #include "common/rt64_load_types.h"
 #include "common/rt64_thread.h"
 #include "common/rt64_tmem_hasher.h"
+#include "common/rt64_wcw_logic.h"
 #include "hle/rt64_workload_queue.h"
 #include "render/rt64_wcw_device_lost.h"
 
@@ -824,7 +825,7 @@ namespace RT64 {
         return true;
     }
 
-    bool TextureCache::setLowMipCache(RenderDevice *device, RenderCommandList *commandList, const uint8_t *bytes, size_t byteCount, std::unique_ptr<RenderBuffer> &dstUploadResource, std::unordered_map<std::string, LowMipCacheTexture> &dstTextureMap, uint64_t &totalMemory) {
+    bool TextureCache::setLowMipCache(RenderDevice *device, RenderCommandList *commandList, const uint8_t *bytes, size_t byteCount, std::unique_ptr<RenderBuffer> &dstUploadResource, uint32_t fileSystemIndex, std::unordered_map<std::string, LowMipCacheTexture> &dstTextureMap, uint64_t &totalMemory) {
         dstUploadResource = device->createBuffer(RenderBufferDesc::UploadBuffer(byteCount));
 
         // Upload the entire file to the GPU to copy data from it directly.
@@ -867,8 +868,9 @@ namespace RT64 {
                 }
             };
 
-            std::string cachePathForward = FileSystem::toForwardSlashes(cachePath);
-            const bool skipTexture = (dstTextureMap.find(cachePathForward) != dstTextureMap.end());
+            // [wcw] Per pack: another pack's texture at the same path is a different texture (aki-roadmap#99).
+            const std::string cacheKey = WcwLogic::lowMipCacheKey(fileSystemIndex, FileSystem::toForwardSlashes(cachePath));
+            const bool skipTexture = (dstTextureMap.find(cacheKey) != dstTextureMap.end());
             if (skipTexture) {
                 for (uint32_t i = 0; i < cacheHeader->mipCount; i++) {
                     alignToTexturePlacement(byteCursor);
@@ -900,7 +902,7 @@ namespace RT64 {
                 }
 
                 totalMemory += newTexture->memorySize;
-                texturesLoaded.emplace_back(cachePathForward, newTexture);
+                texturesLoaded.emplace_back(cacheKey, newTexture);
             }
         }
 
@@ -1135,7 +1137,7 @@ namespace RT64 {
 
                     // Look for the low mip cache version if it exists if we can't use the real replacement yet.
                     if ((replacementTexture == nullptr) && (resolvedPath.resolvedOperation == ReplacementOperation::Stream)) {
-                        auto lowMipCacheIt = textureMap.replacementMap.lowMipCacheTextures.find(resolvedPath.relativePath);
+                        auto lowMipCacheIt = textureMap.replacementMap.lowMipCacheTextures.find(WcwLogic::lowMipCacheKey(resolvedPath.fileSystemIndex, resolvedPath.relativePath));
                         if (lowMipCacheIt != textureMap.replacementMap.lowMipCacheTextures.end()) {
                             lowMipCacheTexture = lowMipCacheIt->second.texture;
 
@@ -1547,7 +1549,7 @@ namespace RT64 {
 
                 if (fileSystems[i]->load(ReplacementLowMipCacheFilename, mipCacheBytes)) {
                     uploadBuffers.emplace_back();
-                    if (!setLowMipCache(copyWorker->device, loaderCommandList.get(), mipCacheBytes.data(), mipCacheBytes.size(), uploadBuffers.back(), textureMap.replacementMap.lowMipCacheTextures, totalMemory)) {
+                    if (!setLowMipCache(copyWorker->device, loaderCommandList.get(), mipCacheBytes.data(), mipCacheBytes.size(), uploadBuffers.back(), uint32_t(i), textureMap.replacementMap.lowMipCacheTextures, totalMemory)) {
                         fprintf(stderr, "Failed to load low mip cache.\n");
                     }
                 }

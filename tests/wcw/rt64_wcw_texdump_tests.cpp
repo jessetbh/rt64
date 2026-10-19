@@ -284,6 +284,31 @@ TEST_CASE("texdump: database entries win over hash-named files, and a .dds wins 
     CHECK(get(resolved, 0x3) == std::string("0000000000000003.dds"));
 }
 
+TEST_CASE("replacement database: shift filters survive a save and load (to_json wrote them as \"operation\", #99)") {
+    ReplacementDatabase db;
+    ReplacementShiftFilter filter;
+    filter.wildcard = "menus/*";
+    filter.shift = ReplacementShift::None;
+    db.shiftFilters.push_back(filter);
+    const json saved = db;
+    // Under "shift", the key every reader (also upstream rt64's) looks for.
+    CHECK(saved["shiftFilters"][0].contains("shift"));
+    CHECK(!saved["shiftFilters"][0].contains("operation"));
+    const ReplacementDatabase loaded = json::parse(saved.dump());
+    CHECK_EQ(loaded.shiftFilters.size(), size_t(1));
+    CHECK(loaded.shiftFilters[0].wildcard == std::string("menus/*"));
+    CHECK(loaded.shiftFilters[0].shift == ReplacementShift::None);
+}
+
+TEST_CASE("replacement database: shift filters saved before #99 (under \"operation\") still load") {
+    const std::string text = R"({ "configuration": { "configurationVersion": 3, "hashVersion": 5 }, "textures": [],
+        "shiftFilters": [ { "wildcard": "a/*", "operation": "auto" }, { "wildcard": "b/*", "shift": "none" } ] })";
+    const ReplacementDatabase loaded = json::parse(text);
+    CHECK_EQ(loaded.shiftFilters.size(), size_t(2));
+    CHECK(loaded.shiftFilters[0].shift == ReplacementShift::Auto);
+    CHECK(loaded.shiftFilters[1].shift == ReplacementShift::None);
+}
+
 TEST_CASE("texdump: Rice-mode packs don't pick up hash-named files") {
     const std::string db = R"({ "configuration": { "autoPath": "rice", "configurationVersion": 3, "hashVersion": 5 }, "textures": [] })";
     CHECK(resolve(db, { "0000000000000001.png" }).empty());
