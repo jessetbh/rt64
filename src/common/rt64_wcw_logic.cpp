@@ -726,6 +726,11 @@ namespace RT64::WcwLogic {
         }
     }
 
+    std::string lowMipCacheKey(uint32_t fileSystemIndex, const std::string &relativePath) {
+        // '|' can't appear in a pack's file paths.
+        return std::to_string(fileSystemIndex) + "|" + relativePath;
+    }
+
     DeviceLostWork deviceLostWork(bool deviceLost) {
         return deviceLost ? DeviceLostWork::SkipGpuWork : DeviceLostWork::Render;
     }

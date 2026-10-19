@@ -1532,6 +1532,16 @@ TEST_CASE("widescreen: negative screen x and the int16 range survive the convers
     CHECK(unpackX(modifiedScreenXYForAspect(packXY(8000.0f, 0.0f), 0.0f, 2.0f)) == 8191.75f);
 }
 
+// Texture packs (#99)
+
+TEST_CASE("low-mip cache: stacked packs with the same file name keep their own low mips (keyed by path alone)") {
+    CHECK(lowMipCacheKey(0, "0123456789abcdef.dds") != lowMipCacheKey(1, "0123456789abcdef.dds"));
+    CHECK(lowMipCacheKey(1, "0123456789abcdef.dds") == lowMipCacheKey(1, "0123456789abcdef.dds"));
+    CHECK(lowMipCacheKey(1, "a.dds") != lowMipCacheKey(1, "b.dds"));
+    // The index can't run into the path: pack 1 "1/a.dds" vs pack 11 "/a.dds".
+    CHECK(lowMipCacheKey(1, "1/a.dds") != lowMipCacheKey(11, "/a.dds"));
+}
+
 // Graphics device loss
 
 TEST_CASE("device loss: renderer threads render until the device is lost, then skip all GPU work") {

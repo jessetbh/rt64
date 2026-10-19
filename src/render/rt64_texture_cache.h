@@ -80,6 +80,7 @@ namespace RT64 {
         LoadedTextureReverseMap loadedTextureReverseMap;
         std::list<Texture *> unusedTextureList;
         std::vector<uint32_t> resolvedHashVersions;
+        // [wcw] Keyed by WcwLogic::lowMipCacheKey: pack and path (aki-roadmap#99).
         std::unordered_map<std::string, LowMipCacheTexture> lowMipCacheTextures;
         std::vector<std::unique_ptr<FileSystem>> fileSystems;
         std::vector<std::unordered_map<uint64_t, ReplacementResolvedPath>> fileSystemResolvedPaths;
@@ -262,7 +263,7 @@ namespace RT64 {
         Texture *getTexture(uint32_t textureIndex);
         static void setRGBA32(Texture *dstTexture, RenderDevice *device, RenderCommandList *commandList, const uint8_t *bytes, size_t byteCount, uint32_t width, uint32_t height, uint32_t rowPitch, std::unique_ptr<RenderBuffer> &dstUploadResource, RenderPool *uploadResourcePool = nullptr, std::mutex *uploadResourcePoolMutex = nullptr);
         static bool setDDS(Texture *dstTexture, RenderDevice *device, RenderCommandList *commandList, const uint8_t *bytes, size_t byteCount, std::unique_ptr<RenderBuffer> &dstUploadResource, RenderPool *uploadResourcePool = nullptr, std::mutex *uploadResourcePoolMutex = nullptr);
-        static bool setLowMipCache(RenderDevice *device, RenderCommandList *commandList, const uint8_t *bytes, size_t byteCount, std::unique_ptr<RenderBuffer> &dstUploadResource, std::unordered_map<std::string, LowMipCacheTexture> &dstTextureMap, uint64_t &totalMemory);
+        static bool setLowMipCache(RenderDevice *device, RenderCommandList *commandList, const uint8_t *bytes, size_t byteCount, std::unique_ptr<RenderBuffer> &dstUploadResource, uint32_t fileSystemIndex, std::unordered_map<std::string, LowMipCacheTexture> &dstTextureMap, uint64_t &totalMemory);
         static Texture *loadTextureFromBytes(RenderDevice *device, RenderCommandList *commandList, const std::vector<uint8_t> &fileBytes, std::unique_ptr<RenderBuffer> &dstUploadResource, RenderPool *resourcePool = nullptr, std::mutex *uploadResourcePoolMutex = nullptr);
     };
 };
