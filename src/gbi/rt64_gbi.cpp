@@ -160,7 +160,7 @@ namespace RT64 {
     // 
     //                  Length      Hash                    Known instances               
     //     
-    static std::array<GBISegment, 103> textSegments = {
+    static std::array<GBISegment, 105> textSegments = {
             // [wcw2k] WM2000's "F3DLX.Rej xbus 2.08" (AKI 1999): bytes past 0x1000 of the
             // text are VOLATILE at runtime (hashed differently seconds apart mid-run —
             // self-modified or yield-state spill), so match on the stable 0x1000-byte
@@ -221,9 +221,11 @@ namespace RT64 {
             GBISegment{ 0x1188,     0x462D273E7C98CAC7ULL,  { &F3DEX2_FIFO_2_05_REJ, &F3DEX2_FIFO_2_06_REJ } }, // Needs confirmation.
             GBISegment{ 0x1188,     0x87A4C67F1885E875ULL,  { &F3DLX2_FIFO_2_05_REJ, &F3DLX2_FIFO_2_06_REJ } }, // Needs confirmation.
             GBISegment{ 0x1188,     0xB28A44B9A88E9EA0ULL,  { &F3DLX2_FIFO_2_06_REJ } }, // [wcw fullconv] WCW/nWo Revenge Starrcade Edition's modified F3DLX.Rej text (stock data).
+            GBISegment{ 0x1188,     0xFBC783BB69FC9278ULL,  { &F3DLX2_FIFO_2_06_REJ } }, // [wcw fullconv] Revenge Starrcade Edition 2.0's modified F3DLX.Rej text (its data: below).
             GBISegment{ 0x1188,     0x6F800A00CF591778ULL,  { &F3DAM2_FIFO_2_05 } }, // Needs confirmation.
             GBISegment{ 0x1390,     0x0B8FE363267ADCB4ULL,  { &F3DEX2_FIFO_2_06 } },
             GBISegment{ 0x1390,     0x2EFE1EC6503909ECULL,  { &F3DEX2_FIFO_2_06 } }, // [wcw fullconv] WCW/nWo Revenge Starrcade Edition's modified text (stock data).
+            GBISegment{ 0x1390,     0x01E1944C6989BD86ULL,  { &F3DEX2_FIFO_2_06 } }, // [wcw fullconv] Revenge Starrcade Edition 2.0's modified text (its data: below).
             GBISegment{ 0x1390,     0x8C1C9814E75E1B4BULL,  { &F3DEX2_FIFO_2_07 } },
             GBISegment{ 0x1390,     0xCF55FAE288BFE48DULL,  { &F3DEX2_FIFO_2_08 } }, // Needs confirmation.
             GBISegment{ 0x1188,     0xB9FBB8E71F72B596ULL,  { &F3DEX2_FIFO_2_08_REJ } }, // Needs confirmation.
@@ -282,7 +284,7 @@ namespace RT64 {
             GBISegment{ 0x10B0,     0xE8028E4BC6529E6EULL,  { &ZSORTP_0_33 } }, // Needs confirmation.
     };
 
-    static std::array<GBISegment, 106> dataSegments = {
+    static std::array<GBISegment, 108> dataSegments = {
             GBISegment{ 0x800,      0xEEB10D73400213B3ULL,  { &F3D_SDK_E } }, // Needs confirmation.
             GBISegment{ 0x800,      0x49651E384B48F694ULL,  { &F3D_SDK_F } }, // Needs confirmation.
             GBISegment{ 0x800,      0x1A736198F90E81C5ULL,  { &F3D_SDK_UNKNOWN_G } }, // Needs confirmation.
@@ -339,8 +341,10 @@ namespace RT64 {
             GBISegment{ 0x410,      0x7BF113F398B8301CULL,  { &F3DLX2_FIFO_2_05_REJ } }, // Needs confirmation.
             GBISegment{ 0x430,      0xD7D5F81345FC5310ULL,  { &F3DAM2_FIFO_2_05 } }, // Needs confirmation.
             GBISegment{ 0x420,      0xD4619CEDD1213E15ULL,  { &F3DEX2_FIFO_2_06 } },
+            GBISegment{ 0x420,      0x0C30705A7054B59DULL,  { &F3DEX2_FIFO_2_06 } }, // [wcw fullconv] Revenge Starrcade Edition 2.0 changes 68 words of the data.
             GBISegment{ 0x410,      0xD3135F48A08C1982ULL,  { &F3DEX2_FIFO_2_06_REJ } }, // Needs confirmation.
             GBISegment{ 0x410,      0x47BA278DD7DB79EBULL,  { &F3DLX2_FIFO_2_06_REJ } }, // Needs confirmation.
+            GBISegment{ 0x410,      0xDA9E0C5A00F82F82ULL,  { &F3DLX2_FIFO_2_06_REJ } }, // [wcw fullconv] Revenge Starrcade Edition 2.0 changes 64 words of the data.
             GBISegment{ 0x420,      0xF8649121FAB40A06ULL,  { &F3DEX2_FIFO_2_07 } },
             GBISegment{ 0x420,      0x3D4CAB9C82AD3772ULL,  { &F3DEX2_FIFO_2_08 } }, // Needs confirmation.
             GBISegment{ 0x410,      0x14F9D11C0F58AFB5ULL,  { &F3DEX2_FIFO_2_08_REJ } }, // Needs confirmation.
