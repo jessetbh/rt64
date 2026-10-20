@@ -571,6 +571,13 @@ namespace RT64::WcwLogic {
     // mip while the real texture streamed in.
     std::string lowMipCacheKey(uint32_t fileSystemIndex, const std::string &relativePath);
 
+    // The Windows extended-length form of an absolute path (aki-roadmap#115): "\\?\C:\..." or "\\?\UNC\server\share\...".
+    // The ports aren't long-path aware, so a pack file whose full path reached MAX_PATH (260) didn't open (the texture
+    // silently stayed stock), and a folder nested past it threw from the directory walk and ended the game (0xC0000409).
+    // Win32 doesn't normalize a \\?\ path, so this also turns '/' into '\', drops "." and empty components and resolves
+    // "..". Empty, relative or drive-relative ("C:foo") input, and a path already in \\?\ or \\.\ form, come back unchanged.
+    std::wstring extendedLengthPath(const std::wstring &absolutePath);
+
     // Graphics device loss
 
     // What a renderer thread does with its next piece of work (a display list, a workload, a present, a texture

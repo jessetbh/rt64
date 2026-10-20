@@ -731,6 +731,67 @@ namespace RT64::WcwLogic {
         return std::to_string(fileSystemIndex) + "|" + relativePath;
     }
 
+    std::wstring extendedLengthPath(const std::wstring &absolutePath) {
+        if ((absolutePath.rfind(L"\\\\?\\", 0) == 0) || (absolutePath.rfind(L"\\\\.\\", 0) == 0)) {
+            return absolutePath;
+        }
+
+        std::wstring path = absolutePath;
+        std::replace(path.begin(), path.end(), L'/', L'\\');
+        std::wstring prefix;
+        size_t rest = 0;
+        const bool drive = (path.size() >= 3) && (path[1] == L':') && (path[2] == L'\\') &&
+            (((path[0] >= L'A') && (path[0] <= L'Z')) || ((path[0] >= L'a') && (path[0] <= L'z')));
+        if (drive) {
+            prefix = L"\\\\?\\" + path.substr(0, 2);
+            rest = 3;
+        }
+        else if ((path.size() > 2) && (path[0] == L'\\') && (path[1] == L'\\')) {
+            // UNC: \\server\share\... -> \\?\UNC\server\share\...; the server and share stay as the root.
+            const size_t server = path.find(L'\\', 2);
+            const size_t share = (server == std::wstring::npos) ? std::wstring::npos : path.find(L'\\', server + 1);
+            if ((server == std::wstring::npos) || (server == 2)) {
+                return absolutePath;
+            }
+
+            const size_t rootEnd = (share == std::wstring::npos) ? path.size() : share;
+            prefix = L"\\\\?\\UNC\\" + path.substr(2, rootEnd - 2);
+            rest = (share == std::wstring::npos) ? path.size() : share + 1;
+        }
+        else {
+            return absolutePath;
+        }
+
+        std::vector<std::wstring> parts;
+        size_t start = rest;
+        while (start <= path.size()) {
+            size_t end = path.find(L'\\', start);
+            if (end == std::wstring::npos) {
+                end = path.size();
+            }
+
+            const std::wstring part = path.substr(start, end - start);
+            if (part == L"..") {
+                if (!parts.empty()) {
+                    parts.pop_back();
+                }
+            }
+            else if (!part.empty() && (part != L".")) {
+                parts.push_back(part);
+            }
+
+            start = end + 1;
+        }
+
+        std::wstring result = prefix + L"\\";
+        for (size_t i = 0; i < parts.size(); i++) {
+            result += (i > 0) ? L"\\" : L"";
+            result += parts[i];
+        }
+
+        return result;
+    }
+
     DeviceLostWork deviceLostWork(bool deviceLost) {
         return deviceLost ? DeviceLostWork::SkipGpuWork : DeviceLostWork::Render;
     }
