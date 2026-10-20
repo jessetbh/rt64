@@ -1,4 +1,4 @@
-//
+﻿//
 // RT64
 //
 
@@ -595,6 +595,40 @@ namespace RT64::WcwLogic {
     // Win32 doesn't normalize a \\?\ path, so this also turns '/' into '\', drops "." and empty components and resolves
     // "..". Empty, relative or drive-relative ("C:foo") input, and a path already in \\?\ or \\.\ form, come back unchanged.
     std::wstring extendedLengthPath(const std::wstring &absolutePath);
+
+    // Display lists (aki-roadmap#116)
+
+    // Most commands the interpreter runs for one display list task. A list that branches back into itself (a hack's
+    // codes writing into display-list memory did: WWF inVasion's Stretched Ringmats + Backstage Assault) never ends.
+    // The interpreter then ran it forever on the render thread, adding projections and draw data on every pass:
+    // ~0.9 GB/s, until the PC ran out of memory. Real hardware would hang the RSP; here the list is ended, so memory
+    // stays bounded and the game sees its task complete. Real tasks are far shorter: the longest measured (WCW_DL_STATS=1,
+    // 2026-10-20) were 4,361 commands in a TNA vs ROH match and 7,768 in Lucha Underground's attract (859,820 codes).
+    constexpr uint64_t DisplayListCommandLimit = 1000000;
+
+    // World transforms one workload may hold: draw calls index them with uint16_t (RSP curTransformIndex, a draw call's
+    // min/maxWorldMatrix), so past 65535 the indices wrap and later stages (frame matching) read the wrong ones and
+    // crash. A looping list reaches that within one pass; no real frame comes close.
+    constexpr uint64_t WorldTransformLimit = 65535;
+
+    // One display list task's budget: take() before each command, with the workload's world transform count; false
+    // once the commands pass the limit or the transforms reach WorldTransformLimit (then the list ends).
+    struct DisplayListBudget {
+        uint64_t limit = DisplayListCommandLimit;
+        uint64_t transformLimit = WorldTransformLimit;
+        uint64_t commands = 0;
+        bool transformsFull = false;
+
+        bool take(uint64_t worldTransforms) {
+            commands++;
+            transformsFull = transformsFull || (worldTransforms >= transformLimit);
+            return (commands <= limit) && !transformsFull;
+        }
+
+        bool exhausted() const {
+            return (commands > limit) || transformsFull;
+        }
+    };
 
     // Graphics device loss
 

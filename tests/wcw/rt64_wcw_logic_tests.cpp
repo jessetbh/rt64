@@ -1588,6 +1588,67 @@ TEST_CASE("long pack paths: UNC shares get \\\\?\\UNC\\; other forms come back u
     CHECK(extendedLengthPath(L"\\rooted\\no-drive") == L"\\rooted\\no-drive");
 }
 
+TEST_CASE("display list budget: a list that loops is ended at the command limit, so the interpreter can't grow memory forever (#116)") {
+    // The interpreter loop: take() before every command; false ends the list.
+    DisplayListBudget budget;
+    budget.limit = 1000;
+    uint64_t run = 0;
+    for (uint64_t i = 0; i < 10 * budget.limit; i++) {   // a list that branches back into itself never ends on its own
+        if (!budget.take(0)) {
+            break;
+        }
+
+        run++;
+    }
+
+    CHECK_EQ(run, uint64_t(1000));
+    CHECK(budget.exhausted());
+    CHECK(!budget.transformsFull);
+}
+
+TEST_CASE("display list budget: a list of exactly the limit runs whole; a new task starts from zero") {
+    DisplayListBudget budget;
+    budget.limit = 3;
+    CHECK(budget.take(0));
+    CHECK(budget.take(0));
+    CHECK(budget.take(0));
+    CHECK(!budget.exhausted());
+    CHECK(!budget.take(0));
+    CHECK(budget.exhausted());
+    DisplayListBudget next;
+    CHECK(next.take(0));
+    CHECK(!next.exhausted());
+    CHECK_EQ(next.limit, DisplayListCommandLimit);
+}
+
+TEST_CASE("display list budget: the list ends before world transform indices (uint16_t) wrap") {
+    // The looping list in WWF inVasion added a matrix every few commands: with only the command limit, its workload
+    // passed 65535 world transforms, the uint16_t indices wrapped, and frame matching crashed on the next frame.
+    DisplayListBudget budget;
+    uint64_t transforms = 0, run = 0;
+    while (budget.take(transforms)) {
+        run++;
+        transforms += (run % 4 == 0) ? 1 : 0;   // one G_MTX per 4 commands
+    }
+
+    CHECK(budget.transformsFull);
+    CHECK(budget.exhausted());
+    CHECK_EQ(transforms, WorldTransformLimit);
+    CHECK(transforms <= uint64_t(UINT16_MAX));
+    // Once full, it stays ended even if the count were to drop (a new workload mid-list).
+    CHECK(!budget.take(0));
+    // Below the limit a list runs on.
+    DisplayListBudget normal;
+    CHECK(normal.take(WorldTransformLimit - 1));
+}
+
+TEST_CASE("display list budget: the default limits are far above real frames") {
+    // The longest real task measured with WCW_DL_STATS=1 (2026-10-20) was 7,768 commands (Lucha Underground's attract).
+    // Keep a wide margin so no real frame is ever cut.
+    CHECK(DisplayListCommandLimit >= 100 * uint64_t(7768));
+    CHECK(WorldTransformLimit <= uint64_t(UINT16_MAX));
+}
+
 // Graphics device loss
 
 TEST_CASE("device loss: renderer threads render until the device is lost, then skip all GPU work") {
