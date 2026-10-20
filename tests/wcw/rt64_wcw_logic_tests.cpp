@@ -1615,6 +1615,40 @@ TEST_CASE("display list budget: the default limits are far above real frames") {
     CHECK(WorldTransformLimit <= uint64_t(UINT16_MAX));
 }
 
+TEST_CASE("long pack paths: a drive path gets the \\\\?\\ form, so files past MAX_PATH open (#115)") {
+    CHECK(extendedLengthPath(L"C:\\Users\\me\\depot\\NoMercyRecomp-fullconv\\conversions\\_packages\\Pack") ==
+          L"\\\\?\\C:\\Users\\me\\depot\\NoMercyRecomp-fullconv\\conversions\\_packages\\Pack");
+    CHECK(extendedLengthPath(L"C:\\") == L"\\\\?\\C:\\");
+    CHECK(extendedLengthPath(L"d:\\packs\\") == L"\\\\?\\d:\\packs");
+    // A pack root longer than MAX_PATH keeps every character (the old limit cut in at 260).
+    std::wstring deep = L"C:\\games";
+    for (int i = 0; i < 8; i++) {
+        deep += L"\\" + std::wstring(40, L'a' + i);
+    }
+
+    CHECK(deep.size() > 300);
+    CHECK(extendedLengthPath(deep) == L"\\\\?\\" + deep);
+}
+
+TEST_CASE("long pack paths: \\\\?\\ isn't normalized by Windows, so slashes, '.', '..' and doubled separators are resolved here") {
+    CHECK(extendedLengthPath(L"C:/Users/me/packs/x") == L"\\\\?\\C:\\Users\\me\\packs\\x");
+    CHECK(extendedLengthPath(L"C:\\a\\.\\b\\\\c") == L"\\\\?\\C:\\a\\b\\c");
+    CHECK(extendedLengthPath(L"C:\\a\\b\\..\\c") == L"\\\\?\\C:\\a\\c");
+    // ".." stops at the drive root.
+    CHECK(extendedLengthPath(L"C:\\..\\..\\a") == L"\\\\?\\C:\\a");
+}
+
+TEST_CASE("long pack paths: UNC shares get \\\\?\\UNC\\; other forms come back unchanged") {
+    CHECK(extendedLengthPath(L"\\\\nas\\games\\packs\\Pack") == L"\\\\?\\UNC\\nas\\games\\packs\\Pack");
+    CHECK(extendedLengthPath(L"\\\\nas\\games") == L"\\\\?\\UNC\\nas\\games\\");
+    CHECK(extendedLengthPath(L"\\\\?\\C:\\already") == L"\\\\?\\C:\\already");
+    CHECK(extendedLengthPath(L"\\\\.\\pipe\\x") == L"\\\\.\\pipe\\x");
+    CHECK(extendedLengthPath(L"") == L"");
+    CHECK(extendedLengthPath(L"relative\\pack") == L"relative\\pack");
+    CHECK(extendedLengthPath(L"C:drive-relative") == L"C:drive-relative");
+    CHECK(extendedLengthPath(L"\\rooted\\no-drive") == L"\\rooted\\no-drive");
+}
+
 // Graphics device loss
 
 TEST_CASE("device loss: renderer threads render until the device is lost, then skip all GPU work") {

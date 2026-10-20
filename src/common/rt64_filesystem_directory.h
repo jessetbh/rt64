@@ -5,10 +5,39 @@
 #pragma once
 
 #include "rt64_filesystem.h"
+#include "rt64_wcw_logic.h"
 
+#include <cstdio>
 #include <filesystem>
+#include <fstream>
 
 namespace RT64 {
+    // [wcw] aki-roadmap#115: the ports aren't long-path aware, so a pack path past MAX_PATH failed. On Windows the root
+    // becomes its extended-length (\\?\) form, which every path built from it inherits; elsewhere it stays as given.
+    inline std::filesystem::path wcwLongPathRoot(const std::filesystem::path &directoryPath) {
+#ifdef _WIN32
+        std::error_code ec;
+        const std::filesystem::path absolutePath = std::filesystem::absolute(directoryPath, ec);
+        if (ec) {
+            return directoryPath;
+        }
+
+        return std::filesystem::path(WcwLogic::extendedLengthPath(absolutePath.wstring()));
+#else
+        return directoryPath;
+#endif
+    }
+
+    // [wcw] #115: the directory walk uses the error_code overloads. A failed step ends the walk (logged once) instead of
+    // throwing filesystem_error out of a render thread, which ended the game with 0xC0000409 and no backtrace.
+    inline void wcwLogWalkError(const std::filesystem::path &directoryPath, const std::error_code &ec) {
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            fprintf(stderr, "[wcw] texture pack walk stopped in %s: %s\n", directoryPath.u8string().c_str(), ec.message().c_str());
+        }
+    }
+
     struct FileSystemDirectoryIterator : FileSystemIteratorImplementation {
         std::filesystem::recursive_directory_iterator dirIterator;
         std::filesystem::path directoryPath;
@@ -21,12 +50,36 @@ namespace RT64 {
 
         FileSystemDirectoryIterator(const std::filesystem::path &directoryPath) {
             this->directoryPath = directoryPath;
-            dirIterator = std::filesystem::recursive_directory_iterator(directoryPath);
+            std::error_code ec;
+            dirIterator = std::filesystem::recursive_directory_iterator(directoryPath, ec);
+            if (ec) {
+                wcwLogWalkError(directoryPath, ec);
+                dirIterator = std::filesystem::recursive_directory_iterator();
+            }
+        }
+
+        // Advances one entry; on an error the walk ends.
+        void step() {
+            std::error_code ec;
+            dirIterator.increment(ec);
+            if (ec) {
+                wcwLogWalkError(directoryPath, ec);
+                dirIterator = std::filesystem::recursive_directory_iterator();
+            }
+        }
+
+        bool atFile() const {
+            std::error_code ec;
+            return dirIterator->is_regular_file(ec) && !ec;
         }
 
         const std::string &value() override {
             if (!pathStrValid) {
-                pathStr = std::filesystem::relative(dirIterator->path(), directoryPath).u8string();
+                std::error_code ec;
+                pathStr = dirIterator->path().lexically_relative(directoryPath).u8string();
+                if (pathStr.empty()) {
+                    pathStr = std::filesystem::relative(dirIterator->path(), directoryPath, ec).u8string();
+                }
                 pathStrValid = true;
             }
 
@@ -38,8 +91,8 @@ namespace RT64 {
 
             static const std::filesystem::recursive_directory_iterator endIterator;
             do {
-                dirIterator++;
-            } while ((dirIterator != endIterator) && !dirIterator->is_regular_file());
+                step();
+            } while ((dirIterator != endIterator) && !atFile());
         }
 
         bool compare(const FileSystemIteratorImplementation *other) const override {
@@ -53,7 +106,7 @@ namespace RT64 {
         std::shared_ptr<FileSystemDirectoryIterator> endIterator;
 
         FileSystemDirectory(const std::filesystem::path &directoryPath) {
-            this->directoryPath = directoryPath;
+            this->directoryPath = wcwLongPathRoot(directoryPath);
             endIterator = { std::make_shared<FileSystemDirectoryIterator>() };
         }
         
@@ -62,8 +115,8 @@ namespace RT64 {
 
             // Search for the first iterator that isn't a directory.
             static const std::filesystem::recursive_directory_iterator endIterator;
-            while ((beginIterator->dirIterator != endIterator) && !beginIterator->dirIterator->is_regular_file()) {
-                beginIterator->dirIterator++;
+            while ((beginIterator->dirIterator != endIterator) && !beginIterator->atFile()) {
+                beginIterator->step();
             }
 
             return { beginIterator };
@@ -115,11 +168,13 @@ namespace RT64 {
                 return false;
             }
 
-            return std::filesystem::exists(directoryPath / std::filesystem::u8path(path));
+            std::error_code ec;
+            return std::filesystem::exists(directoryPath / std::filesystem::u8path(path), ec);
         }
 
         static std::unique_ptr<FileSystem> create(const std::filesystem::path &directoryPath) {
-            if (std::filesystem::exists(directoryPath)) {
+            std::error_code ec;
+            if (std::filesystem::exists(wcwLongPathRoot(directoryPath), ec)) {
                 return std::make_unique<FileSystemDirectory>(directoryPath);
             }
             else {
