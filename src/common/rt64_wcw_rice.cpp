@@ -92,6 +92,27 @@ namespace RT64 {
             }
 
             Key key;
+            if ((fields[1] == "$") && (fields[2] == "$")) {
+                // crc#$#$[#palcrc]: any format and size.
+                if (!parseHex(fields[0], 8, key.crc) || (key.crc == 0)) {
+                    return false;
+                }
+
+                if (fields.size() == 3) {
+                    key.kind = KeyAnyFormat;
+                }
+                else if (parseHex(fields[3], 8, key.paletteCrc)) {
+                    key.kind = KeyAnyFormatPalette;
+                }
+                else {
+                    return false;
+                }
+
+                parsed.romName = fileName.substr(0, firstHash);
+                parsed.key = key;
+                return true;
+            }
+
             uint32_t fmt = 0, siz = 0;
             if (!parseHex(fields[1], 1, fmt) || !parseHex(fields[2], 1, siz) || (siz > 3)) {
                 return false;
@@ -143,6 +164,12 @@ namespace RT64 {
                 break;
             case KeyAnyTexture:
                 snprintf(buf, sizeof(buf), "$#%u#%u#%08x", key.fmt, key.siz, key.paletteCrc);
+                break;
+            case KeyAnyFormat:
+                snprintf(buf, sizeof(buf), "%08x#$#$", key.crc);
+                break;
+            case KeyAnyFormatPalette:
+                snprintf(buf, sizeof(buf), "%08x#$#$#%08x", key.crc, key.paletteCrc);
                 break;
             default:
                 snprintf(buf, sizeof(buf), "%08x#%u#%u", key.crc, key.fmt, key.siz);
@@ -240,8 +267,9 @@ namespace RT64 {
                 Key key;
                 key.crc = c;
                 key.paletteCrc = p;
-                key.fmt = fmt;
-                key.siz = siz;
+                const bool anyFormat = (kind == KeyAnyFormat) || (kind == KeyAnyFormatPalette);
+                key.fmt = anyFormat ? 0 : fmt;
+                key.siz = anyFormat ? 0 : siz;
                 key.kind = kind;
                 auto it = entries.find(key);
                 return (it != entries.end()) ? &it->second.path : nullptr;
@@ -256,10 +284,13 @@ namespace RT64 {
                 if ((path = lookup(crc, 0, KeyAnyPalette)) != nullptr) return path;
                 if ((path = lookup(crc, 0, KeyNoPalette)) != nullptr) return path;
                 if ((path = lookup(0, paletteCrc, KeyAnyTexture)) != nullptr) return path;
+                if ((path = lookup(crc, paletteCrc, KeyAnyFormatPalette)) != nullptr) return path;
+                if ((path = lookup(crc, 0, KeyAnyFormat)) != nullptr) return path;
             }
             else {
                 if ((path = lookup(crc, 0, KeyNoPalette)) != nullptr) return path;
                 if ((path = lookup(crc, 0, KeyAnyPalette)) != nullptr) return path;
+                if ((path = lookup(crc, 0, KeyAnyFormat)) != nullptr) return path;
             }
 
             return nullptr;

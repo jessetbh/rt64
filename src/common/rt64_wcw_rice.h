@@ -31,6 +31,10 @@ namespace RT64 {
             KeyPalette = 1,        // crc#fmt#siz#palcrc
             KeyAnyPalette = 2,     // crc#fmt#siz#$
             KeyAnyTexture = 3,     // $#fmt#siz#palcrc
+            // Any format and size: GLideN64's older texture caches (.hts without the N64 format/size) only keep the
+            // CRCs, so packs exported from them name files crc#$#$[#palcrc]. Tried after every exact form.
+            KeyAnyFormat = 4,          // crc#$#$
+            KeyAnyFormatPalette = 5,   // crc#$#$#palcrc
         };
 
         struct Key {

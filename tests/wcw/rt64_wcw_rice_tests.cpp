@@ -124,6 +124,38 @@ TEST_CASE("rice: index lookup order, first file wins, _a isn't a key of its own,
     CHECK((path != nullptr) && (*path == "G#$#2#0#66666666_all.png"));
 }
 
+TEST_CASE("rice: crc#$#$ names (GLideN64 caches without format/size) match any format, only after exact names") {
+    ParsedName parsed;
+    CHECK(parseFileName("WWF No Mercy#0EF51D29#$#$_all.png", parsed));
+    CHECK(parsed.key.kind == KeyAnyFormat);
+    CHECK(parsed.romName == "WWF No Mercy");
+    CHECK(keyToString(parsed.key) == "0ef51d29#$#$");
+    CHECK(parseFileName("g#0ef51d29#$#$#70556d40_all.png", parsed));
+    CHECK(parsed.key.kind == KeyAnyFormatPalette);
+    CHECK(keyToString(parsed.key) == "0ef51d29#$#$#70556d40");
+    CHECK(!parseFileName("g#$#$#$_all.png", parsed));            // a crc is needed
+    CHECK(!parseFileName("g#0ef51d29#$#2_all.png", parsed));     // both or neither
+    CHECK(!parseFileName("g#0ef51d29#$#$#$_all.png", parsed));
+
+    Index index;
+    CHECK(index.add("G#11111111#$#$_all.png"));
+    CHECK(index.add("G#22222222#$#$#33333333_all.png"));
+    CHECK(index.add("G#44444444#$#$_all.png"));
+    CHECK(index.add("G#44444444#0#2_all.png"));
+    const std::string *path = index.find(0x11111111, 0, 4, 2, false);
+    CHECK((path != nullptr) && (*path == "G#11111111#$#$_all.png"));
+    path = index.find(0x11111111, 0x99999999, 2, 1, true);       // a CI texture without its own name: crc#$#$
+    CHECK((path != nullptr) && (*path == "G#11111111#$#$_all.png"));
+    path = index.find(0x22222222, 0x33333333, 2, 0, true);
+    CHECK((path != nullptr) && (*path == "G#22222222#$#$#33333333_all.png"));
+    CHECK(index.find(0x22222222, 0x33333334, 2, 0, true) == nullptr);  // wrong palette
+    CHECK(index.find(0x22222222, 0, 0, 2, false) == nullptr);           // needs its palette
+    path = index.find(0x44444444, 0, 0, 2, false);               // the exact name wins
+    CHECK((path != nullptr) && (*path == "G#44444444#0#2_all.png"));
+    path = index.find(0x44444444, 0, 3, 2, false);               // other format: the wildcard
+    CHECK((path != nullptr) && (*path == "G#44444444#$#$_all.png"));
+}
+
 TEST_CASE("rice: an _rgb file finds its _a twin in the same folder, case-insensitively, PNG only") {
     Index index;
     CHECK(index.add("Pack/Ring/G#AAAAAAAA#0#2_rgb.png"));
