@@ -6,6 +6,7 @@
 
 #include "common/rt64_load_types.h"
 #include "common/rt64_plume.h"
+#include "common/rt64_wcw_rice.h"
 
 namespace RT64 {
     struct Texture {
@@ -21,5 +22,7 @@ namespace RT64 {
         uint64_t memorySize = 0;
         std::vector<uint8_t> bytesTMEM;
         bool decodeTMEM = false;
+        // [wcw] Rice / GLideN64 pack key (aki-roadmap#93).
+        WcwRice::TextureKey riceKey;
     };
 };

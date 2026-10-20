@@ -4,18 +4,217 @@
 
 #include "rt64_rdp_tmem.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cinttypes>
+#include <cstring>
 
 #include "xxHash/xxh3.h"
 
 #include "common/rt64_tmem_hasher.h"
 #include "common/rt64_wcw_logic.h"
 #include "common/rt64_wcw_texdump.h"
+#include "common/rt64_wcw_jabo.h"
+#include "common/rt64_wcw_rice.h"
 
 #include "rt64_state.h"
 
 namespace RT64 {
+    // [wcw] The TLUT loads recorded at the palette half of TMEM (entry = TMEM word - 256), for the Rice and Jabo keys.
+    static std::vector<WcwRice::PaletteLoad> recordedPaletteLoads(const State *state) {
+        std::vector<WcwRice::PaletteLoad> paletteLoads;
+        const uint32_t paletteBase = RDP_TMEM_WORDS >> 1;
+        for (uint32_t t = paletteBase; t < RDP_TMEM_WORDS; t++) {
+            const LoadOperation &op = state->rdp->rice.lastLoadOpByTMEM[t];
+            if ((op.type != LoadOperation::Type::TLUT) || (op.texture.address == 0)) {
+                continue;
+            }
+
+            const int columns = std::max((op.tile.lrs >> 2) - (op.tile.uls >> 2), 0) + 1;
+            const int rows = std::max((op.tile.lrt >> 2) - (op.tile.ult >> 2), 0) + 1;
+            WcwRice::PaletteLoad paletteLoad;
+            paletteLoad.firstEntry = t - paletteBase;
+            paletteLoad.count = std::min(uint32_t(columns * rows), 256U - paletteLoad.firstEntry);
+            paletteLoad.address = op.texture.address;
+            paletteLoad.sequence = state->rdp->rice.lastLoadSeqByTMEM[t];
+            paletteLoads.emplace_back(paletteLoad);
+        }
+
+        return paletteLoads;
+    }
+
+    // [wcw] The texture's Jabo Direct3D8 name (common/rt64_wcw_jabo.h): its texels at the drawn width and height,
+    // read from the RDRAM last loaded into its TMEM address (rows as Gadge64's computeJaboKey derives them), with the
+    // CI palette from the recorded TLUT loads. RDRAM is byte-swapped in 32-bit words, so byte a is RDRAM[a ^ 3].
+    static void computeJaboKey(const State *state, const LoadTile &drawTile, uint16_t width, uint16_t height, WcwRice::TextureKey &key) {
+        if ((width == 0) || (height == 0) || (width > 1024) || (height > 1024) || (drawTile.siz > G_IM_SIZ_16b)) {
+            return;
+        }
+
+        const uint64_t RDRAMBytes = uint64_t(RDRAMSize) + 1;
+        const uint8_t *RDRAM = reinterpret_cast<const uint8_t *>(state->RDRAM);
+        const LoadOperation &loadOp = state->rdp->rice.lastLoadOpByTMEM[drawTile.tmem & (RDP_TMEM_WORDS - 1)];
+        if (loadOp.texture.address == 0) {
+            return;
+        }
+
+        const uint32_t loadBytesPerRow = uint32_t(loadOp.texture.width) << loadOp.texture.siz >> 1;
+        const uint32_t startOffset = uint32_t(loadOp.tile.uls >> 2) << loadOp.texture.siz >> 1;
+        uint32_t start = 0;
+        uint32_t rowStride = 0;
+        if (loadOp.type == LoadOperation::Type::Block) {
+            start = loadOp.texture.address + startOffset + loadBytesPerRow * loadOp.tile.ult;
+            rowStride = uint32_t(drawTile.line) << 3;
+        }
+        else if (loadOp.type == LoadOperation::Type::Tile) {
+            start = loadOp.texture.address + startOffset + loadBytesPerRow * (loadOp.tile.ult >> 2);
+            rowStride = loadBytesPerRow;
+        }
+        else {
+            return;
+        }
+
+        const uint32_t rowBytes = std::max(uint32_t(width) << drawTile.siz >> 1, 1U);
+        if ((uint64_t(start) + uint64_t(rowStride) * (height - 1) + rowBytes) > RDRAMBytes) {
+            return;
+        }
+
+        std::vector<uint8_t> texels(size_t(rowBytes) * height);
+        for (uint32_t y = 0; y < height; y++) {
+            const uint32_t row = start + y * rowStride;
+            for (uint32_t x = 0; x < rowBytes; x++) {
+                texels[size_t(y) * rowBytes + x] = RDRAM[(row + x) ^ 3];
+            }
+        }
+
+        uint8_t palette[512] = {};
+        const uint8_t *tilePalette = nullptr;
+        if (drawTile.fmt == G_IM_FMT_CI) {
+            const std::vector<WcwRice::PaletteLoad> paletteLoads = recordedPaletteLoads(state);
+            for (uint32_t e = 0; e < 256; e++) {
+                uint32_t address = 0;
+                if (WcwRice::paletteEntryAddress(paletteLoads, e, address) && ((uint64_t(address) + 2) <= RDRAMBytes)) {
+                    palette[e * 2] = RDRAM[address ^ 3];
+                    palette[e * 2 + 1] = RDRAM[(address + 1) ^ 3];
+                }
+            }
+
+            tilePalette = (drawTile.siz == G_IM_SIZ_4b) ? &palette[uint32_t(drawTile.palette & 0xF) * 32] : palette;
+        }
+
+        WcwJabo::Digest digest;
+        if (!WcwJabo::textureDigest(drawTile.fmt, drawTile.siz, texels.data(), width, height, rowBytes, tilePalette, digest)) {
+            return;
+        }
+
+        memcpy(key.jabo, digest.bytes, sizeof(key.jabo));
+        key.jaboValid = true;
+        if (WcwRice::logEnabled()) {
+            static uint32_t logged = 0;
+            if (++logged <= 5000) {
+                fprintf(stderr, "[wcw jabo] key %s (%ux%u, fmt %u, siz %u)\n", WcwJabo::toHex(digest).c_str(), width, height, drawTile.fmt, drawTile.siz);
+            }
+        }
+    }
+
+    // [wcw] The texture's Rice / GLideN64 key (aki-roadmap#93), from the RDRAM last loaded into its TMEM address, as
+    // GLideN64's _loadHiresTexture computes it (see common/rt64_wcw_rice.h). Invalid when there's no such load or it
+    // reaches outside RDRAM.
+    static WcwRice::TextureKey computeRiceKey(const State *state, const LoadTile &drawTile, uint32_t tlut) {
+        WcwRice::TextureKey result;
+        const uint64_t RDRAMBytes = uint64_t(RDRAMSize) + 1;
+        const uint8_t *RDRAM = reinterpret_cast<const uint8_t *>(state->RDRAM);
+        const LoadOperation &loadOp = state->rdp->rice.lastLoadOpByTMEM[drawTile.tmem & (RDP_TMEM_WORDS - 1)];
+        if (loadOp.texture.address == 0) {
+            return result;
+        }
+
+        WcwRice::Load load;
+        switch (loadOp.type) {
+        case LoadOperation::Type::Tile:
+            load.type = WcwRice::LoadType::Tile;
+            break;
+        case LoadOperation::Type::Block:
+            load.type = WcwRice::LoadType::Block;
+            break;
+        default:
+            return result;
+        }
+
+        load.siz = loadOp.tile.siz;
+        load.masks = loadOp.tile.masks;
+        load.maskt = loadOp.tile.maskt;
+        load.uls = loadOp.tile.uls;
+        load.ult = loadOp.tile.ult;
+        load.lrs = loadOp.tile.lrs;
+        load.lrt = loadOp.tile.lrt;
+        load.address = loadOp.texture.address;
+        load.textureSiz = loadOp.texture.siz;
+        load.textureWidth = loadOp.texture.width;
+
+        WcwRice::DrawTile draw;
+        draw.fmt = drawTile.fmt;
+        draw.siz = drawTile.siz;
+        draw.line = drawTile.line;
+        draw.palette = drawTile.palette;
+        draw.cms = drawTile.cms;
+        draw.cmt = drawTile.cmt;
+        draw.masks = drawTile.masks;
+        draw.maskt = drawTile.maskt;
+        draw.uls = drawTile.uls;
+        draw.ult = drawTile.ult;
+        draw.lrs = drawTile.lrs;
+        draw.lrt = drawTile.lrt;
+
+        WcwRice::Geometry geometry;
+        if (!WcwRice::computeGeometry(load, draw, geometry)) {
+            return result;
+        }
+
+        // The CRC may read up to 4 bytes before the start (rows under 4 bytes, see riceCRC32).
+        if ((geometry.rdramStart < 4) || ((uint64_t(geometry.rdramStart) + geometry.bytesRead + 4) > RDRAMBytes)) {
+            return result;
+        }
+
+        const uint8_t *src = &RDRAM[geometry.rdramStart];
+        result.crc = WcwRice::riceCRC32(src, geometry.width, geometry.height, drawTile.siz, geometry.bytesPerRow);
+        result.fmt = drawTile.fmt;
+        result.siz = drawTile.siz;
+        result.hasPalette = WcwRice::usesPalette(drawTile.fmt, drawTile.siz, tlut != 0);
+        if (result.hasPalette) {
+            const bool ci4 = (drawTile.siz == 0);
+            const uint32_t ciMax = ci4 ? WcwRice::maxCI4(src, geometry.width, geometry.height, geometry.bytesPerRow) : WcwRice::maxCI8(src, geometry.width, geometry.height, geometry.bytesPerRow);
+
+            const std::vector<WcwRice::PaletteLoad> paletteLoads = recordedPaletteLoads(state);
+
+            // GLideN64's 256-entry palette copy, with a zero guard in front, for the entries the CRC reads.
+            const uint32_t firstEntry = ci4 ? (uint32_t(drawTile.palette & 0xF) << 4) : 0;
+            const uint32_t entryCount = std::min(ciMax + 1, 256U - firstEntry);
+            uint8_t palette[4 + 512] = {};
+            const uint32_t fromEntry = (firstEntry >= 2) ? (firstEntry - 2) : 0;
+            for (uint32_t e = fromEntry; e < (firstEntry + entryCount); e++) {
+                uint32_t address = 0;
+                if (WcwRice::paletteEntryAddress(paletteLoads, e, address) && ((uint64_t(address) + 2) <= RDRAMBytes)) {
+                    palette[4 + e * 2] = RDRAM[address];
+                    palette[4 + e * 2 + 1] = RDRAM[address + 1];
+                }
+            }
+
+            result.paletteCrc = WcwRice::paletteCRC(palette, firstEntry, entryCount, ci4);
+        }
+
+        result.valid = true;
+        if (WcwRice::logEnabled()) {
+            static uint32_t logged = 0;
+            if (++logged <= 5000) {
+                fprintf(stderr, "[wcw rice] key %s (%dx%d, bpl %d, rdram %08x, load %s)\n", WcwRice::textureKeyToString(result).c_str(),
+                    geometry.width, geometry.height, geometry.bytesPerRow, geometry.rdramStart, (load.type == WcwRice::LoadType::Tile) ? "tile" : "block");
+            }
+        }
+
+        return result;
+    }
+
     // TextureManager
 
     void TextureManager::uploadEmpty(State *state, TextureCache *textureCache, uint64_t creationFrame, uint16_t width, uint16_t height, uint64_t replacementHash) {
@@ -56,7 +255,9 @@ namespace RT64 {
         uint64_t hash = TMEMHasher::hash(TMEM, loadTile, width, height, tlut, TMEMHasher::CurrentHashVersion);
         if (hashSet.find(hash) == hashSet.end()) {
             hashSet.insert(hash);
-            textureCache->queueGPUUploadTMEM(hash, creationFrame, TMEM, RDP_TMEM_BYTES, width, height, tlut, loadTile, true);
+            WcwRice::TextureKey legacyKey = computeRiceKey(state, loadTile, tlut);
+            computeJaboKey(state, loadTile, width, height, legacyKey);
+            textureCache->queueGPUUploadTMEM(hash, creationFrame, TMEM, RDP_TMEM_BYTES, width, height, tlut, loadTile, true, legacyKey);
         }
 
         // Dump memory contents into a file if the process is active.

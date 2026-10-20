@@ -632,6 +632,7 @@ namespace RT64 {
 
             // For emulating how Rice hashes textures, we need information about the load operation that was performed in the particular TMEM address.
             rdp->rice.lastLoadOpByTMEM[loadOp.tile.tmem] = loadOp;
+            rdp->rice.lastLoadSeqByTMEM[loadOp.tile.tmem & (RDP_TMEM_WORDS - 1)] = ++rdp->rice.loadSeq;
 
             switch (loadOp.type) {
             case LoadOperation::Type::Block:

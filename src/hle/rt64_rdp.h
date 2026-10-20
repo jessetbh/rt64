@@ -102,6 +102,10 @@ namespace RT64 {
 
         struct {
             LoadOperation lastLoadOpByTMEM[RDP_TMEM_WORDS] = {};
+            // [wcw] Load order of each entry above (aki-roadmap#93): GLideN64's palette copy keeps the newest TLUT load
+            // of each entry, so the Rice palette CRC needs to know which recorded load is newer.
+            uint64_t lastLoadSeqByTMEM[RDP_TMEM_WORDS] = {};
+            uint64_t loadSeq = 0;
         } rice;
 
         GBI *gbi;
