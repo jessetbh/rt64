@@ -160,13 +160,20 @@ namespace RT64 {
     // 
     //                  Length      Hash                    Known instances               
     //     
-    static std::array<GBISegment, 96> textSegments = {
+    static std::array<GBISegment, 105> textSegments = {
             // [wcw2k] WM2000's "F3DLX.Rej xbus 2.08" (AKI 1999): bytes past 0x1000 of the
             // text are VOLATILE at runtime (hashed differently seconds apart mid-run —
             // self-modified or yield-state spill), so match on the stable 0x1000-byte
             // prefix. (The tables are std::sort'ed by length at init, so cumulative
             // hashing hits the 0x1000 checkpoint first regardless of position here.)
             GBISegment{ 0x1000,     0x748B4244A299527EULL,  { &F3DLX2_XBUS_2_08_REJ } },
+            // [wcw fullconv] ECW House Party Mixtape's F3DLX.Rej xbus 2.08 text (WM2000's data).
+            GBISegment{ 0x1000,     0x33A4793135455458ULL,  { &F3DLX2_XBUS_2_08_REJ } },
+            // [wcw fullconv] No Mercy's own "F3DLX.Rej xbus 2.08" (stock No Mercy only uses F3DEX2;
+            // No Mercy Plus switches to this one). Same stable-prefix match as WM2000's above.
+            GBISegment{ 0x1000,     0x99BFB7250167370AULL,  { &F3DLX2_XBUS_2_08_REJ } },
+            // [wcw fullconv] VPW64 Deluxe (a VPW2 hack) keeps hook code in the text's unused tail (0x8003C3F0).
+            GBISegment{ 0x1000,     0x75C8FF95642A0DEEULL,  { &F3DLX2_XBUS_2_08_REJ } },
             GBISegment{ 0x1408,     0x9C0926F5E466BE70ULL,  { &F3D_SDK_E } }, // Needs confirmation.
             GBISegment{ 0x1400,     0x34EAA6E921BCF1B2ULL,  { &F3D_SDK_F, &F3D_SDK_UNKNOWN_G, &F3D_SDK_UNKNOWN_H } }, // Needs confirmation.
             GBISegment{ 0x1408,     0x3E05E9BBE814C700ULL,  { &F3D_FIFO_SDK_E } }, // Needs confirmation.
@@ -213,8 +220,12 @@ namespace RT64 {
             GBISegment{ 0x1390,     0xBA192DFA28437D3DULL,  { &F3DEX2_FIFO_2_05 } },
             GBISegment{ 0x1188,     0x462D273E7C98CAC7ULL,  { &F3DEX2_FIFO_2_05_REJ, &F3DEX2_FIFO_2_06_REJ } }, // Needs confirmation.
             GBISegment{ 0x1188,     0x87A4C67F1885E875ULL,  { &F3DLX2_FIFO_2_05_REJ, &F3DLX2_FIFO_2_06_REJ } }, // Needs confirmation.
+            GBISegment{ 0x1188,     0xB28A44B9A88E9EA0ULL,  { &F3DLX2_FIFO_2_06_REJ } }, // [wcw fullconv] WCW/nWo Revenge Starrcade Edition's modified F3DLX.Rej text (stock data).
+            GBISegment{ 0x1188,     0xFBC783BB69FC9278ULL,  { &F3DLX2_FIFO_2_06_REJ } }, // [wcw fullconv] Revenge Starrcade Edition 2.0's modified F3DLX.Rej text (its data: below).
             GBISegment{ 0x1188,     0x6F800A00CF591778ULL,  { &F3DAM2_FIFO_2_05 } }, // Needs confirmation.
             GBISegment{ 0x1390,     0x0B8FE363267ADCB4ULL,  { &F3DEX2_FIFO_2_06 } },
+            GBISegment{ 0x1390,     0x2EFE1EC6503909ECULL,  { &F3DEX2_FIFO_2_06 } }, // [wcw fullconv] WCW/nWo Revenge Starrcade Edition's modified text (stock data).
+            GBISegment{ 0x1390,     0x01E1944C6989BD86ULL,  { &F3DEX2_FIFO_2_06 } }, // [wcw fullconv] Revenge Starrcade Edition 2.0's modified text (its data: below).
             GBISegment{ 0x1390,     0x8C1C9814E75E1B4BULL,  { &F3DEX2_FIFO_2_07 } },
             GBISegment{ 0x1390,     0xCF55FAE288BFE48DULL,  { &F3DEX2_FIFO_2_08 } }, // Needs confirmation.
             GBISegment{ 0x1188,     0xB9FBB8E71F72B596ULL,  { &F3DEX2_FIFO_2_08_REJ } }, // Needs confirmation.
@@ -230,6 +241,11 @@ namespace RT64 {
             // but the 3D ucode's DATA hashes identically to F3DEX2_XBUS_2_08's 0x420-byte
             // entry below — same GBI command set for both, per family.
             GBISegment{ 0x13A0,     0x60BF253FA40991C0ULL,  { &F3DEX2_XBUS_2_08 } },
+            // [wcw fullconv] ECW House Party Mixtape (a WM2000 hack): its F3DEX2 xbus 2.08 text differs
+            // again, the data is the stock F3DEX2_XBUS_2_08 0x420 bytes.
+            GBISegment{ 0x13A0,     0x492C293EFFC7BD31ULL,  { &F3DEX2_XBUS_2_08 } },
+            // [wcw fullconv] VPW64 Deluxe (a VPW2 hack): its F3DEX2 xbus 2.08 text differs, the data is stock.
+            GBISegment{ 0x13A0,     0xB68BA59E10265690ULL,  { &F3DEX2_XBUS_2_08 } },
             GBISegment{ 0x1198,     0xD5E0AABE069BA75CULL,  { &F3DLX2_XBUS_2_08_REJ } }, // Needs confirmation.
             GBISegment{ 0x1370,     0xCFCF197526613F82ULL,  { &F3DEX2_NON_FIFO_2_03 } }, // Needs confirmation.
             GBISegment{ 0x1390,     0xDF624201BC21895EULL,  { &F3DEX2_NON_FIFO_2_04 } }, // Needs confirmation.
@@ -268,7 +284,7 @@ namespace RT64 {
             GBISegment{ 0x10B0,     0xE8028E4BC6529E6EULL,  { &ZSORTP_0_33 } }, // Needs confirmation.
     };
 
-    static std::array<GBISegment, 106> dataSegments = {
+    static std::array<GBISegment, 108> dataSegments = {
             GBISegment{ 0x800,      0xEEB10D73400213B3ULL,  { &F3D_SDK_E } }, // Needs confirmation.
             GBISegment{ 0x800,      0x49651E384B48F694ULL,  { &F3D_SDK_F } }, // Needs confirmation.
             GBISegment{ 0x800,      0x1A736198F90E81C5ULL,  { &F3D_SDK_UNKNOWN_G } }, // Needs confirmation.
@@ -325,8 +341,10 @@ namespace RT64 {
             GBISegment{ 0x410,      0x7BF113F398B8301CULL,  { &F3DLX2_FIFO_2_05_REJ } }, // Needs confirmation.
             GBISegment{ 0x430,      0xD7D5F81345FC5310ULL,  { &F3DAM2_FIFO_2_05 } }, // Needs confirmation.
             GBISegment{ 0x420,      0xD4619CEDD1213E15ULL,  { &F3DEX2_FIFO_2_06 } },
+            GBISegment{ 0x420,      0x0C30705A7054B59DULL,  { &F3DEX2_FIFO_2_06 } }, // [wcw fullconv] Revenge Starrcade Edition 2.0 changes 68 words of the data.
             GBISegment{ 0x410,      0xD3135F48A08C1982ULL,  { &F3DEX2_FIFO_2_06_REJ } }, // Needs confirmation.
             GBISegment{ 0x410,      0x47BA278DD7DB79EBULL,  { &F3DLX2_FIFO_2_06_REJ } }, // Needs confirmation.
+            GBISegment{ 0x410,      0xDA9E0C5A00F82F82ULL,  { &F3DLX2_FIFO_2_06_REJ } }, // [wcw fullconv] Revenge Starrcade Edition 2.0 changes 64 words of the data.
             GBISegment{ 0x420,      0xF8649121FAB40A06ULL,  { &F3DEX2_FIFO_2_07 } },
             GBISegment{ 0x420,      0x3D4CAB9C82AD3772ULL,  { &F3DEX2_FIFO_2_08 } }, // Needs confirmation.
             GBISegment{ 0x410,      0x14F9D11C0F58AFB5ULL,  { &F3DEX2_FIFO_2_08_REJ } }, // Needs confirmation.
