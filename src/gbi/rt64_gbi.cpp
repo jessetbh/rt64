@@ -160,7 +160,7 @@ namespace RT64 {
     // 
     //                  Length      Hash                    Known instances               
     //     
-    static std::array<GBISegment, 101> textSegments = {
+    static std::array<GBISegment, 103> textSegments = {
             // [wcw2k] WM2000's "F3DLX.Rej xbus 2.08" (AKI 1999): bytes past 0x1000 of the
             // text are VOLATILE at runtime (hashed differently seconds apart mid-run —
             // self-modified or yield-state spill), so match on the stable 0x1000-byte
@@ -172,6 +172,8 @@ namespace RT64 {
             // [wcw fullconv] No Mercy's own "F3DLX.Rej xbus 2.08" (stock No Mercy only uses F3DEX2;
             // No Mercy Plus switches to this one). Same stable-prefix match as WM2000's above.
             GBISegment{ 0x1000,     0x99BFB7250167370AULL,  { &F3DLX2_XBUS_2_08_REJ } },
+            // [wcw fullconv] VPW64 Deluxe (a VPW2 hack) keeps hook code in the text's unused tail (0x8003C3F0).
+            GBISegment{ 0x1000,     0x75C8FF95642A0DEEULL,  { &F3DLX2_XBUS_2_08_REJ } },
             GBISegment{ 0x1408,     0x9C0926F5E466BE70ULL,  { &F3D_SDK_E } }, // Needs confirmation.
             GBISegment{ 0x1400,     0x34EAA6E921BCF1B2ULL,  { &F3D_SDK_F, &F3D_SDK_UNKNOWN_G, &F3D_SDK_UNKNOWN_H } }, // Needs confirmation.
             GBISegment{ 0x1408,     0x3E05E9BBE814C700ULL,  { &F3D_FIFO_SDK_E } }, // Needs confirmation.
@@ -240,6 +242,8 @@ namespace RT64 {
             // [wcw fullconv] ECW House Party Mixtape (a WM2000 hack): its F3DEX2 xbus 2.08 text differs
             // again, the data is the stock F3DEX2_XBUS_2_08 0x420 bytes.
             GBISegment{ 0x13A0,     0x492C293EFFC7BD31ULL,  { &F3DEX2_XBUS_2_08 } },
+            // [wcw fullconv] VPW64 Deluxe (a VPW2 hack): its F3DEX2 xbus 2.08 text differs, the data is stock.
+            GBISegment{ 0x13A0,     0xB68BA59E10265690ULL,  { &F3DEX2_XBUS_2_08 } },
             GBISegment{ 0x1198,     0xD5E0AABE069BA75CULL,  { &F3DLX2_XBUS_2_08_REJ } }, // Needs confirmation.
             GBISegment{ 0x1370,     0xCFCF197526613F82ULL,  { &F3DEX2_NON_FIFO_2_03 } }, // Needs confirmation.
             GBISegment{ 0x1390,     0xDF624201BC21895EULL,  { &F3DEX2_NON_FIFO_2_04 } }, // Needs confirmation.
