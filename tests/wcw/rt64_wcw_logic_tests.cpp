@@ -1554,6 +1554,29 @@ TEST_CASE("texture dump: a second dump session keeps the PNGs already in the pac
     CHECK(texDumpWrite(true, true) == TexDumpWrite::Nothing);
 }
 
+// Interpolated target lifetimes (#4)
+
+TEST_CASE("present targets: MSAA's first frame and every generated frame are presented outside workloadMutex") {
+    // 30 fps (one frame per present): always under workloadMutex.
+    CHECK(!presentSamplesInterpolatedUnlocked(0, 1, false));
+    CHECK(!presentSamplesInterpolatedUnlocked(0, 1, true));
+    // 120 fps, no MSAA: the real frame (0) is under workloadMutex, the generated ones aren't.
+    CHECK(!presentSamplesInterpolatedUnlocked(0, 4, false));
+    CHECK(presentSamplesInterpolatedUnlocked(1, 4, false));
+    CHECK(presentSamplesInterpolatedUnlocked(3, 4, false));
+    // With MSAA even frame 0 is an interpolated copy shown without workloadMutex (the settings-stress hang's masks
+    // 121/127 include MSAA): it must take the interpolated-targets lock too.
+    CHECK(presentSamplesInterpolatedUnlocked(0, 4, true));
+    CHECK(presentSamplesInterpolatedUnlocked(0, 2, true));
+}
+
+TEST_CASE("present targets: a workload regrows under the lock when it renders into or primes interpolated targets") {
+    CHECK(!regrowsPresentableTargets(false, false));
+    CHECK(regrowsPresentableTargets(true, false));
+    CHECK(regrowsPresentableTargets(false, true));
+    CHECK(regrowsPresentableTargets(true, true));
+}
+
 // Graphics device loss
 
 TEST_CASE("device loss: renderer threads render until the device is lost, then skip all GPU work") {

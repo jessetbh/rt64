@@ -565,6 +565,13 @@ namespace RT64 {
             resizedTargets.clear();
             colorDepthPairs.clear();
 
+            // [wcw fix] Rendering into an interpolated target (the override) regrows it below while the present may
+            // be showing it outside workloadMutex: regrow under the interpolated-targets lock (aki-roadmap#4).
+            std::unique_lock<std::mutex> wcwRegrowLock(ext.sharedResources->wcwInterpolatedTargetsMutex, std::defer_lock);
+            if (WcwLogic::regrowsPresentableTargets(overrideTarget != nullptr, false)) {
+                wcwRegrowLock.lock();
+            }
+
             const uint32_t fbPairCount = (debuggerRenderer.framebufferIndex >= 0) ? (debuggerRenderer.framebufferIndex + 1) : workload.fbPairCount;
             for (uint32_t f = 0; f < fbPairCount; f++) {
                 const FramebufferPair &fbPair = workload.fbPairs[f];
@@ -641,6 +648,10 @@ namespace RT64 {
 
             for (RenderTarget *renderTarget : resizedTargets) {
                 renderFramebufferManager->destroyAllWithRenderTarget(renderTarget);
+            }
+
+            if (wcwRegrowLock.owns_lock()) {
+                wcwRegrowLock.unlock();
             }
 
             uint32_t gameCallCursor = 0;
@@ -783,6 +794,12 @@ namespace RT64 {
             // layers drew without generating (whatever the profile).
             if ((overrideTarget == nullptr) && !wcwPrimeTargets.empty() && !usingMSAA) {
                 WcwGpuScope wcwPrimeScope(ext.workloadGraphicsWorker->commandList.get(), WcwPerf::GpuPass::InterpPrime);
+                // [wcw fix] The generated targets can still be on screen (aki-roadmap#4).
+                std::unique_lock<std::mutex> wcwPrimeLock(ext.sharedResources->wcwInterpolatedTargetsMutex, std::defer_lock);
+                if (WcwLogic::regrowsPresentableTargets(false, true)) {
+                    wcwPrimeLock.lock();
+                }
+
                 RenderTarget &liveTarget = targetManager.get(overrideTargetKey, true);
                 for (RenderTarget *primeTarget : wcwPrimeTargets) {
                     if (liveTarget.isEmpty() || (primeTarget == nullptr) || (&liveTarget == primeTarget)) {
@@ -911,6 +928,12 @@ namespace RT64 {
 
                     // Do the resolve if using MSAA while target override is active and we're on the correct framebuffer pair index.
                     if (usingMSAA && (overrideTarget != nullptr) && ((uint32_t)overrideTargetFbPairIndex == f)) {
+                        // [wcw fix] The MSAA present shows this target without workloadMutex (aki-roadmap#4).
+                        std::unique_lock<std::mutex> wcwResolveLock(ext.sharedResources->wcwInterpolatedTargetsMutex, std::defer_lock);
+                        if (WcwLogic::regrowsPresentableTargets(true, false)) {
+                            wcwResolveLock.lock();
+                        }
+
                         overrideTarget->resize(ext.workloadGraphicsWorker, colorTarget->width, colorTarget->height);
                         overrideTarget->resolveFromTarget(ext.workloadGraphicsWorker, colorTarget, ext.shaderLibrary);
                     }
@@ -1658,6 +1681,9 @@ namespace RT64 {
                 const bool usesHDR = ext.sharedResources->renderTargetManager.usesHDR;
                 uint32_t requiredFrames = (usingMSAA && generateInterpolatedFrames) ? displayFrames : (displayFrames - 1);
                 if ((requiredFrames > 0) && (interpolatedTargets.size() < requiredFrames)) {
+                    // [wcw fix] The present reads these vectors under workloadMutex (the first frame) or the
+                    // interpolated-targets lock (the others); growing one can move its elements (aki-roadmap#4).
+                    std::scoped_lock<std::mutex, std::mutex> wcwGrowLock(ext.sharedResources->workloadMutex, ext.sharedResources->wcwInterpolatedTargetsMutex);
                     uint32_t previousSize = uint32_t(interpolatedTargets.size());
                     interpolatedTargets.resize(requiredFrames);
                     for (uint32_t i = previousSize; i < requiredFrames; i++) {

@@ -406,7 +406,10 @@ namespace RT64 {
         for (int32_t i = 0; i < framesToPresent; i++) {
             uint32_t frameCountersNextPresented = 0;
             int64_t wcwHfrFallbackAge = -1;
-            if ((framesToPresent > 1) && (usingMSAA || (i > 0))) {
+            // [wcw fix] Held from choosing an interpolated target until its present's GPU work is done, so the workload
+            // can't regrow (free) it meanwhile (aki-roadmap#4). Taken after the availability wait below, never before.
+            std::unique_lock<std::mutex> wcwTargetsLock(ext.sharedResources->wcwInterpolatedTargetsMutex, std::defer_lock);
+            if (WcwLogic::presentSamplesInterpolatedUnlocked(i, framesToPresent, usingMSAA)) {
                 // Stall until the interpolated color target is available.
                 const uint32_t targetIndex = usingMSAA ? i : (i - 1);
                 std::unique_lock<std::mutex> interpolatedLock(ext.sharedResources->interpolatedMutex);
@@ -417,6 +420,7 @@ namespace RT64 {
                     return (frameCounters.available > targetIndex) || ((frameCounters.available == targetIndex) && frameCounters.skipped);
                 });
                 wcwHfrTimeouts += wcwInterpTimedOut ? 1 : 0;
+                wcwTargetsLock.lock();
 
                 // Do not present any more frames after this one after reaching the last available frame if the workload was skipped.
                 if (wcwInterpTimedOut || ((frameCounters.available == targetIndex) && frameCounters.skipped)) {

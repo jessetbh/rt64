@@ -60,6 +60,11 @@ namespace RT64 {
         std::mutex interpolatedMutex;
         std::condition_variable interpolatedCondition;
         std::mutex workloadMutex;
+        // [wcw fix] Held by the present while it records and waits for a present that samples an interpolated target
+        // without workloadMutex (WcwLogic::presentSamplesInterpolatedUnlocked), and by the workload while it regrows
+        // or adds those targets: a regrow freed a texture the present queue was still reading (aki-roadmap#4).
+        // Lock order: workloadMutex, then interpolatedMutex, then this one; never wait on the other thread under it.
+        std::mutex wcwInterpolatedTargetsMutex;
 
         void setSwapChainSize(uint32_t width, uint32_t height) {
             std::scoped_lock<std::mutex> configurationLock(configurationMutex);
