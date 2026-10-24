@@ -4,6 +4,8 @@
 
 #include "rt64_workload_queue.h"
 
+#include <cstring>
+
 #include "common/rt64_thread.h"
 #include "common/rt64_wcw_logic.h"
 #include "common/rt64_wcw_perf.h"
@@ -804,6 +806,43 @@ namespace RT64 {
 
             wcwPrimeTargets.clear();
 
+            // [wcw diag] aki-roadmap#4: the settings-apply GPU hang stops at the first draw of a framebuffer's RDRAM contents
+            // into a freshly created target (copyFromChanges below, DRED op 34). WCW_DIAG_FBCHANGES=skip leaves those draws
+            // out; =isolate submits each in a command list of its own, with a GPU wait before and after it. Diagnostic only.
+            static const char *wcwDiagFbEnv = getenv("WCW_DIAG_FBCHANGES");
+            static const bool wcwDiagFbSkip = (wcwDiagFbEnv != nullptr) && (strcmp(wcwDiagFbEnv, "skip") == 0);
+            static const bool wcwDiagFbIsolate = (wcwDiagFbEnv != nullptr) && (strcmp(wcwDiagFbEnv, "isolate") == 0);
+            static uint32_t wcwDiagFbCount = 0;
+            auto wcwDiagFbSplit = [&]() {
+                ext.workloadGraphicsWorker->commandList->end();
+                framebufferRenderer->waitForUploaders();
+                ext.workloadGraphicsWorker->execute();
+                ext.workloadGraphicsWorker->wait();
+                ext.workloadGraphicsWorker->commandList->begin();
+            };
+            auto wcwCopyFromChanges = [&](RenderTarget *target, const FramebufferChange &fbChange, uint32_t fbWidth, uint32_t rowCount, uint32_t rowStart) {
+                if (wcwDiagFbSkip || wcwDiagFbIsolate) {
+                    wcwDiagFbCount++;
+                    if ((wcwDiagFbCount <= 20) || ((wcwDiagFbCount % 100) == 0)) {
+                        fprintf(stderr, "[wcw diag4] fbchanges %s #%u: target %ux%u, fb width %u, rows %u-%u\n", wcwDiagFbSkip ? "skipped" : "isolated",
+                            wcwDiagFbCount, target->width, target->height, fbWidth, rowStart, rowStart + rowCount);
+                    }
+                }
+
+                if (wcwDiagFbSkip) {
+                    return;
+                }
+
+                if (wcwDiagFbIsolate) {
+                    wcwDiagFbSplit();
+                }
+
+                target->copyFromChanges(ext.workloadGraphicsWorker, fbChange, fbWidth, rowCount, rowStart, ext.shaderLibrary);
+                if (wcwDiagFbIsolate) {
+                    wcwDiagFbSplit();
+                }
+            };
+
             // Record all framebuffer pairs.
             uint32_t framebufferIndex = 0;
             WcwGpuScope wcwFbOpsScope(ext.workloadGraphicsWorker->commandList.get(), WcwPerf::GpuPass::FbOps);
@@ -843,7 +882,7 @@ namespace RT64 {
                                 Framebuffer::Type::Color, colorImg.fmt, f, colorFb->readHeight, readRowCount, ext.shaderLibrary);
 
                             if (colorFbChange != nullptr) {
-                                colorTarget->copyFromChanges(ext.workloadGraphicsWorker, *colorFbChange, colorFb->width, readRowCount, colorFb->readHeight, ext.shaderLibrary);
+                                wcwCopyFromChanges(colorTarget, *colorFbChange, colorFb->width, readRowCount, colorFb->readHeight);
                             }
 
                             colorFb->readHeight = colorFb->height;
@@ -882,7 +921,7 @@ namespace RT64 {
                                 G_IM_FMT_DEPTH, f, depthFb->readHeight, readRowCount, ext.shaderLibrary);
 
                             if (depthFbChange != nullptr) {
-                                depthTarget->copyFromChanges(ext.workloadGraphicsWorker, *depthFbChange, depthFb->width, readRowCount, depthFb->readHeight, ext.shaderLibrary);
+                                wcwCopyFromChanges(depthTarget, *depthFbChange, depthFb->width, readRowCount, depthFb->readHeight);
                                 depthFbChanged = true;
                             }
 
