@@ -1195,6 +1195,7 @@ namespace RT64 {
                 const RenderCommandList *copyCommandList = copyWorker->commandList.get();
                 RenderCommandSemaphore *syncSemaphore = copyToDirectSemaphore.get();
                 copyWorker->commandList->end();
+                wcwSerialGpuBegin();
                 copyWorker->commandQueue->executeCommandLists(&copyCommandList, 1, nullptr, 0, &syncSemaphore, 1);
                 
                 // Decode all textures using the direct worker and transition all textures to their final layouts.

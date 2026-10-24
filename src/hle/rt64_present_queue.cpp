@@ -738,6 +738,7 @@ namespace RT64 {
                     RenderCommandSemaphore *waitSemaphore = acquiredSemaphore.get();
                     RenderCommandSemaphore *signalSemaphore = drawSemaphores[swapChainIndex].get();
                     const WcwPerf::Clock::time_point wcwSubmit = wcwPerf ? WcwPerf::Clock::now() : WcwPerf::Clock::time_point();
+                    wcwSerialGpuBegin();
                     ext.presentGraphicsWorker->commandQueue->executeCommandLists(&commandList, 1, &waitSemaphore, 1, &signalSemaphore, 1, ext.presentGraphicsWorker->commandFence.get());
                     ext.presentGraphicsWorker->wait();
                     if (wcwPerf) {
@@ -1232,6 +1233,7 @@ namespace RT64 {
         const RenderCommandList *commandListConst = commandList;
         RenderCommandSemaphore *waitSemaphore = acquiredSemaphore.get();
         RenderCommandSemaphore *signalSemaphore = drawSemaphores[swapChainIndex].get();
+        wcwSerialGpuBegin();
         ext.presentGraphicsWorker->commandQueue->executeCommandLists(&commandListConst, 1, &waitSemaphore, 1, &signalSemaphore, 1, ext.presentGraphicsWorker->commandFence.get());
         ext.presentGraphicsWorker->wait();
         phase(2);
@@ -1435,6 +1437,7 @@ namespace RT64 {
 
             const RenderCommandList *commandList = ext.presentGraphicsWorker->commandList.get();
             RenderCommandSemaphore *waitSemaphore = acquiredSemaphore.get();
+            wcwSerialGpuBegin();
             ext.presentGraphicsWorker->commandQueue->executeCommandLists(&commandList, 1, &waitSemaphore, 1, nullptr, 0, ext.presentGraphicsWorker->commandFence.get());
             ext.presentGraphicsWorker->wait();
         }
