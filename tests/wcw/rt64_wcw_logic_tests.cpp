@@ -272,6 +272,43 @@ TEST_CASE("camera cuts: matrixChange") {
     CHECK(matrixChange(a.data(), zero.data()) < 0.0f);
 }
 
+// A perspective projection matrix (row-major, like RT64's) with a vertical field of view in radians.
+static std::vector<float> perspectiveMatrix(float fovY) {
+    const float f = 1.0f / std::tan(fovY / 2.0f);
+    return { f * 0.75f, 0.0f, 0.0f, 0.0f, 0.0f, f, 0.0f, 0.0f, 0.0f, 0.0f, -1.0f, -1.0f, 0.0f, 0.0f, -2.0f, 0.0f };
+}
+
+TEST_CASE("scene projections: only those drawn from the scene's camera share its interpolation (#110)") {
+    const std::vector<float> view = cameraMatrix(0.0f, 600.0f, 0.3f);
+    const std::vector<float> proj = perspectiveMatrix(0.8f);
+    // The same camera (or float noise on it) shares the first projection's mapping.
+    CHECK(sharesSceneCamera(view.data(), proj.data(), view.data(), proj.data()));
+    std::vector<float> noisy = view;
+    noisy[12] += 0.0005f;
+    CHECK(sharesSceneCamera(view.data(), proj.data(), noisy.data(), proj.data()));
+    // Another camera: interpolating from the first projection's previous camera to this one's current camera blended
+    // two unrelated views (World Tour: dark quads drawn huge across the ring). It's left unmapped.
+    const std::vector<float> otherView = cameraMatrix(-300.0f, -200.0f, 2.8f);
+    CHECK(!sharesSceneCamera(view.data(), proj.data(), otherView.data(), proj.data()));
+    // Same view, another lens: the projection matrix is interpolated from the first projection's too.
+    const std::vector<float> otherProj = perspectiveMatrix(0.4f);
+    CHECK(!sharesSceneCamera(view.data(), proj.data(), view.data(), otherProj.data()));
+    // Even a camera that moved like an ordinary pan is another camera here (projections of one frame share it exactly).
+    const std::vector<float> pan = cameraMatrix(4.0f, 604.0f, 0.3f + 0.0175f);
+    CHECK(!sharesSceneCamera(view.data(), proj.data(), pan.data(), proj.data()));
+}
+
+TEST_CASE("scene projections: unknown matrices don't share the scene's camera (#110)") {
+    const std::vector<float> view = cameraMatrix(0.0f, 600.0f, 0.3f);
+    const std::vector<float> proj = perspectiveMatrix(0.8f);
+    std::vector<float> bad = view;
+    bad[5] = NAN;
+    CHECK(!sharesSceneCamera(view.data(), proj.data(), bad.data(), proj.data()));
+    const std::vector<float> zero(16, 0.0f);
+    CHECK(!sharesSceneCamera(view.data(), proj.data(), zero.data(), proj.data()));
+    CHECK(!sharesSceneCamera(view.data(), proj.data(), view.data(), zero.data()));
+}
+
 TEST_CASE("camera cuts: a layer whose objects' cameras all jumped is a cut (Revenge attract made-up views, #6 cause 3)") {
     // Revenge's attract mode cuts between shots every few seconds; the generated frame at each cut interpolated the
     // camera between the two shots (a third view, 10-50% off in luminance). Every matched object's camera jumps.

@@ -469,6 +469,16 @@ namespace RT64::WcwLogic {
     // value isn't finite or cur is zero.
     float matrixChange(const float prev[16], const float cur[16]);
 
+    // A scene's projections (aki-roadmap#110). RT64 maps a scene's first projection to the previous frame's and copies
+    // that mapping to the scene's other projections, which then interpolate from the first projection's previous
+    // camera to their own current one. A later projection drawn from another camera got a blend of two unrelated
+    // cameras on generated frames: World Tour's quick match drew a few dark quads huge across the ring, 7% darker.
+    // Such a projection is left unmapped (drawn with its own current camera) instead.
+    // Whether a projection may take the scene's mapping: its view and projection matrices equal the projection's that
+    // was mapped, within SharedCameraChange (matrixChange); unknown (non-finite or zero) matrices don't.
+    constexpr float SharedCameraChange = 0.001f;
+    bool sharesSceneCamera(const float sceneView[16], const float sceneProj[16], const float view[16], const float proj[16]);
+
     // Counts, over a layer's matched object pairs, how far each pair's camera matrix moved since the previous frame.
     // A camera cut moves every object's camera at once; a pan or zoom moves it a few percent per game frame. On a cut
     // the generated frame interpolated the camera between two unrelated shots and showed a third, made-up view (a

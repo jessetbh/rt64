@@ -538,6 +538,12 @@ namespace RT64::WcwLogic {
         return (den > 0.0) ? float(std::sqrt(num / den)) : -1.0f;
     }
 
+    bool sharesSceneCamera(const float sceneView[16], const float sceneProj[16], const float view[16], const float proj[16]) {
+        const float viewChange = matrixChange(sceneView, view);
+        const float projChange = matrixChange(sceneProj, proj);
+        return (viewChange >= 0.0f) && (projChange >= 0.0f) && (viewChange <= SharedCameraChange) && (projChange <= SharedCameraChange);
+    }
+
     void CameraCutCounter::reset() {
         *this = CameraCutCounter();
     }

@@ -500,6 +500,13 @@ namespace RT64 {
 
         // Build a multimap with all potential compatibilities between draw calls in the projections.
         uint32_t mappedViewProjIndex = UINT32_MAX;
+        // [wcw fix] The camera of the projection the scene's mapping came from (WcwLogic::sharesSceneCamera).
+        float mappedView[16] = {}, mappedProj[16] = {};
+        auto storeCamera = [](const Workload &workload, uint32_t transformsIndex, float view[16], float proj[16]) {
+            hlslpp::store(hlslpp::float4x4(workload.drawData.viewTransforms[transformsIndex]), view);
+            hlslpp::store(hlslpp::float4x4(workload.drawData.projTransforms[transformsIndex]), proj);
+        };
+
         for (uint32_t p = 0; p < curScene.projections.size(); p++) {
             const GameIndices::Projection &curProjIndices = curScene.projections[p];
             Workload &curWorkload = workloadQueue.workloads[curProjIndices.workloadIndex];
@@ -508,8 +515,26 @@ namespace RT64 {
             buildCallHashMap(p, curWorkload, curProj, curCallHashMap);
 
             // Projection for the entire scene has been matched already, copy the mapping.
+            // [wcw fix] Only to projections drawn from the same camera: another camera would interpolate from the
+            // mapped projection's previous camera to its own current one (aki-roadmap#110). It stays unmapped.
             if (mappedViewProjIndex < UINT32_MAX) {
-                firstCurWorkloadMap.viewProjections[curProj.transformsIndex] = firstCurWorkloadMap.viewProjections[mappedViewProjIndex];
+                float view[16], proj[16];
+                storeCamera(curWorkload, curProj.transformsIndex, view, proj);
+                GameFrameMap::ViewProjectionMap &copyMap = firstCurWorkloadMap.viewProjections[curProj.transformsIndex];
+                if (WcwLogic::sharesSceneCamera(mappedView, mappedProj, view, proj)) {
+                    copyMap = firstCurWorkloadMap.viewProjections[mappedViewProjIndex];
+                }
+                else {
+                    copyMap.mapped = false;
+                    copyMap.rigidBody = RigidBody();
+                    static const bool wcwPairLog = getenv("WCW_PAIR_LOG") != nullptr;
+                    static uint32_t wcwLogged = 0;
+                    if (wcwPairLog && (wcwLogged++ < 200)) {
+                        fprintf(stderr, "[wcw scene cam] t=%.3f projection %u (transforms %u) has another camera than the scene's (transforms %u): not interpolated (view change %.3f, proj change %.3f)\n",
+                            std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(), p, curProj.transformsIndex, mappedViewProjIndex,
+                            WcwLogic::matrixChange(mappedView, view), WcwLogic::matrixChange(mappedProj, proj));
+                    }
+                }
             }
 
             // Can't map to a previous projection.
@@ -521,6 +546,7 @@ namespace RT64 {
                 GameFrameMap::ViewProjectionMap &viewProjMap = firstCurWorkloadMap.viewProjections[curProj.transformsIndex];
                 if (viewProjMap.mapped) {
                     mappedViewProjIndex = curProj.transformsIndex;
+                    storeCamera(curWorkload, curProj.transformsIndex, mappedView, mappedProj);
                     continue;
                 }
 
@@ -573,6 +599,7 @@ namespace RT64 {
 
                 if (viewProjMap.mapped) {
                     mappedViewProjIndex = curProj.transformsIndex;
+                    storeCamera(curWorkload, curProj.transformsIndex, mappedView, mappedProj);
                 }
             }
         }
