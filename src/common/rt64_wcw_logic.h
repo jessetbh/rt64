@@ -596,6 +596,12 @@ namespace RT64::WcwLogic {
     // "..". Empty, relative or drive-relative ("C:foo") input, and a path already in \\?\ or \\.\ form, come back unchanged.
     std::wstring extendedLengthPath(const std::wstring &absolutePath);
 
+    // A file inside a pack root (aki-roadmap#115 review): root joined with a pack-relative path. Pack paths come with
+    // '/' (rt64.json entries, Rice names, the forward-slash forms the database builds) and may hold "." or "..", and
+    // Win32 resolves neither inside a \\?\ path, so with an extended-length root the joined path goes through
+    // extendedLengthPath again: '/' becomes '\' and "."/".." are resolved. Any other root is joined as given.
+    std::wstring extendedLengthJoin(const std::wstring &root, const std::wstring &relative);
+
     // Display lists (aki-roadmap#116)
 
     // Most commands the interpreter runs for one display list task. A list that branches back into itself (a hack's
