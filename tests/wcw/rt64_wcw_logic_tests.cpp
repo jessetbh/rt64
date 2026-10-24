@@ -411,6 +411,32 @@ TEST_CASE("generated frames: shadows don't freeze when real frames are skipped u
     CHECK(traceRender(true, true, MaxGeneratedReuse + 5));
 }
 
+TEST_CASE("acceleration structures: a generated frame that reuses its pass's trace doesn't build them (#36)") {
+    // The reusing generated frame: no build (every generated frame built BLAS + TLAS for nothing).
+    CHECK(!buildForPass(false, true, true, 0, false));
+    CHECK(!buildForPass(false, true, true, MaxGeneratedReuse - 1, false));
+    // Every frame that traces builds: the real frame, a pass with no trace yet, and the reuse limit.
+    CHECK(buildForPass(false, false, true, 0, false));
+    CHECK(buildForPass(false, true, false, 0, false));
+    CHECK(buildForPass(false, true, true, MaxGeneratedReuse, false));
+    // The build follows the trace decision exactly when nothing else forces one.
+    for (int generated = 0; generated < 2; generated++) {
+        for (int haveTrace = 0; haveTrace < 2; haveTrace++) {
+            for (uint32_t reuses = 0; reuses <= MaxGeneratedReuse + 1; reuses++) {
+                CHECK(buildForPass(false, generated != 0, haveTrace != 0, reuses, false) == traceRender(generated != 0, haveTrace != 0, reuses));
+            }
+        }
+    }
+}
+
+TEST_CASE("acceleration structures: a pass still builds when its trace can't be reused this render (#36)") {
+    // WCW_RT_TRACE_GENERATED traces every displayed frame, so every frame builds.
+    CHECK(buildForPass(true, true, true, 0, false));
+    // The trace textures are made again (target size or trace scale changed): the history is dropped and the pass
+    // traces, so it needs the structures even on a reusing generated frame.
+    CHECK(buildForPass(false, true, true, 0, true));
+}
+
 TEST_CASE("generated frames: two passes sharing a slot don't reuse each other's trace (generated frames ~5% darker)") {
     // Two No Mercy passes of similar scenes map to one slot. On the real frame each traces in turn, so the slot
     // holds the second pass's trace; on a generated frame the first pass must trace, not composite that trace.

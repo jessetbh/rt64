@@ -100,6 +100,13 @@ namespace RT64::WcwLogic {
     // pass let a second pass darken the misses again: generated frames ~5% darker, 3% of game frames off.
     bool reusableTrace(bool traced, uint64_t tracedSignature, uint64_t signature, bool tracedDarkened, bool darkens);
 
+    // Whether a pass builds its acceleration structures (BLAS + TLAS) on this render (aki-roadmap#36). A pass that
+    // composites its slot's latest trace (traceRender false) reads neither, yet every generated frame built them:
+    // ~0.1 ms each, over half the workloads at 120 fps. It still builds when it traces every frame
+    // (traceEveryFrame: WCW_RT_TRACE_GENERATED), or when its trace textures are made again on this render
+    // (traceTexturesChange: target size or trace scale changed), which drops the trace it would composite.
+    bool buildForPass(bool traceEveryFrame, bool generated, bool haveTrace, uint32_t reusesSinceTrace, bool traceTexturesChange);
+
     // Ray tracing quality presets
 
     // The menu's Ray Tracing Quality levels.

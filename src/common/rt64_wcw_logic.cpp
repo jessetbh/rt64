@@ -54,6 +54,10 @@ namespace RT64::WcwLogic {
         return traced && (tracedSignature == signature) && (tracedDarkened == darkens);
     }
 
+    bool buildForPass(bool traceEveryFrame, bool generated, bool haveTrace, uint32_t reusesSinceTrace, bool traceTexturesChange) {
+        return traceEveryFrame || traceTexturesChange || traceRender(generated, haveTrace, reusesSinceTrace);
+    }
+
     uint64_t passSignature(const uint32_t *triangleCounts, size_t count) {
         // FNV-1a over the count and the sorted triangle counts.
         std::vector<uint32_t> sorted(triangleCounts, triangleCounts + count);

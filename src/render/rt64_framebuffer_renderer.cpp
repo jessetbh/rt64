@@ -1838,7 +1838,7 @@ namespace RT64 {
                 wcwRaytracer->beginScene(wcwView, wcwProj, wcwViewport,
                     worldPosRes, outputBuffers.worldPosBuffer.allocatedSize, outputBuffers.worldNormBuffer.buffer.get(), outputBuffers.worldNormBuffer.allocatedSize,
                     indexRes, uint64_t(indexCount) * IndexStride,
-                    drawBuffers.rdpTilesBuffer.get(), drawBuffers.gpuTilesBuffer.get(), tcRes);
+                    drawBuffers.rdpTilesBuffer.get(), drawBuffers.gpuTilesBuffer.get(), tcRes, p.fbStorage->colorTarget);
             }
 
             for (uint32_t d = 0; (d < proj.gameCallCount) && (globalCallIndex < p.maxGameCall); d++) {
