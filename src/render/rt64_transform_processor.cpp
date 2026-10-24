@@ -4,8 +4,12 @@
 
 #include "rt64_transform_processor.h"
 
+#include <algorithm>
 #include <cfloat>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 
 #include "common/rt64_math.h"
 #include "hle/rt64_game_frame.h"
@@ -137,6 +141,40 @@ namespace RT64 {
                             if (degenerate || (ratio > 2.0f)) {
                                 curMatrix = drawData.worldTransforms[t];
                                 prevMatrix = drawData.worldTransforms[t];
+                            }
+                        }
+
+                        // [wcw diag] aki-roadmap#110 (WCW_DIAG_XFPAIRS=1): WT's generated frame drew a dark quad huge
+                        // across the ring while every matched pair moved little. Log matched pairs whose object origin
+                        // crosses or nears the camera plane (clip w changes sign or gets small: interpolating through it
+                        // projects huge), or whose interpolated matrix lands farther from both real ones than they are
+                        // from each other (a wrong partner). Drawn (MVP) matrices; translation row [3]. Diagnostic only.
+                        {
+                            static const bool wcwXfPairs = getenv("WCW_DIAG_XFPAIRS") != nullptr;
+                            static uint32_t wcwXfLogged = 0;
+                            if (wcwXfPairs && (wcwXfLogged < 600) && (transformMap.prevTransformIndex < prevDrawData.worldTransforms.size())) {
+                                const hlslpp::float4x4 prevDrawn(prevDrawData.worldTransforms[transformMap.prevTransformIndex]);
+                                const hlslpp::float4x4 curDrawn(drawData.worldTransforms[t]);
+                                auto dist = [](const hlslpp::float4x4 &a, const hlslpp::float4x4 &b) {
+                                    float acc = 0.0f;
+                                    for (int i = 0; i < 4; i++) {
+                                        const hlslpp::float4 d = a[i] - b[i];
+                                        acc += float(hlslpp::dot(d, d));
+                                    }
+                                    return sqrtf(acc);
+                                };
+                                const float wPrev = float(prevDrawn[3].w), wCur = float(curDrawn[3].w), wLerp = float(curMatrix[3].w);
+                                const float wMax = std::max(fabsf(wPrev), fabsf(wCur));
+                                const bool nearPlane = ((wPrev * wCur) <= 0.0f) || ((wMax > 0.0f) && (std::min(fabsf(wPrev), fabsf(wCur)) < (0.05f * wMax)));
+                                const float dPC = dist(prevDrawn, curDrawn), dLC = dist(curMatrix, curDrawn), dLP = dist(curMatrix, prevDrawn);
+                                const bool offBoth = (dLC > (1.5f * dPC + 1e-3f)) && (dLP > (1.5f * dPC + 1e-3f));
+                                if (nearPlane || offBoth) {
+                                    wcwXfLogged++;
+                                    fprintf(stderr, "[wcw diag xf] t=%.3f wl %u xf %zu/%zu prev %u%s%s | pure %d comb %d | w prev %.3f cur %.3f lerp %.3f | d(prev,cur) %.3f d(lerp,cur) %.3f d(lerp,prev) %.3f | weight %.2f\n",
+                                        std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(), w, t, drawData.worldTransforms.size(),
+                                        transformMap.prevTransformIndex, nearPlane ? " NEAR-PLANE" : "", offBoth ? " OFF-BOTH" : "",
+                                        int(transformMap.usedPureMatrix), int(transformMap.wcwCombinedLerp), wPrev, wCur, wLerp, dPC, dLC, dLP, float(p.curFrameWeight));
+                                }
                             }
                         }
 
