@@ -1542,6 +1542,18 @@ TEST_CASE("low-mip cache: stacked packs with the same file name keep their own l
     CHECK(lowMipCacheKey(1, "1/a.dds") != lowMipCacheKey(11, "/a.dds"));
 }
 
+// Texture dumps (#98)
+
+TEST_CASE("texture dump: a second dump session keeps the PNGs already in the pack (it overwrote the player's edits)") {
+    // The pack folder held <hash>.png from the first session (maybe edited): refresh the raw files only.
+    CHECK(texDumpWrite(false, true) == TexDumpWrite::SidecarsOnly);
+    // A texture with no file in the pack gets its PNG.
+    CHECK(texDumpWrite(false, false) == TexDumpWrite::All);
+    // Once per session, either way.
+    CHECK(texDumpWrite(true, false) == TexDumpWrite::Nothing);
+    CHECK(texDumpWrite(true, true) == TexDumpWrite::Nothing);
+}
+
 // Graphics device loss
 
 TEST_CASE("device loss: renderer threads render until the device is lost, then skip all GPU work") {

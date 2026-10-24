@@ -571,6 +571,24 @@ namespace RT64::WcwLogic {
     // mip while the real texture streamed in.
     std::string lowMipCacheKey(uint32_t fileSystemIndex, const std::string &relativePath);
 
+    // Texture dumps (aki-roadmap#98)
+
+    // What a dump writes for a texture the game loads.
+    enum class TexDumpWrite {
+        // Already dumped since the dump started.
+        Nothing,
+        // The raw files the texture tools read (.tmem, .tile.json, .rice.*), but not the PNG: the pack folder already
+        // holds a hash-named file for it, which may be the player's edit.
+        SidecarsOnly,
+        // The PNG and the raw files.
+        All
+    };
+
+    // dumpedThisSession: the hash was dumped since the dump started. packFileExists: the dump's pack folder held a
+    // "<hash>.png" or ".dds" when the dump started. A second dump session used to rewrite every PNG and lose the
+    // player's edits, because only the per-session set was checked.
+    TexDumpWrite texDumpWrite(bool dumpedThisSession, bool packFileExists);
+
     // Graphics device loss
 
     // What a renderer thread does with its next piece of work (a display list, a workload, a present, a texture

@@ -731,6 +731,14 @@ namespace RT64::WcwLogic {
         return std::to_string(fileSystemIndex) + "|" + relativePath;
     }
 
+    TexDumpWrite texDumpWrite(bool dumpedThisSession, bool packFileExists) {
+        if (dumpedThisSession) {
+            return TexDumpWrite::Nothing;
+        }
+
+        return packFileExists ? TexDumpWrite::SidecarsOnly : TexDumpWrite::All;
+    }
+
     DeviceLostWork deviceLostWork(bool deviceLost) {
         return deviceLost ? DeviceLostWork::SkipGpuWork : DeviceLostWork::Render;
     }

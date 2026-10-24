@@ -10,6 +10,7 @@
 #include "xxHash/xxh3.h"
 
 #include "common/rt64_tmem_hasher.h"
+#include "common/rt64_wcw_logic.h"
 #include "common/rt64_wcw_texdump.h"
 
 #include "rt64_state.h"
@@ -67,7 +68,9 @@ namespace RT64 {
     }
 
     void TextureManager::dumpTexture(uint64_t hash, State *state, const LoadTile &loadTile, uint16_t width, uint16_t height, uint32_t tlut) {
-        if (dumpedSet.find(hash) != dumpedSet.end()) {
+        // [wcw] Once per session, and never over a file the pack folder already had (aki-roadmap#98).
+        const WcwLogic::TexDumpWrite write = WcwLogic::texDumpWrite(dumpedSet.find(hash) != dumpedSet.end(), packSet.find(hash) != packSet.end());
+        if (write == WcwLogic::TexDumpWrite::Nothing) {
             return;
         }
 
@@ -76,7 +79,8 @@ namespace RT64 {
 
         // [wcw] The texture as the game draws it, as <hash>.png in the dump's pack folder: edit it and load the folder
         // as a texture pack (aki-roadmap#48). Raw TMEM textures (uploadTMEM) decode with the tile they were loaded with.
-        {
+        // Written to a temp file and renamed, so a quit mid-write never leaves a broken PNG that later dumps would keep.
+        if (write == WcwLogic::TexDumpWrite::All) {
             WcwTexDump::TileFormat tileFormat;
             tileFormat.fmt = loadTile.fmt;
             tileFormat.siz = loadTile.siz;
@@ -87,11 +91,21 @@ namespace RT64 {
             const std::vector<uint8_t> rgba = WcwTexDump::decodeTexture(reinterpret_cast<const uint8_t *>(state->rdp->TMEM), width, height, tileFormat);
             const std::vector<uint8_t> png = WcwTexDump::encodePNG(rgba.data(), width, height);
             if (!png.empty()) {
-                std::filesystem::path pngPath = state->dumpingTexturesDirectory / WcwTexDump::PackFolderName / WcwTexDump::hashFileName(hash);
-                std::ofstream pngStream(pngPath, std::ios::binary);
+                const std::filesystem::path pngPath = state->dumpingTexturesDirectory / WcwTexDump::PackFolderName / WcwTexDump::hashFileName(hash);
+                std::filesystem::path tempPath = pngPath;
+                tempPath += ".tmp";
+                std::ofstream pngStream(tempPath, std::ios::binary);
                 if (pngStream.is_open()) {
                     pngStream.write(reinterpret_cast<const char *>(png.data()), png.size());
                     pngStream.close();
+                    std::error_code ec;
+                    if (!pngStream.fail()) {
+                        std::filesystem::rename(tempPath, pngPath, ec);
+                    }
+
+                    if (pngStream.fail() || ec) {
+                        std::filesystem::remove(tempPath, ec);
+                    }
                 }
             }
         }
@@ -231,7 +245,17 @@ namespace RT64 {
             }
         }
 
-        fprintf(stderr, "[wcw texdump] dumping textures to %s\n", directory.u8string().c_str());
+        // Keep every texture the pack folder already has: the player may have edited it (aki-roadmap#98).
+        dumpedSet.clear();
+        packSet.clear();
+        for (const std::filesystem::directory_entry &entry : std::filesystem::directory_iterator(packDirectory, ec)) {
+            uint64_t hash = 0;
+            if (entry.is_regular_file(ec) && WcwTexDump::hashFromFileName(entry.path().filename().u8string(), hash)) {
+                packSet.insert(hash);
+            }
+        }
+
+        fprintf(stderr, "[wcw texdump] dumping textures to %s (keeping %zu already in pack)\n", directory.u8string().c_str(), packSet.size());
         return true;
     }
 
