@@ -3,8 +3,11 @@
 //
 
 #include "rt64_interpreter.h"
+#include "common/rt64_wcw_logic.h"
 
 #include <cassert>
+#include <cstdio>
+#include <cstdlib>
 
 //#define DUMP_DISPLAY_LISTS
 
@@ -169,7 +172,27 @@ namespace RT64 {
         DisplayList *dl = dlStart;
         uint8_t opCode;
         GBIFunction func;
+        WcwLogic::DisplayListBudget budget; // [wcw] aki-roadmap#116: a list that never ends is ended (see the logic).
+        WorkloadQueue &workloadQueue = *state->ext.workloadQueue;
         while (dl != nullptr) {
+            // The workload being written can change inside the list (a full sync), so look it up per command.
+            if (!budget.take(workloadQueue.workloads[workloadQueue.writeCursor].drawData.worldTransforms.size())) {
+                static bool logged = false;
+                if (!logged) {
+                    logged = true;
+                    fprintf(stderr, "[wcw] display list at 0x%08X ran past its budget (%llu commands%s; it loops): ended it\n",
+                        dlStartAdddress, (unsigned long long)(budget.commands), budget.transformsFull ? ", world transforms full" : "");
+                }
+
+                // End the task as its G_RDPFULLSYNC would: submit what it recorded (with the draw call that was open)
+                // and interrupt, with no return addresses left over. Cut short without this, the open draw call
+                // carried its world matrix range into the next task's workload, and frame matching read past it.
+                state->returnAddressStack.clear();
+                state->fullSync();
+                state->dpInterrupt();
+                break;
+            }
+
             opCode = (dl->w0 >> 24);
 
             if ((extendedOpCode != 0) && (opCode == extendedOpCode)) {
@@ -192,6 +215,16 @@ namespace RT64 {
 
             if (dl != nullptr) {
                 dl++;
+            }
+        }
+
+        // [wcw] WCW_DL_STATS=1: the longest display list task so far, every 10 s (what DisplayListCommandLimit is measured against).
+        static const bool dlStats = (getenv("WCW_DL_STATS") != nullptr);
+        if (dlStats) {
+            static uint64_t longest = 0, lists = 0;
+            longest = (budget.commands > longest) ? budget.commands : longest;
+            if ((++lists % 600) == 0) {
+                fprintf(stderr, "[wcw] display lists: %llu, longest %llu commands\n", (unsigned long long)(lists), (unsigned long long)(longest));
             }
         }
 
