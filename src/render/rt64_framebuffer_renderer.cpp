@@ -7,6 +7,8 @@
 
 #include <cfloat>
 #include <cstring>
+#include <mutex>
+#include <unordered_map>
 
 #include "../include/rt64_extended_gbi.h"
 
@@ -845,6 +847,39 @@ namespace RT64 {
                     pd, (int)drawCall.type, (int)triangles.faceCount,
                     (float)triangles.screenScale.x, (float)triangles.screenScale.y,
                     (float)triangles.screenOffset.x, (float)triangles.screenOffset.y); }
+
+                // [wcw diag] aki-roadmap#4 (WCW_DIAG_DRAWLOG=1): the settings-apply hang is the first raster draw into a
+                // freshly created target. Log the first 3 raster draws after a color target's textures change, and any
+                // draw whose viewport or scissor leaves D3D12's +-32768 bounds or the target. Diagnostic only.
+                {
+                    static const bool wcwDrawLog = getenv("WCW_DIAG_DRAWLOG") != nullptr;
+                    if (wcwDrawLog && (fbStorage->colorTarget != nullptr)) {
+                        static std::mutex wcwDrawLogMutex;
+                        static std::unordered_map<const RenderTarget *, uint64_t> wcwSeenRevision;
+                        static std::unordered_map<const RenderTarget *, uint32_t> wcwDrawsSinceNew;
+                        static uint32_t wcwOutOfBoundsLogged = 0;
+                        const std::scoped_lock wcwLock(wcwDrawLogMutex);
+                        const RenderTarget *t = fbStorage->colorTarget;
+                        if (wcwSeenRevision[t] != t->textureRevision) {
+                            wcwSeenRevision[t] = t->textureRevision;
+                            wcwDrawsSinceNew[t] = 0;
+                        }
+
+                        const RenderViewport &v = framebuffer.viewport;
+                        const RenderRect &s = triangles.scissor;
+                        const bool vpOut = (v.x < -32768.0f) || (v.y < -32768.0f) || ((v.x + v.width) > 32767.0f) || ((v.y + v.height) > 32767.0f);
+                        const bool scOut = (s.left < 0) || (s.top < 0) || (s.right > int32_t(t->width)) || (s.bottom > int32_t(t->height));
+                        const bool fresh = (wcwDrawsSinceNew[t]++ < 3);
+                        if (fresh || ((vpOut || scOut) && (wcwOutOfBoundsLogged++ < 200))) {
+                            fprintf(stderr, "[wcw diag4 draw] %s target %ux%u rev %llu | viewport (%.1f,%.1f %.1fx%.1f)%s | scissor (%d,%d)-(%d,%d)%s | type %d faces %u start %u | scale (%.3f,%.3f) offset (%.1f,%.1f) | pipeline %p\n",
+                                fresh ? "first-after-new" : "out-of-bounds", t->width, t->height, (unsigned long long)t->textureRevision,
+                                v.x, v.y, v.width, v.height, vpOut ? " OUT" : "", s.left, s.top, s.right, s.bottom, scOut ? " OUT" : "",
+                                int(drawCall.type), uint32_t(triangles.faceCount), uint32_t(triangles.indexStart),
+                                float(triangles.screenScale.x), float(triangles.screenScale.y), float(triangles.screenOffset.x), float(triangles.screenOffset.y),
+                                (const void *)triangles.pipeline);
+                        }
+                    }
+                }
 
                 drawCallTriangles(drawCall);
 
