@@ -584,8 +584,9 @@ namespace RT64 {
     void WcwRaytracer::beginScene(const hlslpp::float4x4 &view, const hlslpp::float4x4 &proj, const RenderViewport &viewport,
         const RenderBuffer *worldPosBuffer, uint64_t worldPosSize, const RenderBuffer *worldNormBuffer, uint64_t worldNormSize,
         const RenderBuffer *faceIndicesBuffer, uint64_t faceIndicesSize,
-        const RenderBuffer *rdpTilesBuffer, const RenderBuffer *gpuTilesBuffer, const RenderBuffer *texCoordBuffer)
+        const RenderBuffer *rdpTilesBuffer, const RenderBuffer *gpuTilesBuffer, const RenderBuffer *texCoordBuffer, RenderTarget *colorTarget)
     {
+        sceneTarget = colorTarget;
         boundsViewProj = hlslpp::mul(view, proj);
         boundsMin[0] = boundsMin[1] = FLT_MAX;
         boundsMax[0] = boundsMax[1] = -FLT_MAX;
@@ -719,19 +720,78 @@ namespace RT64 {
         }
     }
 
+    float WcwRaytracer::targetTraceScale(const RenderTarget *target) const {
+        // The level's trace resolution (WcwLogic::rtPreset). WCW_RT_MAX_LINES overrides the line cap, WCW_RT_SCALE
+        // the whole scale.
+        WcwLogic::RtPreset qualityPreset = WcwLogic::rtPreset(userQuality());
+        qualityPreset.maxLines = envFloat(getenv("WCW_RT_MAX_LINES"), qualityPreset.maxLines);
+        return std::clamp(envFloat(getenv("WCW_RT_SCALE"), WcwLogic::rtTraceScale(qualityPreset, target->height, target->downsampleMultiplier)), 0.1f, 1.0f);
+    }
+
+    bool WcwRaytracer::traceTexturesChange(const RenderTarget *target, const Slot &slot) const {
+        // The tests recordTrace makes before it composites (WcwLogic::traceTexturesChange).
+        WcwLogic::TraceTextures textures;
+        textures.active = wasActive;
+        textures.haveTextures = (currentTexture != nullptr);
+        textures.outputWidth = outputWidth;
+        textures.outputHeight = outputHeight;
+        textures.traceScale = traceScale;
+        textures.haveHistory = (slot.history != nullptr);
+        textures.historyWidth = slot.historyWidth;
+        textures.historyHeight = slot.historyHeight;
+        textures.historyMode = slot.historyMode;
+        return WcwLogic::traceTexturesChange(textures, target->width, target->height, targetTraceScale(target), mode);
+    }
+
     void WcwRaytracer::recordBuild(RenderWorker *worker) {
         structuresBuilt = false;
         if (!sceneActive || meshes.empty()) {
             return;
         }
 
-        WcwGpuScope wcwBuildScope(worker->commandList.get(), WcwPerf::GpuPass::RtBuild);
-
         currentSlot = chooseSlot();
         Slot &slot = slots[currentSlot];
         if (!slot.valid) {
             slot.historyValid = false;
         }
+
+        // [wcw rt] Whether this pass traces is decided here (recordTrace did it after the build), so a pass that
+        // composites its slot's latest trace doesn't build structures it won't read (WcwLogic::buildForPass,
+        // aki-roadmap#36). WCW_RT_TRACE_GENERATED=1 traces every displayed frame (the old cost).
+        static const bool traceGenerated = getenv("WCW_RT_TRACE_GENERATED") != nullptr;
+        passTriangleCounts.clear();
+        for (const RenderBottomLevelASMesh &mesh : meshes) {
+            passTriangleCounts.push_back(mesh.indexCount / 3);
+        }
+
+        passSignatureValue = WcwLogic::passSignature(passTriangleCounts.data(), passTriangleCounts.size());
+        // Outside darkness: which pass darkens the misses is decided for every pass, traced or not, so each
+        // target gets exactly one (WcwLogic::MissDarkening).
+        passDarkens = (sceneTarget != nullptr) && missDarkening.darkenThisPass(sceneTarget, lastPresentId, meshes.size());
+        passHaveTrace = WcwLogic::reusableTrace(slot.tracedPresent != UINT64_MAX, slot.tracedSignature, passSignatureValue, slot.tracedDarkened, passDarkens);
+        const bool texturesChange = (sceneTarget == nullptr) || traceTexturesChange(sceneTarget, slot);
+        passReuses = !WcwLogic::buildForPass(traceGenerated, generatedRender, passHaveTrace, slot.reusesSinceTrace, texturesChange);
+        if (passReuses) {
+            // Still a fresh shadow caster for the other passes' TLAS (its BLAS holds the real frame's geometry), and
+            // in use: chooseSlot evicts the slot built longest ago.
+            slot.builtFrame = frameCounter;
+            slot.builtWorkload = workloadCounter;
+            structuresBuilt = true;
+            buildsSkipped++;
+            if (timingPool != nullptr) {
+                // The composite still stamps this workload's queries. Nothing was built or traced: no build counts.
+                worker->commandList->resetQueryPool(timingPool.get(), 0, StampCount);
+                timingWritten = 0;
+                timingMeshes = 0;
+                timingTriangles = 0;
+                timingAlphaMeshes = 0;
+                timingPixels = 0;
+            }
+
+            return;
+        }
+
+        WcwGpuScope wcwBuildScope(worker->commandList.get(), WcwPerf::GpuPass::RtBuild);
 
         // Bottom level: every gathered draw call is one geometry over the shared world position buffer.
         device->setBottomLevelASBuildInfo(blasInfo, meshes.data(), uint32_t(meshes.size()), true, false);
@@ -858,7 +918,7 @@ namespace RT64 {
         // WCW_RT_SCALE the whole scale.
         WcwLogic::RtPreset qualityPreset = WcwLogic::rtPreset(quality);
         qualityPreset.maxLines = envFloat(getenv("WCW_RT_MAX_LINES"), qualityPreset.maxLines);
-        const float frameScale = std::clamp(envFloat(getenv("WCW_RT_SCALE"), WcwLogic::rtTraceScale(qualityPreset, colorTarget->height, colorTarget->downsampleMultiplier)), 0.1f, 1.0f);
+        const float frameScale = targetTraceScale(colorTarget);
         const uint32_t presetSamples = qualityPreset.samplesPerLight;
 
         // Re-enabled after being off: the histories are stale.
@@ -944,20 +1004,29 @@ namespace RT64 {
             compositePipeline = device->createGraphicsPipeline(pipelineDesc);
         }
 
-        // Frame interpolation: a generated frame composites this pass's latest trace instead of tracing again
-        // (WcwLogic::traceRender). WCW_RT_TRACE_GENERATED=1 traces every displayed frame (the old cost).
+        // Frame interpolation: a generated frame composites this pass's latest trace instead of tracing again. The
+        // decision (and the pass's signature and darkening choice) was made in recordBuild, which skipped the build
+        // for it (WcwLogic::buildForPass).
         static const bool traceGenerated = getenv("WCW_RT_TRACE_GENERATED") != nullptr;
-        passTriangleCounts.clear();
-        for (const RenderBottomLevelASMesh &mesh : meshes) {
-            passTriangleCounts.push_back(mesh.indexCount / 3);
+        const uint64_t signature = passSignatureValue;
+        const bool darkenMisses = passDarkens;
+        if (colorTarget != sceneTarget) {
+            static bool logged = false;
+            if (!logged) {
+                logged = true;
+                fprintf(stderr, "[wcw rt] the traced pass's target differs from the gathered scene's (%p, %p)\n", (void *)colorTarget, (void *)sceneTarget);
+            }
         }
 
-        const uint64_t signature = WcwLogic::passSignature(passTriangleCounts.data(), passTriangleCounts.size());
-        // Outside darkness: which pass darkens the misses is decided for every pass, traced or not, so each
-        // target gets exactly one (WcwLogic::MissDarkening).
-        const bool darkenMisses = missDarkening.darkenThisPass(colorTarget, lastPresentId, meshes.size());
-        const bool haveTrace = WcwLogic::reusableTrace(slot.tracedPresent != UINT64_MAX, slot.tracedSignature, signature, slot.tracedDarkened, darkenMisses);
-        if (!traceGenerated && !WcwLogic::traceRender(generatedRender, haveTrace, slot.reusesSinceTrace)) {
+        if (passReuses) {
+            // recordBuild decided to reuse, but the trace may have been dropped since (textures or history made
+            // again, or the history's mode changed: tracedPresent reset), or the pass draws into another target
+            // than the gathered scene's. The history isn't this pass's then: composite nothing this frame.
+            if (texturesChanged || (slot.tracedPresent == UINT64_MAX) || (colorTarget != sceneTarget)) {
+                traceRectEmpty = true;
+                return;
+            }
+
             memcpy(traceRect, slot.tracedRect, sizeof(traceRect));
             traceRectEmpty = (traceRect[2] <= traceRect[0]) || (traceRect[3] <= traceRect[1]);
             compositeSet->setTexture(0, slot.history.get(), RenderTextureLayout::SHADER_READ);
@@ -1355,6 +1424,9 @@ namespace RT64 {
         static double maxTotal = 0.0;
         static uint64_t triangleSum = 0, meshSum = 0, alphaSum = 0, pixelSum = 0, fullScreenSum = 0;
         static uint32_t count = 0;
+        // Workloads that built (reusing passes skip the build, aki-roadmap#36): the build, its span to the composite
+        // and the scene sizes are averaged over these.
+        static uint32_t builtCount = 0;
         timingPool->queryResults();
         const uint64_t *t = timingPool->getResults();
         auto span = [&](uint32_t a, uint32_t b) {
@@ -1367,30 +1439,40 @@ namespace RT64 {
         const double resolve = span(StampTraceEnd, StampResolveEnd);
         const double composite = span(StampCompositeBegin, StampCompositeEnd);
         const double total = span(StampBuildBegin, StampCompositeEnd);
-        sums[0] += build;
+        const bool built = (timingWritten & (1u << StampBuildBegin)) != 0;
+        if (built) {
+            sums[0] += build;
+            sums[4] += total;
+            maxTotal = std::max(maxTotal, total);
+            triangleSum += timingTriangles;
+            meshSum += timingMeshes;
+            alphaSum += timingAlphaMeshes;
+            builtCount++;
+        }
+
         sums[1] += trace;
         sums[2] += resolve;
         sums[3] += composite;
-        sums[4] += total;
-        maxTotal = std::max(maxTotal, total);
-        triangleSum += timingTriangles;
-        meshSum += timingMeshes;
-        alphaSum += timingAlphaMeshes;
         pixelSum += timingPixels;
         fullScreenSum += timingFullScreen ? 1 : 0;
         timingWritten = 0;
         if (++count == 300) {
-            fprintf(stderr, "[wcw rt gpu] per traced workload avg: build=%.3f trace=%.3f resolve=%.3f composite=%.3f ms, build->composite span=%.3f (max %.3f) ms; %llu meshes (%llu alpha-tested), %llu tris, %llu trace px of %u lines, %llu full-screen, %u traces reused, %u generated frames reused a trace, traced %u/%u/%u/%u (none/other pass/darkening/stale) (300 workloads)\n",
-                sums[0] / count, sums[1] / count, sums[2] / count, sums[3] / count, sums[4] / count, maxTotal,
-                (unsigned long long)(meshSum / count), (unsigned long long)(alphaSum / count), (unsigned long long)(triangleSum / count), (unsigned long long)(pixelSum / count), timingTraceHeight, (unsigned long long)fullScreenSum, reusedTraces, generatedReuses,
+            const uint32_t builtDiv = std::max(builtCount, 1u);
+            fprintf(stderr, "[wcw rt gpu] per built workload (%u of 300 built, %u builds skipped): build=%.3f ms, build->composite span=%.3f (max %.3f) ms; %llu meshes (%llu alpha-tested), %llu tris | per workload avg: trace=%.3f resolve=%.3f composite=%.3f ms, %llu trace px of %u lines, %llu full-screen, %u traces reused, %u generated frames reused a trace, traced %u/%u/%u/%u (none/other pass/darkening/stale) (300 workloads)\n",
+                builtCount, buildsSkipped, sums[0] / builtDiv, sums[4] / builtDiv, maxTotal,
+                (unsigned long long)(meshSum / builtDiv), (unsigned long long)(alphaSum / builtDiv), (unsigned long long)(triangleSum / builtDiv),
+                sums[1] / count, sums[2] / count, sums[3] / count,
+                (unsigned long long)(pixelSum / count), timingTraceHeight, (unsigned long long)fullScreenSum, reusedTraces, generatedReuses,
                 generatedTraces[0], generatedTraces[1], generatedTraces[2], generatedTraces[3]);
             memset(generatedTraces, 0, sizeof(generatedTraces));
             reusedTraces = 0;
             generatedReuses = 0;
+            buildsSkipped = 0;
             memset(sums, 0, sizeof(sums));
             maxTotal = 0.0;
             triangleSum = meshSum = alphaSum = pixelSum = fullScreenSum = 0;
             count = 0;
+            builtCount = 0;
         }
     }
 };

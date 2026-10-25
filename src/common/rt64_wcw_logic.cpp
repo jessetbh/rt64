@@ -54,6 +54,23 @@ namespace RT64::WcwLogic {
         return traced && (tracedSignature == signature) && (tracedDarkened == darkens);
     }
 
+    bool buildForPass(bool traceEveryFrame, bool generated, bool haveTrace, uint32_t reusesSinceTrace, bool traceTexturesChange) {
+        return traceEveryFrame || traceTexturesChange || traceRender(generated, haveTrace, reusesSinceTrace);
+    }
+
+    bool traceTexturesChange(const TraceTextures &textures, uint32_t targetWidth, uint32_t targetHeight, float targetScale, uint32_t mode) {
+        if (!textures.active || !textures.haveTextures || (textures.outputWidth != targetWidth) || (textures.outputHeight != targetHeight) ||
+            (textures.traceScale != targetScale))
+        {
+            return true;
+        }
+
+        // The trace size the textures were made at (recordTrace: the output size times the trace scale, at least 1).
+        const uint32_t traceWidth = std::max(uint32_t(std::ceil(textures.outputWidth * textures.traceScale)), 1u);
+        const uint32_t traceHeight = std::max(uint32_t(std::ceil(textures.outputHeight * textures.traceScale)), 1u);
+        return !textures.haveHistory || (textures.historyWidth != traceWidth) || (textures.historyHeight != traceHeight) || (textures.historyMode != mode);
+    }
+
     uint64_t passSignature(const uint32_t *triangleCounts, size_t count) {
         // FNV-1a over the count and the sorted triangle counts.
         std::vector<uint32_t> sorted(triangleCounts, triangleCounts + count);
