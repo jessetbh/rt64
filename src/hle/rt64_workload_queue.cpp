@@ -952,6 +952,69 @@ namespace RT64 {
             const WcwPerf::Clock::time_point wcwSubmit = wcwPerf ? WcwPerf::Clock::now() : WcwPerf::Clock::time_point();
             ext.workloadGraphicsWorker->execute();
             ext.workloadGraphicsWorker->wait();
+
+            // [wcw diag] aki-roadmap#97 (WCW_DIAG_MEMLOG=1): No Mercy's GPU memory differs by 0.5-2.5 GB between
+            // identical boots, RT off too. Every 10 s, the render targets this thread owns: the shared manager's
+            // (each grows to the largest size it has seen and lives until destroyAll) and the three generated-frame
+            // sets. Estimated from size, format and samples (main texture, plus its resolved copy). Diagnostic only.
+            {
+                static const bool wcwMemLog = getenv("WCW_DIAG_MEMLOG") != nullptr;
+                static std::chrono::steady_clock::time_point wcwMemLast = std::chrono::steady_clock::now();
+                const std::chrono::steady_clock::time_point wcwMemNow = std::chrono::steady_clock::now();
+                if (wcwMemLog && ((wcwMemNow - wcwMemLast) >= std::chrono::seconds(10))) {
+                    wcwMemLast = wcwMemNow;
+                    auto targetBytes = [](const RenderTarget &t) -> uint64_t {
+                        if (t.isEmpty()) {
+                            return 0;
+                        }
+
+                        const uint64_t bpp = (t.format == RenderFormat::R16G16B16A16_FLOAT) ? 8 : 4;
+                        const uint64_t pixels = uint64_t(t.width) * t.height;
+                        uint64_t bytes = pixels * bpp * std::max<uint64_t>(uint64_t(t.multisampling.sampleCount), 1);
+                        bytes += (t.resolvedTexture != nullptr) ? (pixels * bpp) : 0;
+                        return bytes;
+                    };
+
+                    uint64_t sharedBytes = 0, largestBytes = 0;
+                    uint32_t sharedCount = 0, largestW = 0, largestH = 0;
+                    for (const auto &entry : targetManager.targetMap) {
+                        if ((entry.second == nullptr) || entry.second->isEmpty()) {
+                            continue;
+                        }
+
+                        const uint64_t bytes = targetBytes(*entry.second);
+                        sharedBytes += bytes;
+                        sharedCount++;
+                        if (bytes > largestBytes) {
+                            largestBytes = bytes;
+                            largestW = entry.second->width;
+                            largestH = entry.second->height;
+                        }
+                    }
+
+                    auto setBytes = [&](const std::vector<std::unique_ptr<RenderTarget>> &set, uint32_t &count) {
+                        uint64_t bytes = 0;
+                        count = 0;
+                        for (const std::unique_ptr<RenderTarget> &t : set) {
+                            if ((t != nullptr) && !t->isEmpty()) {
+                                bytes += targetBytes(*t);
+                                count++;
+                            }
+                        }
+
+                        return bytes;
+                    };
+
+                    uint32_t countA = 0, countB = 0, countC = 0;
+                    const uint64_t setA = setBytes(ext.sharedResources->interpolatedColorTargets, countA);
+                    const uint64_t setB = setBytes(ext.sharedResources->wcwInterpolatedColorTargetsB, countB);
+                    const uint64_t setC = setBytes(ext.sharedResources->wcwInterpolatedColorTargetsC, countC);
+                    fprintf(stderr, "[wcw diag mem] t=%.3f render targets %u: %.1f MB (largest %ux%u %.1f MB) | generated-frame sets %u/%u/%u: %.1f MB\n",
+                        std::chrono::duration<double>(wcwMemNow.time_since_epoch()).count(), sharedCount, sharedBytes / 1048576.0, largestW, largestH, largestBytes / 1048576.0,
+                        countA, countB, countC, (setA + setB + setC) / 1048576.0);
+                }
+            }
+
             if (wcwPerf) {
                 const WcwPerf::Clock::time_point wcwDone = WcwPerf::Clock::now();
                 WcwPerf::cpuPhase(WcwPerf::CpuPhase::Rt64Record, wcwRecordStart, wcwSubmit);
