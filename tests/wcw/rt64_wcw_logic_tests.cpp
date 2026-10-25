@@ -479,6 +479,9 @@ TEST_CASE("acceleration structures: anything that drops the latest trace makes t
     TraceTextures smallHistory = t;
     smallHistory.historyHeight = 480;
     CHECK(traceTexturesChange(smallHistory, 1920, 1080, 0.5f, ShadowMode));
+    TraceTextures narrowHistory = t;
+    narrowHistory.historyWidth = 720;
+    CHECK(traceTexturesChange(narrowHistory, 1920, 1080, 0.5f, ShadowMode));
     TraceTextures reenabled = t;
     reenabled.active = false;
     CHECK(traceTexturesChange(reenabled, 1920, 1080, 0.5f, ShadowMode));
