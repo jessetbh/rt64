@@ -67,6 +67,8 @@ TEST_CASE("pack folders: a texture in a subfolder, named with '/', is found, siz
 TEST_CASE("pack folders: '.' and '..' in a pack path resolve against the pack root") {
     TempPack pack("dots");
     pack.write("textures/sub/x.png", "hello");
+    // POSIX resolves ".." against the folders that exist, so "other" must be there (Win32 resolves it lexically).
+    pack.write("textures/other/y.png", "other");
     std::unique_ptr<FileSystem> fileSystem = FileSystemDirectory::create(pack.root);
     CHECK(fileSystem != nullptr);
     CHECK(fileSystem->exists("textures/other/../sub/x.png"));
