@@ -1588,6 +1588,28 @@ TEST_CASE("long pack paths: UNC shares get \\\\?\\UNC\\; other forms come back u
     CHECK(extendedLengthPath(L"\\rooted\\no-drive") == L"\\rooted\\no-drive");
 }
 
+TEST_CASE("long pack paths: a pack file in a subfolder, named with '/', joins to a \\\\?\\ path Win32 can open (#115 review)") {
+    // Pack paths use '/', and Win32 doesn't turn it into '\' inside a \\?\ path: a texture in any subfolder of a pack
+    // silently didn't load once the root was \\?\ (exists() false, canonical() ERROR_INVALID_NAME), short paths too.
+    CHECK(extendedLengthJoin(L"\\\\?\\C:\\mods\\Pack", L"textures/sub/x.png") == L"\\\\?\\C:\\mods\\Pack\\textures\\sub\\x.png");
+    CHECK(extendedLengthJoin(L"\\\\?\\C:\\mods\\Pack\\", L"x.png") == L"\\\\?\\C:\\mods\\Pack\\x.png");
+    CHECK(extendedLengthJoin(L"\\\\?\\C:\\", L"a/b.png") == L"\\\\?\\C:\\a\\b.png");
+    CHECK(extendedLengthJoin(L"\\\\?\\UNC\\nas\\games\\Pack", L"sub/x.png") == L"\\\\?\\UNC\\nas\\games\\Pack\\sub\\x.png");
+}
+
+TEST_CASE("long pack paths: '.' and '..' in a pack path resolve against a \\\\?\\ root") {
+    CHECK(extendedLengthJoin(L"\\\\?\\C:\\mods\\Pack", L"textures/other/../sub/x.png") == L"\\\\?\\C:\\mods\\Pack\\textures\\sub\\x.png");
+    CHECK(extendedLengthJoin(L"\\\\?\\C:\\mods\\Pack", L"./textures/./x.png") == L"\\\\?\\C:\\mods\\Pack\\textures\\x.png");
+    CHECK(extendedLengthJoin(L"\\\\?\\C:\\mods\\Pack", L"textures//x.png") == L"\\\\?\\C:\\mods\\Pack\\textures\\x.png");
+    CHECK(extendedLengthJoin(L"\\\\?\\C:\\mods\\Pack", L"") == L"\\\\?\\C:\\mods\\Pack");
+}
+
+TEST_CASE("long pack paths: a root that isn't \\\\?\\ is joined as given") {
+    CHECK(extendedLengthJoin(L"packs\\Pack", L"sub/x.png") == L"packs\\Pack\\sub/x.png");
+    CHECK(extendedLengthJoin(L"C:\\mods\\Pack\\", L"x.png") == L"C:\\mods\\Pack\\x.png");
+    CHECK(extendedLengthJoin(L"", L"x.png") == L"x.png");
+}
+
 TEST_CASE("display list budget: a list that loops is ended at the command limit, so the interpreter can't grow memory forever (#116)") {
     // The interpreter loop: take() before every command; false ends the list.
     DisplayListBudget budget;

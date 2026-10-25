@@ -28,14 +28,20 @@ namespace RT64 {
 #endif
     }
 
-    // [wcw] #115: the directory walk uses the error_code overloads. A failed step ends the walk (logged once) instead of
-    // throwing filesystem_error out of a render thread, which ended the game with 0xC0000409 and no backtrace.
+    // [wcw] #115: a file inside the pack root. Pack paths use '/' and may hold "." or "..", which Win32 doesn't resolve
+    // inside a \\?\ root, so the joined path is normalized there (WcwLogic::extendedLengthJoin).
+    inline std::filesystem::path wcwPackPath(const std::filesystem::path &directoryPath, const std::string &path) {
+#ifdef _WIN32
+        return std::filesystem::path(WcwLogic::extendedLengthJoin(directoryPath.wstring(), std::filesystem::u8path(path).wstring()));
+#else
+        return directoryPath / std::filesystem::u8path(path);
+#endif
+    }
+
+    // [wcw] #115: the directory walk uses the error_code overloads. A failed step ends the walk (logged once per walk)
+    // instead of throwing filesystem_error out of a render thread, which ended the game with 0xC0000409 and no backtrace.
     inline void wcwLogWalkError(const std::filesystem::path &directoryPath, const std::error_code &ec) {
-        static bool logged = false;
-        if (!logged) {
-            logged = true;
-            fprintf(stderr, "[wcw] texture pack walk stopped in %s: %s\n", directoryPath.u8string().c_str(), ec.message().c_str());
-        }
+        fprintf(stderr, "[wcw] texture pack walk stopped in %s: %s\n", directoryPath.u8string().c_str(), ec.message().c_str());
     }
 
     struct FileSystemDirectoryIterator : FileSystemIteratorImplementation {
@@ -43,6 +49,14 @@ namespace RT64 {
         std::filesystem::path directoryPath;
         std::string pathStr;
         bool pathStrValid = false;
+        bool walkErrorLogged = false;
+
+        void logWalkError(const std::error_code &ec) {
+            if (!walkErrorLogged) {
+                walkErrorLogged = true;
+                wcwLogWalkError(directoryPath, ec);
+            }
+        }
 
         FileSystemDirectoryIterator() {
             // Default constructor.
@@ -53,7 +67,7 @@ namespace RT64 {
             std::error_code ec;
             dirIterator = std::filesystem::recursive_directory_iterator(directoryPath, ec);
             if (ec) {
-                wcwLogWalkError(directoryPath, ec);
+                logWalkError(ec);
                 dirIterator = std::filesystem::recursive_directory_iterator();
             }
         }
@@ -63,7 +77,7 @@ namespace RT64 {
             std::error_code ec;
             dirIterator.increment(ec);
             if (ec) {
-                wcwLogWalkError(directoryPath, ec);
+                logWalkError(ec);
                 dirIterator = std::filesystem::recursive_directory_iterator();
             }
         }
@@ -128,7 +142,7 @@ namespace RT64 {
 
         std::string makeCanonical(const std::string &path) const override {
             std::error_code ec;
-            std::filesystem::path canonicalPath = std::filesystem::canonical(directoryPath / std::filesystem::u8path(path), ec);
+            std::filesystem::path canonicalPath = std::filesystem::canonical(wcwPackPath(directoryPath, path), ec);
             if (ec) {
                 return std::string();
             }
@@ -142,7 +156,7 @@ namespace RT64 {
         }
         
         bool load(const std::string &path, uint8_t *fileData, size_t fileDataMaxByteCount) const override {
-            std::ifstream fileStream(directoryPath / std::filesystem::u8path(path), std::ios::binary);
+            std::ifstream fileStream(wcwPackPath(directoryPath, path), std::ios::binary);
             if (fileStream.is_open()) {
                 fileStream.read((char *)(fileData), fileDataMaxByteCount);
                 return !fileStream.bad();
@@ -154,7 +168,7 @@ namespace RT64 {
 
         size_t getSize(const std::string &path) const override {
             std::error_code ec;
-            size_t fileSize = std::filesystem::file_size(directoryPath / std::filesystem::u8path(path), ec);
+            size_t fileSize = std::filesystem::file_size(wcwPackPath(directoryPath, path), ec);
             if (!ec) {
                 return fileSize;
             }
@@ -169,7 +183,7 @@ namespace RT64 {
             }
 
             std::error_code ec;
-            return std::filesystem::exists(directoryPath / std::filesystem::u8path(path), ec);
+            return std::filesystem::exists(wcwPackPath(directoryPath, path), ec);
         }
 
         static std::unique_ptr<FileSystem> create(const std::filesystem::path &directoryPath) {

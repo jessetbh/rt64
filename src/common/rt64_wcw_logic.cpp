@@ -800,6 +800,24 @@ namespace RT64::WcwLogic {
         return result;
     }
 
+    std::wstring extendedLengthJoin(const std::wstring &root, const std::wstring &relative) {
+        const auto joined = [&relative](const std::wstring &base) {
+            const bool separated = base.empty() || (base.back() == L'\\') || (base.back() == L'/');
+            return base + (separated ? L"" : L"\\") + relative;
+        };
+
+        // Back to the plain form, so extendedLengthPath normalizes the whole joined path and adds the prefix again.
+        if (root.rfind(L"\\\\?\\UNC\\", 0) == 0) {
+            return extendedLengthPath(joined(L"\\\\" + root.substr(8)));
+        }
+        else if (root.rfind(L"\\\\?\\", 0) == 0) {
+            return extendedLengthPath(joined(root.substr(4)));
+        }
+        else {
+            return joined(root);
+        }
+    }
+
     DeviceLostWork deviceLostWork(bool deviceLost) {
         return deviceLost ? DeviceLostWork::SkipGpuWork : DeviceLostWork::Render;
     }
