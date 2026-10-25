@@ -623,6 +623,19 @@ namespace RT64::WcwLogic {
         }
     };
 
+    // The Windows extended-length form of an absolute path (aki-roadmap#115): "\\?\C:\..." or "\\?\UNC\server\share\...".
+    // The ports aren't long-path aware, so a pack file whose full path reached MAX_PATH (260) didn't open (the texture
+    // silently stayed stock), and a folder nested past it threw from the directory walk and ended the game (0xC0000409).
+    // Win32 doesn't normalize a \\?\ path, so this also turns '/' into '\', drops "." and empty components and resolves
+    // "..". Empty, relative or drive-relative ("C:foo") input, and a path already in \\?\ or \\.\ form, come back unchanged.
+    std::wstring extendedLengthPath(const std::wstring &absolutePath);
+
+    // A file inside a pack root (aki-roadmap#115 review): root joined with a pack-relative path. Pack paths come with
+    // '/' (rt64.json entries, Rice names, the forward-slash forms the database builds) and may hold "." or "..", and
+    // Win32 resolves neither inside a \\?\ path, so with an extended-length root the joined path goes through
+    // extendedLengthPath again: '/' becomes '\' and "."/".." are resolved. Any other root is joined as given.
+    std::wstring extendedLengthJoin(const std::wstring &root, const std::wstring &relative);
+
     // Graphics device loss
 
     // What a renderer thread does with its next piece of work (a display list, a workload, a present, a texture
