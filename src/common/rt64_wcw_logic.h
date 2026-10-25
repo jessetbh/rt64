@@ -107,6 +107,29 @@ namespace RT64::WcwLogic {
     // (traceTexturesChange: target size or trace scale changed), which drops the trace it would composite.
     bool buildForPass(bool traceEveryFrame, bool generated, bool haveTrace, uint32_t reusesSinceTrace, bool traceTexturesChange);
 
+    // What a pass's latest trace was made with: the ray tracer's trace textures and the slot's history.
+    struct TraceTextures {
+        // Ray tracing also ran on the previous render (re-enabled after being off, every history is stale).
+        bool active = false;
+        bool haveTextures = false;
+        // The color target size and trace scale the textures were made for.
+        uint32_t outputWidth = 0;
+        uint32_t outputHeight = 0;
+        float traceScale = 0.0f;
+        bool haveHistory = false;
+        uint32_t historyWidth = 0;
+        uint32_t historyHeight = 0;
+        // The mode (WCW_RT_MODE_*) that wrote the history: shadows and AO, or a debug view's color.
+        uint32_t historyMode = UINT32_MAX;
+    };
+
+    // Whether recordTrace makes the trace textures or the slot's history again, or drops the history, for a pass
+    // into a target of targetWidth x targetHeight at targetScale in mode: the latest trace can't be composited then
+    // (buildForPass's traceTexturesChange). A changed mode (the Lighting editor's debug views) and a changed trace
+    // scale (an RT quality change between recordBuild and recordTrace) count, as do the target size and the
+    // trace size the history was made at.
+    bool traceTexturesChange(const TraceTextures &textures, uint32_t targetWidth, uint32_t targetHeight, float targetScale, uint32_t mode);
+
     // Ray tracing quality presets
 
     // The menu's Ray Tracing Quality levels.

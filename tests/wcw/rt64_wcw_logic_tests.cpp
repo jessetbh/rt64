@@ -437,6 +437,53 @@ TEST_CASE("acceleration structures: a pass still builds when its trace can't be 
     CHECK(buildForPass(false, true, true, 0, true));
 }
 
+// WCW_RT_MODE_SHADOW and WCW_RT_MODE_AO (src/shared/rt64_wcw_rt.h, not included here): resolved shadows, and AO.
+static constexpr uint32_t ShadowMode = 2;
+static constexpr uint32_t AoMode = 7;
+
+// The trace textures as recordTrace left them after tracing a 1920x1080 target at half scale in shadow mode.
+static TraceTextures tracedAt1080p() {
+    TraceTextures t;
+    t.active = true;
+    t.haveTextures = true;
+    t.outputWidth = 1920;
+    t.outputHeight = 1080;
+    t.traceScale = 0.5f;
+    t.haveHistory = true;
+    t.historyWidth = 960;
+    t.historyHeight = 540;
+    t.historyMode = ShadowMode;
+    return t;
+}
+
+TEST_CASE("acceleration structures: the latest trace stays usable while nothing it was made with changed (#36)") {
+    CHECK(!traceTexturesChange(tracedAt1080p(), 1920, 1080, 0.5f, ShadowMode));
+}
+
+TEST_CASE("acceleration structures: anything that drops the latest trace makes the pass build and trace (#36 review)") {
+    const TraceTextures t = tracedAt1080p();
+    // Another target size or trace scale (an RT quality change between recordBuild and recordTrace).
+    CHECK(traceTexturesChange(t, 2560, 1080, 0.5f, ShadowMode));
+    CHECK(traceTexturesChange(t, 1920, 1440, 0.5f, ShadowMode));
+    CHECK(traceTexturesChange(t, 1920, 1080, 0.75f, ShadowMode));
+    // Another mode: the Lighting editor's debug views write a color, not resolved shadows. A reusing frame
+    // composited the other mode's history for a frame.
+    CHECK(traceTexturesChange(t, 1920, 1080, 0.5f, AoMode));
+    // No textures or history yet, a history made at another trace size, or ray tracing just turned back on.
+    TraceTextures noTextures = t;
+    noTextures.haveTextures = false;
+    CHECK(traceTexturesChange(noTextures, 1920, 1080, 0.5f, ShadowMode));
+    TraceTextures noHistory = t;
+    noHistory.haveHistory = false;
+    CHECK(traceTexturesChange(noHistory, 1920, 1080, 0.5f, ShadowMode));
+    TraceTextures smallHistory = t;
+    smallHistory.historyHeight = 480;
+    CHECK(traceTexturesChange(smallHistory, 1920, 1080, 0.5f, ShadowMode));
+    TraceTextures reenabled = t;
+    reenabled.active = false;
+    CHECK(traceTexturesChange(reenabled, 1920, 1080, 0.5f, ShadowMode));
+}
+
 TEST_CASE("generated frames: two passes sharing a slot don't reuse each other's trace (generated frames ~5% darker)") {
     // Two No Mercy passes of similar scenes map to one slot. On the real frame each traces in turn, so the slot
     // holds the second pass's trace; on a generated frame the first pass must trace, not composite that trace.
