@@ -1843,6 +1843,87 @@ namespace RT64 {
 
             for (uint32_t d = 0; (d < proj.gameCallCount) && (globalCallIndex < p.maxGameCall); d++) {
                 const GameCall &call = proj.gameCalls[d];
+
+                // [wcw diag] aki-roadmap#110 (WCW_DIAG_GENDRAWS=<first>,<last> present numbers, the WCW_PRESENT_LUM
+                // counter): World Tour's generated frame at 70.2 s in the WCW quick match draws a small dark quad huge
+                // across the ring, while object transforms, camera cuts and the scene's view-proj mapping are clean.
+                // On generated frames (interpolated transforms) in the window, log every indexed draw's screen
+                // footprint (NDC bounds of its vertices) with this frame's interpolated matrices and with the real
+                // ones, and flag BIG when the generated footprint is over 4x the real one or vertices cross the
+                // camera plane. Diagnostic only.
+                {
+                    static int wcwGenFirst = -1, wcwGenLast = -1;
+                    static const bool wcwGenDraws = [&]() {
+                        const char *env = getenv("WCW_DIAG_GENDRAWS");
+                        return (env != nullptr) && (sscanf(env, "%d,%d", &wcwGenFirst, &wcwGenLast) == 2);
+                    }();
+                    const int wcwPresent = int(wcwRtPresentCounter);
+                    const bool wcwGenerated = !drawData.lerpWorldTransforms.empty() && (drawData.lerpWorldTransforms.size() == drawData.worldTransforms.size());
+                    if (wcwGenDraws && wcwGenerated && (wcwPresent >= wcwGenFirst) && (wcwPresent <= wcwGenLast) &&
+                        (call.callDesc.triangleCount > 0) && (proj.transformsIndex < drawData.viewProjTransforms.size()) &&
+                        (proj.transformsIndex < drawData.modViewProjTransforms.size()))
+                    {
+                        const hlslpp::float4x4 genViewProj(drawData.modViewProjTransforms[proj.transformsIndex]);
+                        const hlslpp::float4x4 realViewProj(drawData.viewProjTransforms[proj.transformsIndex]);
+                        float genMin[2] = { FLT_MAX, FLT_MAX }, genMax[2] = { -FLT_MAX, -FLT_MAX };
+                        float realMin[2] = { FLT_MAX, FLT_MAX }, realMax[2] = { -FLT_MAX, -FLT_MAX };
+                        uint32_t genBehind = 0, realBehind = 0, minMatrix = UINT32_MAX, maxMatrix = 0;
+                        auto grow = [](const hlslpp::float4 &clip, float mn[2], float mx[2], uint32_t &behind) {
+                            const float w = float(clip.w);
+                            if (w <= 1e-4f) {
+                                behind++;
+                                return;
+                            }
+
+                            const float x = float(clip.x) / w, y = float(clip.y) / w;
+                            mn[0] = std::min(mn[0], x); mn[1] = std::min(mn[1], y);
+                            mx[0] = std::max(mx[0], x); mx[1] = std::max(mx[1], y);
+                        };
+
+                        for (uint32_t i = 0; i < call.callDesc.triangleCount * 3; i++) {
+                            // Indexed draws only (raw ones have no face indices here); skip anything out of range.
+                            const size_t faceIndex = size_t(call.meshDesc.faceIndicesStart) + i;
+                            if (faceIndex >= drawData.faceIndices.size()) {
+                                break;
+                            }
+
+                            const uint32_t v = drawData.faceIndices[faceIndex];
+                            if ((v >= drawData.worldIndices.size()) || ((size_t(v) * 3 + 2) >= drawData.posFloats.size())) {
+                                continue;
+                            }
+
+                            const uint32_t m = drawData.worldIndices[v];
+                            if (m >= drawData.worldTransforms.size()) {
+                                continue;
+                            }
+
+                            minMatrix = std::min(minMatrix, m);
+                            maxMatrix = std::max(maxMatrix, m);
+                            const hlslpp::float4 objPos(drawData.posFloats[v * 3 + 0], drawData.posFloats[v * 3 + 1], drawData.posFloats[v * 3 + 2], 1.0f);
+                            grow(hlslpp::mul(hlslpp::mul(objPos, hlslpp::float4x4(drawData.lerpWorldTransforms[m])), genViewProj), genMin, genMax, genBehind);
+                            grow(hlslpp::mul(hlslpp::mul(objPos, hlslpp::float4x4(drawData.worldTransforms[m])), realViewProj), realMin, realMax, realBehind);
+                        }
+
+                        auto area = [](const float mn[2], const float mx[2]) {
+                            return ((mx[0] > mn[0]) && (mx[1] > mn[1])) ? ((mx[0] - mn[0]) * (mx[1] - mn[1])) : 0.0f;
+                        };
+
+                        const float genArea = area(genMin, genMax), realArea = area(realMin, realMax);
+                        const bool big = ((genArea > 0.01f) && (genArea > 4.0f * realArea)) || (genBehind != realBehind);
+                        static uint32_t wcwGenLogged = 0;
+                        if (wcwGenLogged++ < 20000) {
+                            uint64_t wcwHash = 0;
+                            if ((call.callDesc.textureOn != 0) && (call.callDesc.tileCount > 0)) {
+                                wcwHash = drawData.callTiles[call.callDesc.tileIndex].tmemHashOrID;
+                            }
+
+                            fprintf(stderr, "[wcw diag gen] present %d fb %u proj %u type %d call %u tris %u matrices %u-%u tex %016llX | gen ndc (%.3f,%.3f)-(%.3f,%.3f) behind %u | real ndc (%.3f,%.3f)-(%.3f,%.3f) behind %u | area x%.2f%s\n",
+                                wcwPresent, p.fbPairIndex, pr, int(proj.type), d, call.callDesc.triangleCount, minMatrix, maxMatrix, (unsigned long long)wcwHash,
+                                genMin[0], genMin[1], genMax[0], genMax[1], genBehind, realMin[0], realMin[1], realMax[0], realMax[1], realBehind,
+                                (realArea > 0.0f) ? (genArea / realArea) : 0.0f, big ? " BIG" : "");
+                        }
+                    }
+                }
                 const WcwLogic::HudAnchor wcwHudAnchor = wcwHudActive ? wcwHudAnchorList[wcwHudCallBase[pr] + d] : WcwLogic::HudAnchor::Centre;
                 const bool wcwHudAnchored = (wcwHudAnchor != WcwLogic::HudAnchor::Centre);
                 const uint16_t wcwHudOrigin = (wcwHudAnchor == WcwLogic::HudAnchor::Left) ? uint16_t(G_EX_ORIGIN_LEFT) : uint16_t(G_EX_ORIGIN_RIGHT);
