@@ -1974,8 +1974,7 @@ namespace RT64 {
                                     putMatrix(wcwGenFile, "curPure", ld.curPure);
                                     putMatrix(wcwGenFile, "prevCam", ld.prevCamera);
                                     putMatrix(wcwGenFile, "curCam", ld.curCamera);
-                                    fprintf(wcwGenFile, "
-");
+                                    fprintf(wcwGenFile, "\n");
                                 }
                             }
                         }
