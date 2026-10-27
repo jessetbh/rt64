@@ -587,6 +587,7 @@ namespace RT64 {
         const RenderBuffer *rdpTilesBuffer, const RenderBuffer *gpuTilesBuffer, const RenderBuffer *texCoordBuffer, RenderTarget *colorTarget)
     {
         sceneTarget = colorTarget;
+        worldSignature = 14695981039346656037ULL;
         boundsViewProj = hlslpp::mul(view, proj);
         boundsMin[0] = boundsMin[1] = FLT_MAX;
         boundsMax[0] = boundsMax[1] = -FLT_MAX;
@@ -630,6 +631,12 @@ namespace RT64 {
             frameTextureTris[textureHash] += triangleCount;
         }
 
+        if (!character && worldHitsEnabled()) {
+            worldMix(worldSignature, triangleCount);
+            worldMix(worldSignature, (culled ? 1u : 0u) | (alphaTest ? 2u : 0u) | (lit ? 4u : 0u));
+            worldMix(worldSignature, textureHash);
+        }
+
         // Without tile data the alpha test can't be evaluated: keep the draw opaque.
         alphaTest = alphaTest && (rdpTilesBuffer != nullptr) && (gpuTilesBuffer != nullptr) && (texCoordBuffer != nullptr);
         const uint32_t IndexStride = sizeof(uint32_t);
@@ -644,7 +651,26 @@ namespace RT64 {
         meshTiles.emplace_back((tileIndex & WCW_RT_TILE_INDEX_MASK) | (alphaTest ? WCW_RT_TILE_ALPHA_TEST : 0u) | (uvCorrection ? WCW_RT_TILE_UV_CORRECTION : 0u));
     }
 
+    bool WcwRaytracer::worldHitsEnabled() {
+        static const bool enabled = (getenv("WCW_DIAG_WORLDHITS") != nullptr);
+        return enabled;
+    }
+
+    void WcwRaytracer::worldMix(uint64_t &hash, uint64_t value) {
+        // FNV-1a over the value's 8 bytes.
+        for (int i = 0; i < 8; i++) {
+            hash ^= (value >> (i * 8)) & 0xFF;
+            hash *= 1099511628211ULL;
+        }
+    }
+
     void WcwRaytracer::extendBounds(const float *positions, bool character) {
+        if (!character && worldHitsEnabled()) {
+            for (uint32_t i = 0; i < 9; i++) {
+                worldMix(worldSignature, uint64_t(int64_t(std::lround(double(positions[i]) * 8.0))));
+            }
+        }
+
         for (uint32_t i = 0; i < 9; i++) {
             worldMin[i % 3] = std::min(worldMin[i % 3], positions[i]);
             worldMax[i % 3] = std::max(worldMax[i % 3], positions[i]);
@@ -792,6 +818,21 @@ namespace RT64 {
         }
 
         WcwGpuScope wcwBuildScope(worker->commandList.get(), WcwPerf::GpuPass::RtBuild);
+
+        // [wcw diag] #36 step B: would a cached world BLAS have served this build (same world as the slot's last)?
+        if (worldHitsEnabled()) {
+            const bool hit = slot.worldSignatureValid && (slot.worldSignature == worldSignature);
+            worldHits += hit ? 1 : 0;
+            worldMisses += hit ? 0 : 1;
+            slot.worldSignature = worldSignature;
+            slot.worldSignatureValid = true;
+            if ((worldHits + worldMisses) >= 300) {
+                fprintf(stderr, "[wcw rt world] world unchanged since the slot's last build on %u of %u builds (a cached world BLAS could serve those)\n",
+                    worldHits, worldHits + worldMisses);
+                worldHits = 0;
+                worldMisses = 0;
+            }
+        }
 
         // Bottom level: every gathered draw call is one geometry over the shared world position buffer.
         device->setBottomLevelASBuildInfo(blasInfo, meshes.data(), uint32_t(meshes.size()), true, false);

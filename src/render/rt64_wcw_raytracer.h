@@ -98,6 +98,9 @@ namespace RT64 {
             float boundsMin[3] = {};
             float boundsMax[3] = {};
             bool valid = false;
+            // [wcw diag] aki-roadmap#36 step B (WCW_DIAG_WORLDHITS): the world signature of the slot's last build.
+            uint64_t worldSignature = 0;
+            bool worldSignatureValid = false;
 
             // The resolved soft shadows and AO of this workload's pass (shadow RGB, AO; WcwLogic::RtSlotTexelBytes),
             // with the camera it used: the next resolve's history and the texture the composite reads and encodes.
@@ -180,6 +183,14 @@ namespace RT64 {
         bool passReuses = false;
         // Builds skipped for reusing passes, for WCW_GPU_LOG.
         uint32_t buildsSkipped = 0;
+        // [wcw diag] aki-roadmap#36 step B (WCW_DIAG_WORLDHITS=1): how often a built pass's world geometry is the
+        // same as at its slot's previous build, which a cached world BLAS could reuse. The signature hashes the world
+        // (non-character) meshes' triangle counts and flags, and their triangles' world positions to 1/8 unit.
+        uint64_t worldSignature = 0;
+        uint32_t worldHits = 0;
+        uint32_t worldMisses = 0;
+        static bool worldHitsEnabled();
+        static void worldMix(uint64_t &hash, uint64_t value);
         // The trace scale for a target: the quality level's (WcwLogic::rtTraceScale) or WCW_RT_SCALE.
         float targetTraceScale(const RenderTarget *target) const;
         // Whether recordTrace makes the trace textures or the slot's history again for this target, dropping the
