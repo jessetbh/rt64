@@ -1200,6 +1200,40 @@ TEST_CASE("interpolation: frames per game frame") {
     CHECK_EQ(framesPerGameFrame(120, 30, 3), 3u);
 }
 
+TEST_CASE("interpolation: a game frame slower than 20 fps doesn't add generated-frame targets (#97)") {
+    // 20 fps (the slowest normal AKI rate) keeps its frames.
+    CHECK_EQ(framesPerGameFrame(60, 20, 0), 3u);
+    CHECK_EQ(framesPerGameFrame(120, 20, 0), 6u);
+    // Slower measured rates (slow ray-traced frames) are capped like 20 fps: they used to need 4-5 frames at 60 fps,
+    // growing every generated-frame target set by one or two 58.5 MB targets for the rest of the run.
+    CHECK_EQ(framesPerGameFrame(60, 15, 0), 3u);
+    CHECK_EQ(framesPerGameFrame(60, 12, 0), 3u);
+    CHECK_EQ(framesPerGameFrame(120, 10, 0), 6u);
+    // The debug override still wins.
+    CHECK_EQ(framesPerGameFrame(60, 15, 5), 5u);
+}
+
+TEST_CASE("interpolation: a capped slow game frame skips its earliest generated frames and ends on the real one (#97)") {
+    // 60 fps with the game at 15 fps: 4 frames are due per game frame, 3 are shown; the weights stay in order and the
+    // last is the real frame, and the ticks stay within their bound.
+    InterpolationTicks ticks;
+    for (int gameFrame = 0; gameFrame < 50; gameFrame++) {
+        const uint32_t frames = ticks.beginGameFrame(60, 15, 0);
+        CHECK_EQ(frames, 3u);
+        float lastCur = -1.0f;
+        FrameWeights w;
+        for (uint32_t i = 0; i < frames; i++) {
+            w = ticks.advance(60, 15);
+            CHECK(w.cur > lastCur);
+            lastCur = w.cur;
+        }
+
+        CHECK_NEAR(w.cur, 1.0f, 1e-6);
+        CHECK(ticks.logical >= ticks.display);
+        CHECK((ticks.logical - ticks.display) <= int64_t(60 + 15));
+    }
+}
+
 static void checkIntegerMultipleWeights(uint32_t targetRate, uint32_t viRate) {
     InterpolationTicks ticks;
     const uint32_t n = targetRate / viRate;

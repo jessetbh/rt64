@@ -339,8 +339,17 @@ namespace RT64::WcwLogic {
 
     // Frame interpolation
 
+    // The slowest game rate frame interpolation spreads a game frame over (the AKI games run at 30 or 20 fps).
+    // The measured rate dips below it on slow frames (ray tracing), and each displayed frame beyond the second needs
+    // a generated-frame target in each of the three rotating target sets, kept for the rest of the run: No Mercy at
+    // 60 fps with RT grew them to 3 or 4 targets of 58.5 MB each depending on timing, so GPU memory differed by up to
+    // 0.5 GB between identical runs (aki-roadmap#97). A slower game frame shows at most this many frames' worth;
+    // the earliest generated frames of a catch-up are skipped instead (InterpolationTicks::beginGameFrame).
+    constexpr uint32_t MinInterpolatedGameRate = 20;
+
     // Displayed frames per game frame: display rate / game rate, rounded, at least 2 (2 for a 30 fps game at 60,
-    // 4 at 120). capOverride (WCW_HFR_CAP) replaces it when non-zero.
+    // 4 at 120), the game rate taken as at least MinInterpolatedGameRate (at most 3 at 60, 6 at 120).
+    // capOverride (WCW_HFR_CAP) replaces it when non-zero.
     uint32_t framesPerGameFrame(uint32_t targetRate, uint32_t viOriginalRate, uint32_t capOverride);
 
     struct FrameWeights {
