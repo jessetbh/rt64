@@ -1903,6 +1903,61 @@ namespace RT64 {
                             mx[0] = std::max(mx[0], x); mx[1] = std::max(mx[1], y);
                         };
 
+                        // Screen fraction a clip-space triangle really covers: clipped against the frustum (w > 0,
+                        // -w <= x, y, z <= w) in homogeneous space, then the NDC polygon's area / 4. NDC bounds of the
+                        // vertices in front of the camera say nothing about a triangle that crosses the camera plane.
+                        auto coverage = [](const hlslpp::float4 tri[3]) {
+                            float poly[16][4], next[16][4];
+                            uint32_t count = 3;
+                            for (int k = 0; k < 3; k++) {
+                                poly[k][0] = float(tri[k].x); poly[k][1] = float(tri[k].y); poly[k][2] = float(tri[k].z); poly[k][3] = float(tri[k].w);
+                            }
+
+                            for (int plane = 0; (plane < 7) && (count > 0); plane++) {
+                                auto dist = [plane](const float *q) {
+                                    switch (plane) {
+                                    case 0: return q[3] - 1e-5f;
+                                    case 1: return q[3] - q[0];
+                                    case 2: return q[3] + q[0];
+                                    case 3: return q[3] - q[1];
+                                    case 4: return q[3] + q[1];
+                                    case 5: return q[3] - q[2];
+                                    default: return q[3] + q[2];
+                                    }
+                                };
+
+                                uint32_t outCount = 0;
+                                for (uint32_t a = 0; a < count; a++) {
+                                    const float *qa = poly[a], *qb = poly[(a + 1) % count];
+                                    const float da = dist(qa), db = dist(qb);
+                                    if ((da >= 0.0f) && (outCount < 16)) {
+                                        memcpy(next[outCount++], qa, sizeof(float) * 4);
+                                    }
+
+                                    if (((da >= 0.0f) != (db >= 0.0f)) && (outCount < 16)) {
+                                        const float f = da / (da - db);
+                                        for (int c = 0; c < 4; c++) next[outCount][c] = qa[c] + (qb[c] - qa[c]) * f;
+                                        outCount++;
+                                    }
+                                }
+
+                                count = outCount;
+                                memcpy(poly, next, sizeof(float) * 4 * count);
+                            }
+
+                            float twiceArea = 0.0f;
+                            for (uint32_t a = 0; a < count; a++) {
+                                const float *qa = poly[a], *qb = poly[(a + 1) % count];
+                                twiceArea += (qa[0] / qa[3]) * (qb[1] / qb[3]) - (qb[0] / qb[3]) * (qa[1] / qa[3]);
+                            }
+
+                            return std::abs(twiceArea) * 0.125f;
+                        };
+
+                        float genCover = 0.0f, realCover = 0.0f;
+                        hlslpp::float4 genTri[3], realTri[3];
+                        float clipDump[12][8];
+                        uint32_t clipDumpCount = 0;
                         for (uint32_t i = 0; i < call.callDesc.triangleCount * 3; i++) {
                             // Indexed draws only (raw ones have no face indices here); skip anything out of range.
                             const size_t faceIndex = size_t(call.meshDesc.faceIndicesStart) + i;
@@ -1923,8 +1978,22 @@ namespace RT64 {
                             minMatrix = std::min(minMatrix, m);
                             maxMatrix = std::max(maxMatrix, m);
                             const hlslpp::float4 objPos(drawData.posFloats[v * 3 + 0], drawData.posFloats[v * 3 + 1], drawData.posFloats[v * 3 + 2], 1.0f);
-                            grow(hlslpp::mul(hlslpp::mul(objPos, hlslpp::float4x4(drawData.lerpWorldTransforms[m])), genViewProj), genMin, genMax, genBehind);
-                            grow(hlslpp::mul(hlslpp::mul(objPos, hlslpp::float4x4(drawData.worldTransforms[m])), realViewProj), realMin, realMax, realBehind);
+                            const hlslpp::float4 genClip = hlslpp::mul(hlslpp::mul(objPos, hlslpp::float4x4(drawData.lerpWorldTransforms[m])), genViewProj);
+                            const hlslpp::float4 realClip = hlslpp::mul(hlslpp::mul(objPos, hlslpp::float4x4(drawData.worldTransforms[m])), realViewProj);
+                            grow(genClip, genMin, genMax, genBehind);
+                            grow(realClip, realMin, realMax, realBehind);
+                            genTri[i % 3] = genClip;
+                            realTri[i % 3] = realClip;
+                            if ((i % 3) == 2) {
+                                genCover += coverage(genTri);
+                                realCover += coverage(realTri);
+                            }
+
+                            if (clipDumpCount < 12) {
+                                float *cd = clipDump[clipDumpCount++];
+                                cd[0] = float(genClip.x); cd[1] = float(genClip.y); cd[2] = float(genClip.z); cd[3] = float(genClip.w);
+                                cd[4] = float(realClip.x); cd[5] = float(realClip.y); cd[6] = float(realClip.z); cd[7] = float(realClip.w);
+                            }
                         }
 
                         auto area = [](const float mn[2], const float mx[2]) {
@@ -1932,7 +2001,9 @@ namespace RT64 {
                         };
 
                         const float genArea = area(genMin, genMax), realArea = area(realMin, realMax);
-                        const bool big = ((genArea > 0.01f) && (genArea > 4.0f * realArea)) || (genBehind != realBehind);
+                        // BIG: the generated triangles cover over 0.2% of the screen more than twice what the real ones do.
+                        const bool big = (genCover > 0.002f) && (genCover > 2.0f * realCover + 0.002f);
+                        (void)genArea;
                         static uint32_t wcwGenLogged = 0;
                         if ((big || wcwGenAll) && (wcwGenLogged++ < 200000)) {
                             if (wcwGenFile == nullptr) {
@@ -1952,6 +2023,13 @@ namespace RT64 {
                                     wcwGenSec, wcwPresent, p.fbPairIndex, pr, int(proj.type), d, call.callDesc.triangleCount, minMatrix, maxMatrix, (unsigned long long)wcwHash,
                                     genMin[0], genMin[1], genMax[0], genMax[1], genBehind, realMin[0], realMin[1], realMax[0], realMax[1], realBehind,
                                     (realArea > 0.0f) ? (genArea / realArea) : 0.0f, big ? " BIG" : "");
+                                fprintf(wcwGenFile, "[wcw diag cover] present %d call %u gen %.4f real %.4f clip (gen x y z w / real x y z w):", wcwPresent, d, genCover, realCover);
+                                for (uint32_t k = 0; k < clipDumpCount; k++) {
+                                    const float *cd = clipDump[k];
+                                    fprintf(wcwGenFile, " {%g %g %g %g / %g %g %g %g}", cd[0], cd[1], cd[2], cd[3], cd[4], cd[5], cd[6], cd[7]);
+                                }
+
+                                fprintf(wcwGenFile, "\n");
 
                                 // How each matrix this draw used was interpolated (TransformProcessor's WcwLerpDiag).
                                 auto putMatrix = [](FILE *f, const char *name, const interop::float4x4 &m) {
