@@ -922,6 +922,8 @@ namespace RT64::WcwLogic {
         rtBuild.clear();
         rtTrace.clear();
         gpuPresent.clear();
+        frameGpu.clear();
+        frameRt.clear();
     }
 
     void DdFrameWindow::addPresent(double tMs, bool generatedFrame, bool repeatedFrame) {
@@ -935,7 +937,17 @@ namespace RT64::WcwLogic {
         repeated += repeatedFrame ? 1 : 0;
     }
 
-    void DdFrameWindow::addGpuRender(double gpuMs, double rtBuildMs, double rtTraceMs) {
+    void DdFrameWindow::addGpuRender(uint64_t presentId, double gpuMs, double rtBuildMs, double rtTraceMs) {
+        if (frameOpen && (presentId != framePresentId)) {
+            frameGpu.push_back(frameGpuSum);
+            frameRt.push_back(frameRtSum);
+            frameGpuSum = frameRtSum = 0.0;
+        }
+
+        frameOpen = true;
+        framePresentId = presentId;
+        frameGpuSum += gpuMs;
+        frameRtSum += rtBuildMs + rtTraceMs;
         gpuRender.push_back(gpuMs);
         rtBuild.push_back(rtBuildMs);
         rtTrace.push_back(rtTraceMs);
@@ -991,6 +1003,13 @@ namespace RT64::WcwLogic {
             s.rtTraceMs = ddPercentile(rtTrace, 0.50);
         }
 
+        s.gameFrames = uint32_t(frameGpu.size());
+        if (!frameGpu.empty()) {
+            s.gpuGameFrameMs = ddPercentile(frameGpu, 0.50);
+            s.gpuGameFrameP95Ms = ddPercentile(frameGpu, 0.95);
+            s.rtGameFrameMs = ddPercentile(frameRt, 0.50);
+        }
+
         s.gpuPresentRows = uint32_t(gpuPresent.size());
         if (!gpuPresent.empty()) {
             s.gpuPresentMs = ddPercentile(gpuPresent, 0.50);
@@ -1039,9 +1058,17 @@ namespace RT64::WcwLogic {
             put("perf.gpu_render_ms", s.gpuRenderMs);
             put("perf.gpu_render_p95_ms", s.gpuRenderP95Ms);
             // Only with ray tracing running: 0 ms with it off would read as free RT on a dashboard.
-            if ((s.rtBuildMs > 0.0) || (s.rtTraceMs > 0.0)) {
+            if ((s.rtBuildMs > 0.0) || (s.rtTraceMs > 0.0) || (s.rtGameFrameMs > 0.0)) {
                 put("perf.rt_build_ms", s.rtBuildMs);
                 put("perf.rt_trace_ms", s.rtTraceMs);
+            }
+        }
+
+        if (s.gameFrames > 0) {
+            put("perf.gpu_game_frame_ms", s.gpuGameFrameMs);
+            put("perf.gpu_game_frame_p95_ms", s.gpuGameFrameP95Ms);
+            if (s.rtGameFrameMs > 0.0) {
+                put("perf.rt_game_frame_ms", s.rtGameFrameMs);
             }
         }
 
@@ -1061,6 +1088,26 @@ namespace RT64::WcwLogic {
         }
 
         return m;
+    }
+
+    bool ddWindowDue(double nowMs, double windowStartMs) {
+        return (nowMs - windowStartMs) >= (DdWindowSeconds * 1000.0);
+    }
+
+    DdVramAdapter ddPickVram(const std::vector<DdVramAdapter> &adapters) {
+        DdVramAdapter out;
+        bool picked = false;
+        uint64_t mostUsage = 0;
+        for (const DdVramAdapter &a : adapters) {
+            out.usage += a.usage;
+            if (!picked || (a.usage > mostUsage)) {
+                picked = true;
+                mostUsage = a.usage;
+                out.budget = a.budget;
+            }
+        }
+
+        return out;
     }
 
     bool DdContext::operator==(const DdContext &o) const {
@@ -1084,7 +1131,27 @@ namespace RT64::WcwLogic {
         }
     }
 
+    std::string ddCrtPresetName(const std::string &preset) {
+        const size_t slash = preset.find_last_of("/\\");
+        std::string name = (slash == std::string::npos) ? preset : preset.substr(slash + 1);
+        const size_t dot = name.rfind('.');
+        if ((dot != std::string::npos) && (dot > 0)) {
+            std::string ext = name.substr(dot);
+            for (char &ch : ext) {
+                ch = ((ch >= 'A') && (ch <= 'Z')) ? char(ch - 'A' + 'a') : ch;
+            }
+
+            if (ext == ".slangp") {
+                name.resize(dot);
+            }
+        }
+
+        return name;
+    }
+
     std::vector<std::string> ddContextTags(const DdContext &c) {
+        static const char *builtInKeys[] = { "game", "fps_target", "framerate", "rt", "rt_quality", "resolution", "aspect", "msaa", "downsample",
+            "hdr", "crt", "beam", "rt_venue" };
         std::vector<std::string> tags;
         auto add = [&tags](const char *key, const std::string &value) {
             std::string t = ddTag(key, value);
@@ -1106,11 +1173,17 @@ namespace RT64::WcwLogic {
         add("msaa", c.msaa);
         add("downsample", std::to_string(c.downsample));
         add("hdr", c.hdr ? "on" : "off");
-        add("crt", c.crt.empty() ? std::string("off") : c.crt);
+        add("crt", c.crt.empty() ? std::string("off") : ddCrtPresetName(c.crt));
         add("beam", c.beam ? "on" : "off");
         add("rt_venue", c.venue);
         for (const std::string &t : c.extraTags) {
-            if (std::find(tags.begin(), tags.end(), t) == tags.end()) {
+            const std::string key = t.substr(0, t.find(':'));
+            bool builtIn = false;
+            for (const char *k : builtInKeys) {
+                builtIn = builtIn || (key == k);
+            }
+
+            if (!builtIn && (std::find(tags.begin(), tags.end(), t) == tags.end())) {
                 tags.push_back(t);
             }
         }
@@ -1150,6 +1223,64 @@ namespace RT64::WcwLogic {
         }
 
         return out;
+    }
+
+    void DdSession::setIdentity(const std::string &gameKey, const std::vector<std::string> &extra) {
+        game = gameKey;
+        extraTags = extra;
+    }
+
+    DdSession::Decision DdSession::noteContext(const DdContext &context, double nowMs) {
+        Decision d;
+        DdContext c = context;
+        c.game = game;
+        c.extraTags = extraTags;
+        c.venue = c.rt ? venue : std::string();
+        if (haveContext && (c == current)) {
+            return d;
+        }
+
+        const std::vector<std::string> before = currentTags;
+        current = c;
+        currentTags = ddContextTags(c);
+        if (!haveContext) {
+            haveContext = true;
+            startMs = nowMs;
+            d.event = Event::SessionStart;
+        }
+        else if ((nowMs - startMs) >= (DdSettleSeconds * 1000.0)) {
+            d.event = Event::SettingsChanged;
+            d.changes = ddTagChanges(before, currentTags);
+        }
+
+        return d;
+    }
+
+    DdSession::Decision DdSession::noteVenue(const std::string &newVenue) {
+        Decision d;
+        if (newVenue == venue) {
+            return d;
+        }
+
+        venue = newVenue;
+        if (haveContext && current.rt) {
+            const std::vector<std::string> before = currentTags;
+            current.venue = venue;
+            currentTags = ddContextTags(current);
+            d.event = Event::VenueChanged;
+            d.changes = ddTagChanges(before, currentTags);
+        }
+
+        return d;
+    }
+
+    std::vector<std::string> DdSession::tags() const {
+        if (haveContext) {
+            return currentTags;
+        }
+
+        const std::string t = ddTag("game", game);
+        return t.empty() ? std::vector<std::string>() : std::vector<std::string>{ t };
     }
 
     static std::string ddLower(std::string s) {

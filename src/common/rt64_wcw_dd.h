@@ -26,8 +26,8 @@ namespace RT64::WcwDd {
     void notePresent(Clock::time_point t, bool generated, bool repeated);
     // A WCW perf GPU timing row (render or present); the GPU timer runs while this is enabled (WcwPerf::timingEnabled).
     void noteGpuRow(const WcwPerf::GpuRow &row);
-    // Present thread: the current settings, every present. A change (after the first seconds) sends a settings
-    // event. The venue field is ignored; noteVenue sets it.
+    // Present thread: the current settings, every present (WcwLogic::DdSession decides the events). The game,
+    // extraTags and venue fields are ignored.
     void noteContext(const WcwLogic::DdContext &context);
     // The ray tracer's detected venue changed (empty: none).
     void noteVenue(const std::string &venue);

@@ -29,10 +29,6 @@
 
 namespace RT64::WcwDd {
     namespace {
-        // Settings changes in the first seconds are the startup settling (the swap chain's rate arriving, the saved
-        // settings applied): they become the baseline instead of events.
-        constexpr double SettleSeconds = 3.0;
-
         double nowMs() {
             return std::chrono::duration<double, std::milli>(Clock::now().time_since_epoch()).count();
         }
@@ -40,13 +36,8 @@ namespace RT64::WcwDd {
         struct Sink {
             std::mutex mutex;
             WcwLogic::DdFrameWindow window;
-            WcwLogic::DdContext context;
-            bool haveContext = false;
-            double firstContextMs = 0.0;
-            std::vector<std::string> tags;
-            std::string venue;
+            WcwLogic::DdSession session;
             std::string game;
-            std::vector<std::string> extraTags;
             std::string aggregationKey;
             bool echo = false;
             uint16_t port = 8125;
@@ -170,22 +161,21 @@ namespace RT64::WcwDd {
                 p.handles = uint32_t(handles);
             }
 
-            // This process's local (dedicated) memory on every adapter; the budget of the one it uses most.
-            uint64_t usage = 0, maxUsage = 0, budget = 0;
+            // This process's local (dedicated) memory on every adapter (WcwLogic::ddPickVram).
+            std::vector<WcwLogic::DdVramAdapter> vram;
             for (IDXGIAdapter3 *adapter : s.adapters) {
                 DXGI_QUERY_VIDEO_MEMORY_INFO info = {};
                 if (SUCCEEDED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info))) {
-                    p.hasVram = true;
-                    usage += info.CurrentUsage;
-                    if ((info.CurrentUsage >= maxUsage) || (budget == 0)) {
-                        maxUsage = info.CurrentUsage;
-                        budget = info.Budget;
-                    }
+                    vram.push_back({ info.CurrentUsage, info.Budget });
                 }
             }
 
-            p.vramMb = double(usage) / (1024.0 * 1024.0);
-            p.vramBudgetMb = double(budget) / (1024.0 * 1024.0);
+            if (!vram.empty()) {
+                const WcwLogic::DdVramAdapter v = WcwLogic::ddPickVram(vram);
+                p.hasVram = true;
+                p.vramMb = double(v.usage) / (1024.0 * 1024.0);
+                p.vramBudgetMb = double(v.budget) / (1024.0 * 1024.0);
+            }
 #       else
             (void)s;
 #       endif
@@ -194,20 +184,20 @@ namespace RT64::WcwDd {
 
         std::string eventLine(Sink &s, const std::string &title, const std::string &text, const char *alertType) {
             // The caller holds s.mutex.
-            std::vector<std::string> tags = s.haveContext ? s.tags : std::vector<std::string>{ WcwLogic::ddTag("game", s.game) };
-            return WcwLogic::ddEventLine("aki-game " + s.game + ": " + title, text, tags, (alertType != nullptr) ? alertType : "info", s.aggregationKey);
+            return WcwLogic::ddEventLine("aki-game " + s.game + ": " + title, text, s.session.tags(), (alertType != nullptr) ? alertType : "info", s.aggregationKey);
         }
 
-        void flushWindow(Sink &s) {
+        // withProcess: false for the last window at exit, when the renderer is already torn down.
+        void flushWindow(Sink &s, bool withProcess) {
             WcwLogic::DdFrameStats stats;
             std::vector<std::string> tags;
             {
                 std::scoped_lock lock(s.mutex);
-                stats = s.window.take(nowMs(), s.context.fpsTarget);
-                tags = s.haveContext ? s.tags : std::vector<std::string>{ WcwLogic::ddTag("game", s.game) };
+                stats = s.window.take(nowMs(), s.session.context().fpsTarget);
+                tags = s.session.tags();
             }
 
-            const WcwLogic::DdProcessSample process = sampleProcess(s);
+            const WcwLogic::DdProcessSample process = withProcess ? sampleProcess(s) : WcwLogic::DdProcessSample();
             std::vector<std::string> lines;
             for (const auto &m : WcwLogic::ddWindowMetrics(stats, process)) {
                 lines.push_back(WcwLogic::ddGaugeLine(m.first, m.second, tags));
@@ -235,9 +225,9 @@ namespace RT64::WcwDd {
                     event("device lost", "The GPU device was lost (hang, removal or reset); the game is quitting.", "error");
                 }
 
-                if ((nowMs() - windowStart) >= (WcwLogic::DdWindowSeconds * 1000.0)) {
+                if (WcwLogic::ddWindowDue(nowMs(), windowStart)) {
                     windowStart = nowMs();
-                    flushWindow(s);
+                    flushWindow(s, true);
                 }
 
                 stopLock.lock();
@@ -256,7 +246,7 @@ namespace RT64::WcwDd {
                 s.thread.join();
             }
 
-            flushWindow(s);
+            flushWindow(s, false);
             event("session end", "The game exited.", "info");
         }
 
@@ -265,7 +255,7 @@ namespace RT64::WcwDd {
             std::call_once(s.startOnce, [&s]() {
                 const char *game = getenv("WCW_DD_GAME");
                 s.game = ((game != nullptr) && (game[0] != '\0')) ? std::string(game) : WcwLogic::ddGameFromExe(exeName());
-                s.extraTags = WcwLogic::ddParseTags(getenv("WCW_DD_TAGS"));
+
                 s.echo = WcwLogic::envSwitchOn(getenv("WCW_DD_ECHO"));
                 const char *port = getenv("WCW_DD_PORT");
                 const int p = (port != nullptr) ? atoi(port) : 0;
@@ -273,6 +263,7 @@ namespace RT64::WcwDd {
                 s.aggregationKey = WcwLogic::ddTag("k", "aki-game-" + s.game + "-" + std::to_string(processId())).substr(2);
                 {
                     std::scoped_lock lock(s.mutex);
+                    s.session.setIdentity(s.game, WcwLogic::ddParseTags(getenv("WCW_DD_TAGS")));
                     s.window.start(nowMs());
                 }
 
@@ -313,7 +304,7 @@ namespace RT64::WcwDd {
             s.window.addGpuPresent(row.gpuMs);
         }
         else {
-            s.window.addGpuRender(row.gpuMs, row.passMs[size_t(WcwPerf::GpuPass::RtBuild)], row.passMs[size_t(WcwPerf::GpuPass::RtTrace)]);
+            s.window.addGpuRender(row.presentId, row.gpuMs, row.passMs[size_t(WcwPerf::GpuPass::RtBuild)], row.passMs[size_t(WcwPerf::GpuPass::RtTrace)]);
         }
     }
 
@@ -327,27 +318,12 @@ namespace RT64::WcwDd {
         std::string line;
         {
             std::scoped_lock lock(s.mutex);
-            WcwLogic::DdContext c = context;
-            c.game = s.game;
-            c.extraTags = s.extraTags;
-            // A venue is only detected while ray tracing runs.
-            c.venue = c.rt ? s.venue : std::string();
-            if (s.haveContext && (c == s.context)) {
-                return;
-            }
-
-            const std::vector<std::string> before = s.tags;
-            const bool first = !s.haveContext;
-            s.context = c;
-            s.tags = WcwLogic::ddContextTags(c);
-            const double now = nowMs();
-            if (first) {
-                s.haveContext = true;
-                s.firstContextMs = now;
+            const WcwLogic::DdSession::Decision d = s.session.noteContext(context, nowMs());
+            if (d.event == WcwLogic::DdSession::Event::SessionStart) {
                 line = eventLine(s, "session start", "WCW_DD_METRICS play session, pid " + std::to_string(processId()) + ".", "info");
             }
-            else if ((now - s.firstContextMs) >= (SettleSeconds * 1000.0)) {
-                line = eventLine(s, "settings changed", WcwLogic::ddTagChanges(before, s.tags), "info");
+            else if (d.event == WcwLogic::DdSession::Event::SettingsChanged) {
+                line = eventLine(s, "settings changed", d.changes, "info");
             }
         }
 
@@ -366,16 +342,9 @@ namespace RT64::WcwDd {
         std::string line;
         {
             std::scoped_lock lock(s.mutex);
-            if (venue == s.venue) {
-                return;
-            }
-
-            s.venue = venue;
-            if (s.haveContext && s.context.rt) {
-                const std::vector<std::string> before = s.tags;
-                s.context.venue = venue;
-                s.tags = WcwLogic::ddContextTags(s.context);
-                line = eventLine(s, "venue " + (venue.empty() ? std::string("(none)") : venue), WcwLogic::ddTagChanges(before, s.tags), "info");
+            const WcwLogic::DdSession::Decision d = s.session.noteVenue(venue);
+            if (d.event == WcwLogic::DdSession::Event::VenueChanged) {
+                line = eventLine(s, "venue " + (venue.empty() ? std::string("(none)") : venue), d.changes, "info");
             }
         }
 

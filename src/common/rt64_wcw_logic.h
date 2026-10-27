@@ -826,6 +826,12 @@ namespace RT64::WcwLogic {
 
     // One window's numbers. Percentiles and the 1%-low rate need at least one present interval (hasIntervals); the
     // GPU numbers need GPU timing rows (gpuRenderRows / gpuPresentRows).
+    // Deliberate differences from aki-run's numbers of the same name (aki-shot pacing, from wcw_present_lum.csv):
+    // - hitches: above 2x the larger of the target frame time and the median interval; aki-shot counts above 1.5x
+    //   the target, so a 30 fps scene on a 60 target counts every frame there and none here;
+    // - p50/p95/p99: nearest-rank, aki-shot interpolates (numpy);
+    // - real_fps: presents minus generated presents, so a repeated real frame counts; aki-run prefers distinct
+    //   frames from the luminance log (pacing.game_fps), which the renderer doesn't have.
     struct DdFrameStats {
         double seconds = 0.0;
         uint32_t presents = 0;
@@ -844,11 +850,18 @@ namespace RT64::WcwLogic {
         double low1PctFps = 0.0;
         uint32_t hitches = 0;
         double hitchesPerMin = 0.0;
+        // Per GPU timing row (one recorded command list; medians as aki-shot perf / aki.run.perf.*).
         uint32_t gpuRenderRows = 0;
         double gpuRenderMs = 0.0;
         double gpuRenderP95Ms = 0.0;
         double rtBuildMs = 0.0;
         double rtTraceMs = 0.0;
+        // Per game frame: the rows of one presentId summed (every workload, every interpolated frame rendered from
+        // it), median and p95; and its RT build + trace. Only game frames whose rows all landed in the window.
+        uint32_t gameFrames = 0;
+        double gpuGameFrameMs = 0.0;
+        double gpuGameFrameP95Ms = 0.0;
+        double rtGameFrameMs = 0.0;
         uint32_t gpuPresentRows = 0;
         double gpuPresentMs = 0.0;
     };
@@ -861,8 +874,9 @@ namespace RT64::WcwLogic {
         void start(double nowMs);
         // A present at tMs. generated: an in-between frame; repeated: the real frame shown again.
         void addPresent(double tMs, bool generated, bool repeated);
-        // GPU time of one rendered frame (whole frame; its RT build and trace parts) or of one present.
-        void addGpuRender(double gpuMs, double rtBuildMs, double rtTraceMs);
+        // GPU time of one render timing row (whole row; its RT build and trace parts), for the game frame presentId
+        // (rows of one game frame arrive together), or of one present.
+        void addGpuRender(uint64_t presentId, double gpuMs, double rtBuildMs, double rtTraceMs);
         void addGpuPresent(double gpuMs);
         // Summarizes the window up to nowMs and starts the next one there. fpsTarget: the expected present rate
         // (ddFpsTarget). A hitch is an interval above DdHitchFactor times the larger of the target's frame time and
@@ -880,6 +894,13 @@ namespace RT64::WcwLogic {
         std::vector<double> rtBuild;
         std::vector<double> rtTrace;
         std::vector<double> gpuPresent;
+        std::vector<double> frameGpu;
+        std::vector<double> frameRt;
+        // The game frame whose rows are arriving (kept across windows).
+        bool frameOpen = false;
+        uint64_t framePresentId = 0;
+        double frameGpuSum = 0.0;
+        double frameRtSum = 0.0;
     };
 
     // Nearest-rank percentile (p in 0..1) of unsorted values; 0 for none.
@@ -903,6 +924,19 @@ namespace RT64::WcwLogic {
     // The gauges for one window, by full name (aki.game.*), only those with data.
     std::vector<std::pair<std::string, double>> ddWindowMetrics(const DdFrameStats &stats, const DdProcessSample &process);
 
+    // Whether the window that started at windowStartMs is due to be sent at nowMs (DdWindowSeconds).
+    bool ddWindowDue(double nowMs, double windowStartMs);
+
+    // One adapter's DXGI QueryVideoMemoryInfo (local segment): this process's usage and its budget, bytes.
+    struct DdVramAdapter {
+        uint64_t usage = 0;
+        uint64_t budget = 0;
+    };
+
+    // The process's VRAM: usage summed over the adapters (it is 0 on the ones it doesn't use), and the budget of
+    // the adapter it uses most (the first one on a tie, so an idle second GPU never replaces the first's budget).
+    DdVramAdapter ddPickVram(const std::vector<DdVramAdapter> &adapters);
+
     // The settings and scene the numbers belong to, turned into tags. Gauges carry these tags, so they must stay low
     // cardinality: no per-session ids.
     struct DdContext {
@@ -917,7 +951,7 @@ namespace RT64::WcwLogic {
         std::string msaa;
         int downsample = 1;
         bool hdr = false;
-        // The CRT preset, empty when the filter is off.
+        // The CRT preset (a name or a .slangp path; the tag is its file stem), empty when the filter is off.
         std::string crt;
         bool beam = false;
         // The ray tracer's detected venue (rt only), empty when unknown.
@@ -929,6 +963,10 @@ namespace RT64::WcwLogic {
     };
 
     const char *rtQualityName(uint32_t quality);
+    // "crt/presets/crt-guest-advanced-ntsc.slangp" -> "crt-guest-advanced-ntsc": no folders (user paths) in tags.
+    std::string ddCrtPresetName(const std::string &preset);
+    // The context's tags. Extra tags whose key is one of these tags' own keys are dropped (WCW_DD_TAGS=game:x would
+    // otherwise add a second game tag).
     std::vector<std::string> ddContextTags(const DdContext &context);
     // "rt:off -> rt:on, fps_target:60 -> fps_target:120": the tags that changed, by key; empty when none did.
     std::string ddTagChanges(const std::vector<std::string> &before, const std::vector<std::string> &after);
@@ -936,6 +974,50 @@ namespace RT64::WcwLogic {
     // The aki-run game key from the executable's name: "NoMercyRecompiled.exe" -> "nomercy", "WCWRecompiled" -> "wt"
     // (AkiTools games.psd1). Unknown names are lowercased without "recompiled" and the extension.
     std::string ddGameFromExe(const std::string &exeName);
+    // A play session's tags and events. The sink feeds it the renderer's settings every present and the ray tracer's
+    // venue on a change, and sends what it decides:
+    // - the first settings start the session (SessionStart);
+    // - changes in the first DdSettleSeconds after that are the startup settling (the swap chain's rate arriving,
+    //   the saved settings applied) and become the baseline silently; later ones are SettingsChanged, with the tag
+    //   changes as text;
+    // - a venue is a tag only while ray tracing runs (only the ray tracer detects it); a venue change with RT on and
+    //   a session started is VenueChanged.
+    constexpr double DdSettleSeconds = 3.0;
+
+    class DdSession {
+    public:
+        enum class Event {
+            None,
+            SessionStart,
+            SettingsChanged,
+            VenueChanged
+        };
+
+        struct Decision {
+            Event event = Event::None;
+            // SettingsChanged / VenueChanged: ddTagChanges of the tags.
+            std::string changes;
+        };
+
+        // The game and WCW_DD_TAGS, fixed for the session.
+        void setIdentity(const std::string &game, const std::vector<std::string> &extraTags);
+        // The renderer's settings at nowMs (ms); its game, extraTags and venue fields are ignored.
+        Decision noteContext(const DdContext &context, double nowMs);
+        Decision noteVenue(const std::string &venue);
+        bool started() const { return haveContext; }
+        const DdContext &context() const { return current; }
+        // The tags gauges and events carry: the context's, or only the game before the session started.
+        std::vector<std::string> tags() const;
+    private:
+        DdContext current;
+        std::vector<std::string> currentTags;
+        bool haveContext = false;
+        double startMs = 0.0;
+        std::string game;
+        std::vector<std::string> extraTags;
+        std::string venue;
+    };
+
     // "conversion:btbw,owner:Fire Ant" -> sanitized tags; entries without a ':' or with an empty value are dropped.
     std::vector<std::string> ddParseTags(const char *list);
 

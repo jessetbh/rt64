@@ -141,7 +141,7 @@ TEST_CASE("dd window: GPU medians and p95 from the timing rows") {
     DdFrameWindow w;
     w.start(0.0);
     for (int i = 1; i <= 20; i++) {
-        w.addGpuRender(double(i), 0.5, 2.0);
+        w.addGpuRender(uint64_t(i), double(i), 0.5, 2.0);
     }
 
     w.addGpuPresent(1.0);
@@ -156,6 +156,36 @@ TEST_CASE("dd window: GPU medians and p95 from the timing rows") {
     CHECK_NEAR(s.gpuPresentMs, 2.0, 1e-9);
     // Cleared for the next window.
     CHECK_EQ(w.take(2000.0, 60).gpuRenderRows, 0u);
+}
+
+TEST_CASE("dd window: GPU per game frame sums the rows of one presentId, open frames carry over") {
+    DdFrameWindow w;
+    w.start(0.0);
+    // Game frame 7: three workloads, one traces; frame 8: two workloads.
+    w.addGpuRender(7, 1.0, 0.0, 0.0);
+    w.addGpuRender(7, 2.0, 0.5, 1.5);
+    w.addGpuRender(7, 1.0, 0.0, 0.0);
+    w.addGpuRender(8, 3.0, 0.0, 0.0);
+    w.addGpuRender(8, 3.0, 0.0, 0.0);
+    // Frame 9 is still arriving at the window's end.
+    w.addGpuRender(9, 10.0, 0.0, 0.0);
+    DdFrameStats s = w.take(1000.0, 60);
+    CHECK_EQ(s.gameFrames, 2u);
+    CHECK_NEAR(s.gpuGameFrameMs, 4.0, 1e-9);
+    CHECK_NEAR(s.gpuGameFrameP95Ms, 6.0, 1e-9);
+    CHECK_NEAR(s.rtGameFrameMs, 0.0, 1e-9);
+    // The per-row median misses the one tracing row; the per-frame RT doesn't.
+    CHECK_NEAR(s.rtTraceMs, 0.0, 1e-9);
+    w.addGpuRender(9, 5.0, 1.0, 2.0);
+    w.addGpuRender(10, 1.0, 0.0, 0.0);
+    s = w.take(2000.0, 60);
+    CHECK_EQ(s.gameFrames, 1u);
+    CHECK_NEAR(s.gpuGameFrameMs, 15.0, 1e-9);
+    CHECK_NEAR(s.rtGameFrameMs, 3.0, 1e-9);
+    const auto m = ddWindowMetrics(s, DdProcessSample());
+    CHECK_NEAR(metric(m, "aki.game.perf.gpu_game_frame_ms"), 15.0, 1e-9);
+    CHECK_NEAR(metric(m, "aki.game.perf.rt_game_frame_ms"), 3.0, 1e-9);
+    CHECK(hasMetric(m, "aki.game.perf.rt_trace_ms"));
 }
 
 TEST_CASE("dd: nearest-rank percentile") {
@@ -321,4 +351,146 @@ TEST_CASE("dd: packets join lines under the size limit, a long line goes alone")
     for (const std::string &packet : ddPackets(std::vector<std::string>(500, "aki.game.presents_per_s:60|g|#game:nomercy"))) {
         CHECK(packet.size() <= DdMaxPacketBytes);
     }
+}
+
+TEST_CASE("dd window: 1% low averages the slowest 1% of the intervals") {
+    DdFrameWindow w;
+    w.start(0.0);
+    double t = 0.0;
+    // 400 intervals: 396 of 10 ms, then 20, 30, 40, 50 ms; the slowest 1% (4) average 35 ms.
+    for (int i = 0; i <= 400; i++) {
+        w.addPresent(t, false, false);
+        t += (i < 396) ? 10.0 : (20.0 + 10.0 * (i - 396));
+    }
+
+    const DdFrameStats s = w.take(t, 100);
+    CHECK_NEAR(s.low1PctFps, 1000.0 / 35.0, 1e-9);
+    CHECK_NEAR(s.maxMs, 50.0, 1e-9);
+    // 2x the 10 ms frame: 30, 40 and 50 ms are hitches, 20 ms is not.
+    CHECK_EQ(s.hitches, 3u);
+}
+
+TEST_CASE("dd window: no fps target falls back to the median for hitches; out-of-order presents add no interval") {
+    DdFrameWindow w;
+    w.start(0.0);
+    double t = 0.0;
+    for (int i = 0; i < 50; i++) {
+        w.addPresent(t, false, false);
+        t += (i == 25) ? 70.0 : 20.0;
+    }
+
+    CHECK_EQ(w.take(t, 0).hitches, 1u);
+    DdFrameWindow w2;
+    w2.start(0.0);
+    w2.addPresent(100.0, false, false);
+    w2.addPresent(90.0, false, false);
+    w2.addPresent(110.0, false, false);
+    const DdFrameStats s = w2.take(200.0, 60);
+    CHECK_EQ(s.presents, 3u);
+    CHECK_NEAR(s.p50Ms, 20.0, 1e-9);
+    CHECK_NEAR(s.maxMs, 20.0, 1e-9);
+}
+
+TEST_CASE("dd: window cadence") {
+    CHECK(!ddWindowDue(9999.0, 0.0));
+    CHECK(ddWindowDue(10000.0, 0.0));
+    CHECK(ddWindowDue(25000.0, 14000.0));
+}
+
+TEST_CASE("dd: VRAM sums usage, takes the most-used adapter's budget, first on a tie") {
+    const DdVramAdapter none = ddPickVram({});
+    CHECK_EQ(none.usage, 0ull);
+    CHECK_EQ(none.budget, 0ull);
+    const DdVramAdapter a = ddPickVram({ { 100, 8000 }, { 0, 2000 } });
+    CHECK_EQ(a.usage, 100ull);
+    CHECK_EQ(a.budget, 8000ull);
+    const DdVramAdapter b = ddPickVram({ { 0, 2000 }, { 300, 8000 } });
+    CHECK_EQ(b.usage, 300ull);
+    CHECK_EQ(b.budget, 8000ull);
+    // Nothing used yet (startup): the first adapter's budget, not an idle second GPU's.
+    const DdVramAdapter c = ddPickVram({ { 0, 8000 }, { 0, 2000 } });
+    CHECK_EQ(c.budget, 8000ull);
+}
+
+TEST_CASE("dd context: CRT tag is the preset's stem, never a user path") {
+    CHECK(ddCrtPresetName("crt-guest-advanced-ntsc") == "crt-guest-advanced-ntsc");
+    CHECK(ddCrtPresetName("C:\\Users\\me\\crt\\my-crt.slangp") == "my-crt");
+    CHECK(ddCrtPresetName("crt/presets/crt-royale.SLANGP") == "crt-royale");
+    CHECK(ddCrtPresetName("v1.2") == "v1.2");
+    DdContext c;
+    c.crt = "C:\\Users\\me\\crt\\my-crt.slangp";
+    const std::vector<std::string> t = ddContextTags(c);
+    CHECK(std::find(t.begin(), t.end(), "crt:my-crt") != t.end());
+}
+
+TEST_CASE("dd context: WCW_DD_TAGS cannot add a second built-in key") {
+    DdContext c;
+    c.game = "nomercy";
+    c.extraTags = ddParseTags("game:other,rt_quality:ultra,conversion:btbw");
+    const std::vector<std::string> t = ddContextTags(c);
+    CHECK(std::count_if(t.begin(), t.end(), [](const std::string &x) { return x.rfind("game:", 0) == 0; }) == 1);
+    CHECK(std::find(t.begin(), t.end(), "rt_quality:ultra") == t.end());
+    CHECK(std::find(t.begin(), t.end(), "conversion:btbw") != t.end());
+}
+
+TEST_CASE("dd session: first context starts it, settling changes are silent, later changes are events") {
+    DdSession s;
+    s.setIdentity("nomercy", { "source:aki-run" });
+    const std::vector<std::string> before = s.tags();
+    CHECK((before == std::vector<std::string>{ "game:nomercy" }));
+    DdContext c;
+    c.game = "ignored";
+    c.fpsTarget = 0;
+    CHECK(s.noteContext(c, 1000.0).event == DdSession::Event::SessionStart);
+    CHECK(s.started());
+    CHECK(s.context().game == "nomercy");
+    CHECK(std::find(s.tags().begin(), s.tags().end(), "source:aki-run") != s.tags().end());
+    // Same settings: nothing.
+    CHECK(s.noteContext(c, 1500.0).event == DdSession::Event::None);
+    // The swap chain's rate arrives 2 s in: baseline, no event.
+    c.fpsTarget = 60;
+    CHECK(s.noteContext(c, 3000.0).event == DdSession::Event::None);
+    CHECK_EQ(s.context().fpsTarget, 60u);
+    // RT turned on 10 s in: an event with the changes.
+    c.rt = true;
+    const DdSession::Decision d = s.noteContext(c, 11000.0);
+    CHECK(d.event == DdSession::Event::SettingsChanged);
+    CHECK(d.changes == "rt:off -> rt:on, rt_quality:(none) -> rt_quality:performance");
+}
+
+TEST_CASE("dd session: venue tags and events only with RT on and a started session") {
+    DdSession s;
+    s.setIdentity("nomercy", {});
+    // Before the session: remembered, no event.
+    CHECK(s.noteVenue("Raw").event == DdSession::Event::None);
+    DdContext c;
+    c.rt = true;
+    CHECK(s.noteContext(c, 0.0).event == DdSession::Event::SessionStart);
+    CHECK(s.context().venue == "Raw");
+    const DdSession::Decision d = s.noteVenue("SmackDown");
+    CHECK(d.event == DdSession::Event::VenueChanged);
+    CHECK(d.changes == "rt_venue:raw -> rt_venue:smackdown");
+    CHECK(s.noteVenue("SmackDown").event == DdSession::Event::None);
+    // A venue change arriving in the same context is not also a settings change.
+    CHECK(s.noteContext(c, 20000.0).event == DdSession::Event::None);
+    // RT off drops the venue tag (a settings change), and venue changes stop being events.
+    c.rt = false;
+    const DdSession::Decision off = s.noteContext(c, 21000.0);
+    CHECK(off.event == DdSession::Event::SettingsChanged);
+    CHECK(off.changes.find("rt_venue:smackdown -> rt_venue:(none)") != std::string::npos);
+    CHECK(s.noteVenue("Raw").event == DdSession::Event::None);
+    // RT back on picks up the latest venue.
+    c.rt = true;
+    s.noteContext(c, 22000.0);
+    CHECK(s.context().venue == "Raw");
+}
+
+TEST_CASE("dd: value format edge cases, tag list whitespace and trailing commas") {
+    CHECK(ddFormatValue(1e12) == "1000000000000");
+    CHECK(ddFormatValue(0.0000004) == "0");
+    CHECK(ddFormatValue(0.25) == "0.25");
+    CHECK(ddGaugeLine("aki.game.x", std::numeric_limits<double>::quiet_NaN(), {}).empty());
+    const std::vector<std::string> t = ddParseTags(" Owner :Fire Ant,,conversion:btbw,");
+    const std::vector<std::string> expected = { "owner:fire_ant", "conversion:btbw" };
+    CHECK(t == expected);
 }
