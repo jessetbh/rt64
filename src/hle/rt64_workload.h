@@ -77,6 +77,7 @@ namespace RT64 {
             interop::float4x4 prevDrawn, prevPure, curPure, prevCamera, curCamera, rigid, final;
         };
         std::vector<WcwLerpDiag> wcwLerpDiag;
+        float wcwDiagWeight = 1.0f;
         std::vector<interop::RDPTile> rdpTiles;
         std::vector<interop::RDPTile> lerpRdpTiles;
         std::vector<interop::GPUTile> gpuTiles;

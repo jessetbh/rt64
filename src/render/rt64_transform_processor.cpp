@@ -37,6 +37,7 @@ namespace RT64 {
             // [wcw diag] aki-roadmap#110: record how each interpolated matrix was built (WCW_DIAG_GENDRAWS only).
             static const bool wcwLerpDiagOn = getenv("WCW_DIAG_GENDRAWS") != nullptr;
             drawData.wcwLerpDiag.clear();
+            drawData.wcwDiagWeight = p.curFrameWeight;
             if (wcwLerpDiagOn && prevFrameValid) {
                 drawData.wcwLerpDiag.resize(drawData.worldTransforms.size());
             }

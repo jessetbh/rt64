@@ -1956,8 +1956,9 @@ namespace RT64 {
 
                         float genCover = 0.0f, realCover = 0.0f;
                         hlslpp::float4 genTri[3], realTri[3];
-                        float clipDump[12][8];
+                        float clipDump[12][14];
                         uint32_t clipDumpCount = 0;
+                        float maxVel = 0.0f;
                         for (uint32_t i = 0; i < call.callDesc.triangleCount * 3; i++) {
                             // Indexed draws only (raw ones have no face indices here); skip anything out of range.
                             const size_t faceIndex = size_t(call.meshDesc.faceIndicesStart) + i;
@@ -1978,7 +1979,16 @@ namespace RT64 {
                             minMatrix = std::min(minMatrix, m);
                             maxMatrix = std::max(maxMatrix, m);
                             const hlslpp::float4 objPos(drawData.posFloats[v * 3 + 0], drawData.posFloats[v * 3 + 1], drawData.posFloats[v * 3 + 2], 1.0f);
-                            const hlslpp::float4 genClip = hlslpp::mul(hlslpp::mul(objPos, hlslpp::float4x4(drawData.lerpWorldTransforms[m])), genViewProj);
+                            // The shader moves generated frames' vertices back by their velocity too (RSPProcessCS).
+                            float vel[3] = { 0.0f, 0.0f, 0.0f };
+                            if ((size_t(v) * 3 + 2) < drawData.velFloats.size()) {
+                                for (int c = 0; c < 3; c++) vel[c] = drawData.velFloats[v * 3 + c];
+                            }
+
+                            maxVel = std::max(maxVel, sqrtf(vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2]));
+                            const float back = 1.0f - drawData.wcwDiagWeight;
+                            const hlslpp::float4 genPos(float(objPos.x) - vel[0] * back, float(objPos.y) - vel[1] * back, float(objPos.z) - vel[2] * back, 1.0f);
+                            const hlslpp::float4 genClip = hlslpp::mul(hlslpp::mul(genPos, hlslpp::float4x4(drawData.lerpWorldTransforms[m])), genViewProj);
                             const hlslpp::float4 realClip = hlslpp::mul(hlslpp::mul(objPos, hlslpp::float4x4(drawData.worldTransforms[m])), realViewProj);
                             grow(genClip, genMin, genMax, genBehind);
                             grow(realClip, realMin, realMax, realBehind);
@@ -1993,6 +2003,8 @@ namespace RT64 {
                                 float *cd = clipDump[clipDumpCount++];
                                 cd[0] = float(genClip.x); cd[1] = float(genClip.y); cd[2] = float(genClip.z); cd[3] = float(genClip.w);
                                 cd[4] = float(realClip.x); cd[5] = float(realClip.y); cd[6] = float(realClip.z); cd[7] = float(realClip.w);
+                                cd[8] = float(objPos.x); cd[9] = float(objPos.y); cd[10] = float(objPos.z);
+                                cd[11] = vel[0]; cd[12] = vel[1]; cd[13] = vel[2];
                             }
                         }
 
@@ -2023,10 +2035,10 @@ namespace RT64 {
                                     wcwGenSec, wcwPresent, p.fbPairIndex, pr, int(proj.type), d, call.callDesc.triangleCount, minMatrix, maxMatrix, (unsigned long long)wcwHash,
                                     genMin[0], genMin[1], genMax[0], genMax[1], genBehind, realMin[0], realMin[1], realMax[0], realMax[1], realBehind,
                                     (realArea > 0.0f) ? (genArea / realArea) : 0.0f, big ? " BIG" : "");
-                                fprintf(wcwGenFile, "[wcw diag cover] present %d call %u gen %.4f real %.4f clip (gen x y z w / real x y z w):", wcwPresent, d, genCover, realCover);
+                                fprintf(wcwGenFile, "[wcw diag cover] present %d call %u gen %.4f real %.4f weight %.3f max vel %g clip (gen x y z w / real x y z w / pos / vel):", wcwPresent, d, genCover, realCover, drawData.wcwDiagWeight, maxVel);
                                 for (uint32_t k = 0; k < clipDumpCount; k++) {
                                     const float *cd = clipDump[k];
-                                    fprintf(wcwGenFile, " {%g %g %g %g / %g %g %g %g}", cd[0], cd[1], cd[2], cd[3], cd[4], cd[5], cd[6], cd[7]);
+                                    fprintf(wcwGenFile, " {%g %g %g %g / %g %g %g %g / %g %g %g / %g %g %g}", cd[0], cd[1], cd[2], cd[3], cd[4], cd[5], cd[6], cd[7], cd[8], cd[9], cd[10], cd[11], cd[12], cd[13]);
                                 }
 
                                 fprintf(wcwGenFile, "\n");
