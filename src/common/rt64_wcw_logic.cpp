@@ -406,7 +406,8 @@ namespace RT64::WcwLogic {
             return capOverride;
         }
 
-        return std::max(2u, (targetRate + viOriginalRate / 2) / viOriginalRate);
+        const uint32_t gameRate = std::max(viOriginalRate, MinInterpolatedGameRate);
+        return std::max(2u, (targetRate + gameRate / 2) / gameRate);
     }
 
     void InterpolationTicks::reset() {
