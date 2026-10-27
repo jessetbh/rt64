@@ -42,6 +42,35 @@ namespace RT64::WcwLogic {
         return darkenMisses ? TraceArea::FullScreen : TraceArea::Geometry;
     }
 
+    bool crossesNearPlane(const float *clip, size_t vertexCount) {
+        bool front = false;
+        bool behind = false;
+        for (size_t i = 0; i < vertexCount; i++) {
+            const float z = clip[i * 4 + 2];
+            const float w = clip[i * 4 + 3];
+            if (!std::isfinite(z) || !std::isfinite(w)) {
+                continue;
+            }
+
+            if ((w > 0.0f) && (z >= -w)) {
+                front = true;
+            }
+            else {
+                behind = true;
+            }
+
+            if (front && behind) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    bool pinUnmappedToRealView(bool inMatch, bool generated, bool realCrosses, bool generatedCrosses) {
+        return inMatch && generated && (realCrosses || generatedCrosses);
+    }
+
     bool generatedFrame(float curFrameWeight) {
         return curFrameWeight < (1.0f - 1e-4f);
     }

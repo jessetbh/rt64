@@ -6,12 +6,70 @@
 
 #include <cfloat>
 #include <cmath>
+#include <cstring>
 
 #include "common/rt64_math.h"
+#include "common/rt64_wcw_logic.h"
 #include "hle/rt64_game_frame.h"
 #include "hle/rt64_workload_queue.h"
 
 namespace RT64 {
+    // [wcw fix] aki-roadmap#110: the matrix a generated frame in a match draws an unmapped transform with. Its current
+    // matrix, unless its vertices cross the camera's near plane (WcwLogic::pinUnmappedToRealView): then its current
+    // matrix moved from the interpolated view-projection to the real one (world * real * inverse(interpolated)), so it
+    // clips as in the real frame. Needs every vertex on the same view-projection; returns the current matrix otherwise.
+    static hlslpp::float4x4 wcwUnmappedMatrix(const DrawData &drawData, uint32_t t, bool inMatch, bool generated, std::vector<float> &realClip, std::vector<float> &genClip) {
+        const hlslpp::float4x4 world(drawData.worldTransforms[t]);
+        if (!inMatch || !generated || (t >= drawData.worldTransformVertexIndices.size())) {
+            return world;
+        }
+
+        const uint32_t first = drawData.worldTransformVertexIndices[t];
+        const uint32_t count = drawData.worldTransformVertexCount(t);
+        if ((count == 0) || ((size_t(first) + count) > drawData.viewProjIndices.size()) || (((size_t(first) + count) * 3) > drawData.posFloats.size())) {
+            return world;
+        }
+
+        const uint16_t vp = drawData.viewProjIndices[first];
+        if ((vp >= drawData.viewProjTransforms.size()) || (vp >= drawData.modViewProjTransforms.size()) ||
+            (memcmp(&drawData.viewProjTransforms[vp], &drawData.modViewProjTransforms[vp], sizeof(interop::float4x4)) == 0))
+        {
+            return world;
+        }
+
+        const hlslpp::float4x4 realViewProj(drawData.viewProjTransforms[vp]);
+        const hlslpp::float4x4 genViewProj(drawData.modViewProjTransforms[vp]);
+        const hlslpp::float4x4 realMatrix = hlslpp::mul(world, realViewProj);
+        const hlslpp::float4x4 genMatrix = hlslpp::mul(world, genViewProj);
+        realClip.resize(size_t(count) * 4);
+        genClip.resize(size_t(count) * 4);
+        for (uint32_t i = 0; i < count; i++) {
+            const uint32_t v = first + i;
+            if (drawData.viewProjIndices[v] != vp) {
+                return world;
+            }
+
+            const hlslpp::float4 pos(drawData.posFloats[v * 3 + 0], drawData.posFloats[v * 3 + 1], drawData.posFloats[v * 3 + 2], 1.0f);
+            hlslpp::store(hlslpp::mul(pos, realMatrix), &realClip[i * 4]);
+            hlslpp::store(hlslpp::mul(pos, genMatrix), &genClip[i * 4]);
+        }
+
+        if (!WcwLogic::pinUnmappedToRealView(inMatch, generated, WcwLogic::crossesNearPlane(realClip.data(), count), WcwLogic::crossesNearPlane(genClip.data(), count))) {
+            return world;
+        }
+
+        const hlslpp::float4x4 pinned = hlslpp::mul(realMatrix, hlslpp::inverse(genViewProj));
+        float values[16];
+        hlslpp::store(pinned, values);
+        for (int k = 0; k < 16; k++) {
+            if (!std::isfinite(values[k])) {
+                return world;
+            }
+        }
+
+        return pinned;
+    }
+
     // TransformProcessor
     
     TransformProcessor::TransformProcessor() { }
@@ -41,6 +99,7 @@ namespace RT64 {
                 const GameFrameMap::WorkloadMap &workloadMap = p.curFrame->frameMap.workloads[w];
                 const DrawData &prevDrawData = p.workloadQueue->workloads[workloadMap.prevWorkloadIndex].drawData;
                 const bool inMatch = wcwInterpActive.load(std::memory_order_relaxed);
+                const bool generated = WcwLogic::generatedFrame(p.curFrameWeight);
                 for (size_t t = 0; t < drawData.worldTransforms.size(); t++) {
                     const GameFrameMap::TransformMap &transformMap = workloadMap.transforms[t];
                     if (transformMap.mapped) {
@@ -147,11 +206,12 @@ namespace RT64 {
                         prevWorldTransforms.emplace_back(prevMatrix);
                     }
                     else {
-                        invMatrix = hlslpp::inverse(drawData.worldTransforms[t]);
+                        const hlslpp::float4x4 unmappedMatrix = wcwUnmappedMatrix(drawData, uint32_t(t), inMatch, generated, wcwRealClip, wcwGenClip);
+                        invMatrix = hlslpp::inverse(unmappedMatrix);
                         invTMatrix = hlslpp::transpose(invMatrix);
-                        lerpWorldTransforms.emplace_back(drawData.worldTransforms[t]);
+                        lerpWorldTransforms.emplace_back(unmappedMatrix);
                         invTWorldTransforms.emplace_back(invTMatrix);
-                        prevWorldTransforms.emplace_back(drawData.worldTransforms[t]);
+                        prevWorldTransforms.emplace_back(unmappedMatrix);
                     }
                 }
             }

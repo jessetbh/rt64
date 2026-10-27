@@ -768,4 +768,22 @@ namespace RT64::WcwLogic {
         void add(bool pairSplit, float drawnChange = -1.0f);
         bool splitLayer() const;
     };
+
+    // Unmapped transforms on generated frames (aki-roadmap#110)
+
+    // Whether a draw's clip-space vertices (x, y, z, w each; vertexCount of them) cross the camera's near plane: some
+    // in front of it (w > 0 and z >= -w, the N64 convention RSPProcessCS keeps) and some behind it. Vertices that
+    // aren't finite are skipped.
+    bool crossesNearPlane(const float *clip, size_t vertexCount);
+
+    // Whether a generated frame draws an unmapped transform (no previous-frame pair: drawn with its current matrix)
+    // with the real frame's view-projection instead of the interpolated one, so that it lands and clips exactly as in
+    // the real frame. Only for transforms whose vertices cross the near plane under the real or the interpolated
+    // view, in a match. World Tour's WCW quick match draws two thin untextured boxes on unmapped transforms right on
+    // the camera's near plane (z/w -0.90 to -1.02). The real frame clips them away (one sliver under the timer); the
+    // generated frame's camera, half a game frame away, brought them in front of it: two dark slabs across the ring
+    // and the mat on one generated frame (luminance 59.1 between 60.6 and 63.2). Hiding unmapped transforms on
+    // generated frames removed the dip. Other unmapped objects keep the interpolated view, so they stay in place
+    // relative to the interpolated scene around them.
+    bool pinUnmappedToRealView(bool inMatch, bool generated, bool realCrosses, bool generatedCrosses);
 };
