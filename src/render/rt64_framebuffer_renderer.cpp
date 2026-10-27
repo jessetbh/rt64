@@ -1952,6 +1952,31 @@ namespace RT64 {
                                     wcwGenSec, wcwPresent, p.fbPairIndex, pr, int(proj.type), d, call.callDesc.triangleCount, minMatrix, maxMatrix, (unsigned long long)wcwHash,
                                     genMin[0], genMin[1], genMax[0], genMax[1], genBehind, realMin[0], realMin[1], realMax[0], realMax[1], realBehind,
                                     (realArea > 0.0f) ? (genArea / realArea) : 0.0f, big ? " BIG" : "");
+
+                                // How each matrix this draw used was interpolated (TransformProcessor's WcwLerpDiag).
+                                auto putMatrix = [](FILE *f, const char *name, const interop::float4x4 &m) {
+                                    fprintf(f, " %s [", name);
+                                    for (int r = 0; r < 4; r++) {
+                                        fprintf(f, "%s%g %g %g %g", (r > 0) ? " | " : "", m.m[r][0], m.m[r][1], m.m[r][2], m.m[r][3]);
+                                    }
+
+                                    fprintf(f, "]");
+                                };
+
+                                for (uint32_t m = minMatrix; (m <= maxMatrix) && (m < minMatrix + 4) && (m < drawData.wcwLerpDiag.size()); m++) {
+                                    const DrawData::WcwLerpDiag &ld = drawData.wcwLerpDiag[m];
+                                    fprintf(wcwGenFile, "[wcw diag lerp] present %d matrix %u flags %u prev %u weight %.3f norm ratio %.3f", wcwPresent, m, ld.flags, ld.prevIndex, ld.weight, ld.normRatio);
+                                    putMatrix(wcwGenFile, "final", ld.final);
+                                    putMatrix(wcwGenFile, "cur", drawData.worldTransforms[m]);
+                                    putMatrix(wcwGenFile, "prev", ld.prevDrawn);
+                                    putMatrix(wcwGenFile, "rigid", ld.rigid);
+                                    putMatrix(wcwGenFile, "prevPure", ld.prevPure);
+                                    putMatrix(wcwGenFile, "curPure", ld.curPure);
+                                    putMatrix(wcwGenFile, "prevCam", ld.prevCamera);
+                                    putMatrix(wcwGenFile, "curCam", ld.curCamera);
+                                    fprintf(wcwGenFile, "
+");
+                                }
                             }
                         }
                     }

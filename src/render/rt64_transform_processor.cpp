@@ -6,6 +6,7 @@
 
 #include <cfloat>
 #include <cmath>
+#include <cstdlib>
 
 #include "common/rt64_math.h"
 #include "hle/rt64_game_frame.h"
@@ -33,6 +34,12 @@ namespace RT64 {
             lerpWorldTransforms.clear();
             invTWorldTransforms.clear();
             prevWorldTransforms.clear();
+            // [wcw diag] aki-roadmap#110: record how each interpolated matrix was built (WCW_DIAG_GENDRAWS only).
+            static const bool wcwLerpDiagOn = getenv("WCW_DIAG_GENDRAWS") != nullptr;
+            drawData.wcwLerpDiag.clear();
+            if (wcwLerpDiagOn && prevFrameValid) {
+                drawData.wcwLerpDiag.resize(drawData.worldTransforms.size());
+            }
 
             hlslpp::float4x4 prevMatrix, curMatrix, invMatrix, invTMatrix;
 
@@ -43,6 +50,7 @@ namespace RT64 {
                 const bool inMatch = wcwInterpActive.load(std::memory_order_relaxed);
                 for (size_t t = 0; t < drawData.worldTransforms.size(); t++) {
                     const GameFrameMap::TransformMap &transformMap = workloadMap.transforms[t];
+                    DrawData::WcwLerpDiag *wcwDiag = drawData.wcwLerpDiag.empty() ? nullptr : &drawData.wcwLerpDiag[t];
                     if (transformMap.mapped) {
                         // [wcw fix] Transforms paired from their camera-independent matrices (usedPureMatrix)
                         // interpolate those, then get the camera put back below.
@@ -54,6 +62,18 @@ namespace RT64 {
 
                         prevMatrix = transformMap.rigidBody.lerp(p.prevFrameWeight, prevTransform, curTransform, true);
                         curMatrix = transformMap.rigidBody.lerp(p.curFrameWeight, prevTransform, curTransform, true);
+                        if (wcwDiag != nullptr) {
+                            const uint32_t prevIdx = transformMap.prevTransformIndex;
+                            wcwDiag->flags = 1u | (usedPure ? 2u : 0u) | (inMatch ? 64u : 0u);
+                            wcwDiag->prevIndex = prevIdx;
+                            wcwDiag->weight = p.curFrameWeight;
+                            wcwDiag->rigid = curMatrix;
+                            if (prevIdx < prevDrawData.worldTransforms.size()) wcwDiag->prevDrawn = prevDrawData.worldTransforms[prevIdx];
+                            if (prevIdx < prevDrawData.worldTransformsPure.size()) wcwDiag->prevPure = prevDrawData.worldTransformsPure[prevIdx];
+                            if (t < drawData.worldTransformsPure.size()) wcwDiag->curPure = drawData.worldTransformsPure[t];
+                            if (prevIdx < prevDrawData.worldTransformsCamera.size()) wcwDiag->prevCamera = prevDrawData.worldTransformsCamera[prevIdx];
+                            if (t < drawData.worldTransformsCamera.size()) wcwDiag->curCamera = drawData.worldTransformsCamera[t];
+                        }
 
                         if (usedPure) {
                             // [wcw fix] Put the camera back. In a match the camera is interpolated too
@@ -73,6 +93,7 @@ namespace RT64 {
 
                                 prevMatrix = hlslpp::mul(prevMatrix, lerpCamera(prevCamera, camera, p.prevFrameWeight));
                                 curMatrix = hlslpp::mul(curMatrix, lerpCamera(prevCamera, camera, p.curFrameWeight));
+                                if (wcwDiag != nullptr) wcwDiag->flags |= 4u;
                             }
                             else {
                                 prevMatrix = hlslpp::mul(prevMatrix, camera);
@@ -101,6 +122,7 @@ namespace RT64 {
                             if (finite) {
                                 curMatrix = curFixed;
                                 prevMatrix = prevFixed;
+                                if (wcwDiag != nullptr) wcwDiag->flags |= 8u;
                             }
                         }
 
@@ -109,6 +131,7 @@ namespace RT64 {
                         if (transformMap.wcwCombinedLerp) {
                             const uint32_t prevIdx = transformMap.prevTransformIndex;
                             if (prevIdx < prevDrawData.worldTransforms.size()) {
+                                if (wcwDiag != nullptr) wcwDiag->flags |= 16u;
                                 const hlslpp::float4x4 prevWorld(prevDrawData.worldTransforms[prevIdx]);
                                 const hlslpp::float4x4 curWorld(drawData.worldTransforms[t]);
                                 for (int i = 0; i < 4; i++) {
@@ -134,12 +157,17 @@ namespace RT64 {
                             const float lerpNorm = matrixNorm(curMatrix);
                             const bool degenerate = !std::isfinite(lerpNorm) || (lerpNorm < 1e-6f) || (refNorm < 1e-6f);
                             const float ratio = degenerate ? FLT_MAX : ((lerpNorm > refNorm) ? (lerpNorm / refNorm) : (refNorm / lerpNorm));
+                            if (wcwDiag != nullptr) {
+                                wcwDiag->normRatio = ratio;
+                                if (degenerate || (ratio > 2.0f)) wcwDiag->flags |= 32u;
+                            }
                             if (degenerate || (ratio > 2.0f)) {
                                 curMatrix = drawData.worldTransforms[t];
                                 prevMatrix = drawData.worldTransforms[t];
                             }
                         }
 
+                        if (wcwDiag != nullptr) wcwDiag->final = curMatrix;
                         invMatrix = hlslpp::inverse(curMatrix);
                         invTMatrix = hlslpp::transpose(invMatrix);
                         lerpWorldTransforms.emplace_back(curMatrix);

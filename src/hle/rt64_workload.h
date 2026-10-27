@@ -66,6 +66,17 @@ namespace RT64 {
         std::vector<interop::float4x4> worldTransformsPure;
         std::vector<interop::float4x4> worldTransformsCamera;
         std::vector<uint8_t> worldTransformsPureValid;
+        // [wcw diag] aki-roadmap#110: per transform, how TransformProcessor built the interpolated matrix (filled only
+        // while WCW_DIAG_GENDRAWS is set). Flags: 1 mapped, 2 pure pair, 4 camera lerped, 8 K fix applied,
+        // 16 combined lerp, 32 2x-norm guard hit, 64 in match.
+        struct WcwLerpDiag {
+            uint32_t flags = 0;
+            uint32_t prevIndex = 0;
+            float weight = 0.0f;
+            float normRatio = 0.0f;
+            interop::float4x4 prevDrawn, prevPure, curPure, prevCamera, curCamera, rigid, final;
+        };
+        std::vector<WcwLerpDiag> wcwLerpDiag;
         std::vector<interop::RDPTile> rdpTiles;
         std::vector<interop::RDPTile> lerpRdpTiles;
         std::vector<interop::GPUTile> gpuTiles;
