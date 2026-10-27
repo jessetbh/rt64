@@ -9,6 +9,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include <array>
 
@@ -807,4 +808,149 @@ namespace RT64::WcwLogic {
     // draws after the targets are recreated) is probably the same case; not verified yet. overrideMs: WCW_REGROW_SETTLE_MS (negative = unset, 0 = off). Small regrows
     // (N64-sized targets, low resolutions) never wait.
     uint32_t regrowSettleMs(uint64_t regrownPixels, int32_t overrideMs);
+
+    // In-game Datadog metrics (aki-roadmap#125)
+
+    // WCW_DD_METRICS=1 sends aggregated performance numbers to the local Datadog Agent (DogStatsD, udp
+    // 127.0.0.1:8125) every DdWindowSeconds while the game runs. Off by default. The aggregation and the DogStatsD
+    // lines are here; common/rt64_wcw_dd is the sink. Names follow AkiTools lib\ddmetrics.ps1 (aki.run.*) with the
+    // aki.game. prefix, so one dashboard can show test runs and play sessions side by side.
+    constexpr double DdWindowSeconds = 10.0;
+    // Each UDP packet stays under this, several lines per packet (as ddmetrics.ps1).
+    constexpr size_t DdMaxPacketBytes = 1400;
+    // A present interval above this many times the expected frame time is a hitch.
+    constexpr double DdHitchFactor = 2.0;
+
+    // Whether an environment value turns a switch on: set, not empty and not "0" (WCW_DD_METRICS, WCW_PERF_LOG).
+    bool envSwitchOn(const char *value);
+
+    // One window's numbers. Percentiles and the 1%-low rate need at least one present interval (hasIntervals); the
+    // GPU numbers need GPU timing rows (gpuRenderRows / gpuPresentRows).
+    struct DdFrameStats {
+        double seconds = 0.0;
+        uint32_t presents = 0;
+        uint32_t generated = 0;
+        uint32_t repeated = 0;
+        double presentsPerS = 0.0;
+        double realFps = 0.0;
+        double interpolatedPerS = 0.0;
+        double repeatedPerMin = 0.0;
+        bool hasIntervals = false;
+        double p50Ms = 0.0;
+        double p95Ms = 0.0;
+        double p99Ms = 0.0;
+        double maxMs = 0.0;
+        // 1000 / the mean of the slowest 1% of the intervals (at least one).
+        double low1PctFps = 0.0;
+        uint32_t hitches = 0;
+        double hitchesPerMin = 0.0;
+        uint32_t gpuRenderRows = 0;
+        double gpuRenderMs = 0.0;
+        double gpuRenderP95Ms = 0.0;
+        double rtBuildMs = 0.0;
+        double rtTraceMs = 0.0;
+        uint32_t gpuPresentRows = 0;
+        double gpuPresentMs = 0.0;
+    };
+
+    // Collects presents and GPU rows and summarizes them per window. Not thread-safe (the sink locks it).
+    class DdFrameWindow {
+    public:
+        // Starts a window at nowMs (steady clock ms) and forgets its samples. The last present time is kept, so the
+        // first interval of a window spans the boundary.
+        void start(double nowMs);
+        // A present at tMs. generated: an in-between frame; repeated: the real frame shown again.
+        void addPresent(double tMs, bool generated, bool repeated);
+        // GPU time of one rendered frame (whole frame; its RT build and trace parts) or of one present.
+        void addGpuRender(double gpuMs, double rtBuildMs, double rtTraceMs);
+        void addGpuPresent(double gpuMs);
+        // Summarizes the window up to nowMs and starts the next one there. fpsTarget: the expected present rate
+        // (ddFpsTarget). A hitch is an interval above DdHitchFactor times the larger of the target's frame time and
+        // the window's median interval, so a game that steadily draws below the target (30 fps on a 60 target) has
+        // no hitches, only its real stalls.
+        DdFrameStats take(double nowMs, uint32_t fpsTarget);
+    private:
+        double windowStartMs = -1.0;
+        double lastPresentMs = -1.0;
+        uint32_t presents = 0;
+        uint32_t generated = 0;
+        uint32_t repeated = 0;
+        std::vector<double> intervals;
+        std::vector<double> gpuRender;
+        std::vector<double> rtBuild;
+        std::vector<double> rtTrace;
+        std::vector<double> gpuPresent;
+    };
+
+    // Nearest-rank percentile (p in 0..1) of unsorted values; 0 for none.
+    double ddPercentile(std::vector<double> values, double p);
+
+    // The present rate to expect: the target rate when the framerate setting sets one (Display, Manual), else the
+    // game's VI rate (Original). 0 when neither is known.
+    uint32_t ddFpsTarget(uint32_t targetRate, uint32_t viOriginalRate);
+
+    // Process numbers (Windows; has = false elsewhere), and VRAM from DXGI QueryVideoMemoryInfo (hasVram).
+    struct DdProcessSample {
+        bool has = false;
+        double privateMb = 0.0;
+        double workingSetMb = 0.0;
+        uint32_t handles = 0;
+        bool hasVram = false;
+        double vramMb = 0.0;
+        double vramBudgetMb = 0.0;
+    };
+
+    // The gauges for one window, by full name (aki.game.*), only those with data.
+    std::vector<std::pair<std::string, double>> ddWindowMetrics(const DdFrameStats &stats, const DdProcessSample &process);
+
+    // The settings and scene the numbers belong to, turned into tags. Gauges carry these tags, so they must stay low
+    // cardinality: no per-session ids.
+    struct DdContext {
+        std::string game;
+        uint32_t fpsTarget = 0;
+        // UserConfiguration::RefreshRate: original / display / manual.
+        std::string framerate;
+        bool rt = false;
+        uint32_t rtQuality = 0;
+        std::string resolution;
+        std::string aspect;
+        std::string msaa;
+        int downsample = 1;
+        bool hdr = false;
+        // The CRT preset, empty when the filter is off.
+        std::string crt;
+        bool beam = false;
+        // The ray tracer's detected venue (rt only), empty when unknown.
+        std::string venue;
+        // WCW_DD_TAGS, already sanitized (ddParseTags).
+        std::vector<std::string> extraTags;
+        bool operator==(const DdContext &o) const;
+        bool operator!=(const DdContext &o) const { return !(*this == o); }
+    };
+
+    const char *rtQualityName(uint32_t quality);
+    std::vector<std::string> ddContextTags(const DdContext &context);
+    // "rt:off -> rt:on, fps_target:60 -> fps_target:120": the tags that changed, by key; empty when none did.
+    std::string ddTagChanges(const std::vector<std::string> &before, const std::vector<std::string> &after);
+
+    // The aki-run game key from the executable's name: "NoMercyRecompiled.exe" -> "nomercy", "WCWRecompiled" -> "wt"
+    // (AkiTools games.psd1). Unknown names are lowercased without "recompiled" and the extension.
+    std::string ddGameFromExe(const std::string &exeName);
+    // "conversion:btbw,owner:Fire Ant" -> sanitized tags; entries without a ':' or with an empty value are dropped.
+    std::vector<std::string> ddParseTags(const char *list);
+
+    // ddmetrics.ps1 ConvertTo-AkiMetricName: lowercase ASCII letters, digits, '_' and '.', starting with a letter.
+    std::string ddMetricName(const std::string &name);
+    // ddmetrics.ps1 ConvertTo-AkiTag: "key:value", lowercase, other characters as '_', at most 200 characters; empty
+    // when the value is empty.
+    std::string ddTag(const std::string &key, const std::string &value);
+    // '0.######' (ddmetrics.ps1 Format-AkiValue): up to 6 decimals, no trailing zeros, no exponent.
+    std::string ddFormatValue(double value);
+    // "name:value|g|#tag,tag"; empty for a value that isn't finite.
+    std::string ddGaugeLine(const std::string &name, double value, const std::vector<std::string> &tags);
+    // "_e{title,text}:title|text|k:key|s:aki-game|t:alert|#tags" (lengths in bytes; text newlines as \n).
+    std::string ddEventLine(const std::string &title, const std::string &text, const std::vector<std::string> &tags,
+        const std::string &alertType, const std::string &aggregationKey);
+    // Joins lines with '\n' into packets of at most maxBytes; a longer line goes alone.
+    std::vector<std::string> ddPackets(const std::vector<std::string> &lines, size_t maxBytes = DdMaxPacketBytes);
 };

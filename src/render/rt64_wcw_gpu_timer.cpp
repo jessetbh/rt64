@@ -8,7 +8,7 @@ namespace RT64 {
     static thread_local WcwGpuTimer *activeTimer = nullptr;
 
     void WcwGpuTimer::setup(RenderDevice *device) {
-        if (!WcwPerf::enabled() || (device == nullptr) || !device->getCapabilities().queryPools) {
+        if (!WcwPerf::timingEnabled() || (device == nullptr) || !device->getCapabilities().queryPools) {
             return;
         }
 
@@ -83,7 +83,7 @@ namespace RT64 {
     }
 
     WcwGpuScope::WcwGpuScope(const RenderCommandList *commandList, WcwPerf::GpuPass pass) {
-        timer = WcwPerf::enabled() ? WcwGpuTimer::active(commandList) : nullptr;
+        timer = WcwPerf::timingEnabled() ? WcwGpuTimer::active(commandList) : nullptr;
         if (timer != nullptr) {
             timer->push(pass);
         }
