@@ -9,6 +9,7 @@
 
 #include "common/rt64_thread.h"
 #include "common/rt64_wcw_logic.h"
+#include "common/rt64_wcw_dd.h"
 #include "common/rt64_wcw_perf.h"
 #include "render/rt64_wcw_device_lost.h"
 
@@ -345,8 +346,9 @@ namespace RT64 {
         const bool usingMSAA = (targetManager.multisampling.sampleCount > 1);
 
         rendererCPUProfiler.start();
-        // [wcw perf] WCW_PERF_LOG: CPU time recording this frame, then waiting for its GPU work.
-        const bool wcwPerf = WcwPerf::enabled();
+        // [wcw perf] WCW_PERF_LOG: CPU time recording this frame, then waiting for its GPU work. The GPU rows also feed
+        // the in-game Datadog metrics (WCW_DD_METRICS).
+        const bool wcwPerf = WcwPerf::timingEnabled();
         // A frame of several workloads records one command list each; each row starts where the last one ended.
         WcwPerf::Clock::time_point wcwRecordStart = wcwPerf ? WcwPerf::Clock::now() : WcwPerf::Clock::time_point();
 
@@ -992,6 +994,7 @@ namespace RT64 {
                     // game frame is the generated one, drawn into the game target; the real frame goes to an override.
                     wcwRow.generated = WcwLogic::generatedFrame(curFrameWeight);
                     WcwPerf::gpuRow(wcwRow);
+                    WcwDd::noteGpuRow(wcwRow);
                 }
 
                 wcwRecordStart = wcwDone;

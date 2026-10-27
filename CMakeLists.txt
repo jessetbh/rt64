@@ -332,6 +332,7 @@ set (SOURCES
     "${PROJECT_SOURCE_DIR}/src/common/rt64_user_configuration.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_user_paths.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_logic.cpp"
+    "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_dd.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_perf.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_texdump.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_venues.cpp"
@@ -474,6 +475,7 @@ if (RT64_WCW_TESTS AND NOT CMAKE_CROSSCOMPILING)
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_perf_tests.cpp"
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_texdump_tests.cpp"
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_packfs_tests.cpp"
+        "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_dd_tests.cpp"
         "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_logic.cpp"
         "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_perf.cpp"
         "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_texdump.cpp"
@@ -521,6 +523,7 @@ if (WIN32)
         D3D12
         DXGI
         Shcore.lib
+        Ws2_32
         ${PROJECT_SOURCE_DIR}/src/contrib/dxc/lib/x64/dxcompiler.lib)
 
     target_include_directories(rt64 PRIVATE ${zstd_SOURCE_DIR}/lib)

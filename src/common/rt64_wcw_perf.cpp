@@ -4,6 +4,8 @@
 
 #include "rt64_wcw_perf.h"
 
+#include "rt64_wcw_logic.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -283,6 +285,11 @@ namespace RT64::WcwPerf {
             const char *e = getenv("WCW_PERF_LOG");
             return (e != nullptr) && (e[0] != '\0') && (strcmp(e, "0") != 0);
         }();
+        return on;
+    }
+
+    bool timingEnabled() {
+        static const bool on = enabled() || WcwLogic::envSwitchOn(getenv("WCW_DD_METRICS"));
         return on;
     }
 

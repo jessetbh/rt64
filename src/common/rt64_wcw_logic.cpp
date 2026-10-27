@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <vector>
 
 namespace RT64::WcwLogic {
@@ -904,5 +906,600 @@ namespace RT64::WcwLogic {
         }
 
         return (overrideMs >= 0) ? uint32_t(overrideMs) : RegrowSettleDefaultMs;
+    }
+
+    // In-game Datadog metrics (aki-roadmap#125)
+
+    bool envSwitchOn(const char *value) {
+        return (value != nullptr) && (value[0] != '\0') && (strcmp(value, "0") != 0);
+    }
+
+    void DdFrameWindow::start(double nowMs) {
+        windowStartMs = nowMs;
+        presents = generated = repeated = 0;
+        intervals.clear();
+        gpuRender.clear();
+        rtBuild.clear();
+        rtTrace.clear();
+        gpuPresent.clear();
+        frameGpu.clear();
+        frameRt.clear();
+    }
+
+    void DdFrameWindow::addPresent(double tMs, bool generatedFrame, bool repeatedFrame) {
+        if ((lastPresentMs >= 0.0) && (tMs >= lastPresentMs)) {
+            intervals.push_back(tMs - lastPresentMs);
+        }
+
+        lastPresentMs = tMs;
+        presents++;
+        generated += generatedFrame ? 1 : 0;
+        repeated += repeatedFrame ? 1 : 0;
+    }
+
+    void DdFrameWindow::addGpuRender(uint64_t presentId, double gpuMs, double rtBuildMs, double rtTraceMs) {
+        if (frameOpen && (presentId != framePresentId)) {
+            frameGpu.push_back(frameGpuSum);
+            frameRt.push_back(frameRtSum);
+            frameGpuSum = frameRtSum = 0.0;
+        }
+
+        frameOpen = true;
+        framePresentId = presentId;
+        frameGpuSum += gpuMs;
+        frameRtSum += rtBuildMs + rtTraceMs;
+        gpuRender.push_back(gpuMs);
+        rtBuild.push_back(rtBuildMs);
+        rtTrace.push_back(rtTraceMs);
+    }
+
+    void DdFrameWindow::addGpuPresent(double gpuMs) {
+        gpuPresent.push_back(gpuMs);
+    }
+
+    DdFrameStats DdFrameWindow::take(double nowMs, uint32_t fpsTarget) {
+        DdFrameStats s;
+        s.seconds = (windowStartMs >= 0.0) ? std::max(0.0, (nowMs - windowStartMs) / 1000.0) : 0.0;
+        s.presents = presents;
+        s.generated = generated;
+        s.repeated = repeated;
+        if (s.seconds > 0.0) {
+            s.presentsPerS = presents / s.seconds;
+            s.interpolatedPerS = generated / s.seconds;
+            s.realFps = (presents - generated) / s.seconds;
+            s.repeatedPerMin = repeated * 60.0 / s.seconds;
+        }
+
+        if (!intervals.empty()) {
+            std::vector<double> sorted = intervals;
+            std::sort(sorted.begin(), sorted.end());
+            s.hasIntervals = true;
+            s.p50Ms = ddPercentile(sorted, 0.50);
+            s.p95Ms = ddPercentile(sorted, 0.95);
+            s.p99Ms = ddPercentile(sorted, 0.99);
+            s.maxMs = sorted.back();
+            const size_t slowest = std::max<size_t>(1, sorted.size() / 100);
+            double sum = 0.0;
+            for (size_t i = sorted.size() - slowest; i < sorted.size(); i++) {
+                sum += sorted[i];
+            }
+
+            const double mean = sum / double(slowest);
+            s.low1PctFps = (mean > 0.0) ? (1000.0 / mean) : 0.0;
+            const double targetMs = (fpsTarget > 0) ? (1000.0 / fpsTarget) : 0.0;
+            const double threshold = DdHitchFactor * std::max(targetMs, s.p50Ms);
+            for (double v : sorted) {
+                s.hitches += (v > threshold) ? 1 : 0;
+            }
+
+            s.hitchesPerMin = (s.seconds > 0.0) ? (s.hitches * 60.0 / s.seconds) : 0.0;
+        }
+
+        s.gpuRenderRows = uint32_t(gpuRender.size());
+        if (!gpuRender.empty()) {
+            s.gpuRenderMs = ddPercentile(gpuRender, 0.50);
+            s.gpuRenderP95Ms = ddPercentile(gpuRender, 0.95);
+            s.rtBuildMs = ddPercentile(rtBuild, 0.50);
+            s.rtTraceMs = ddPercentile(rtTrace, 0.50);
+        }
+
+        s.gameFrames = uint32_t(frameGpu.size());
+        if (!frameGpu.empty()) {
+            s.gpuGameFrameMs = ddPercentile(frameGpu, 0.50);
+            s.gpuGameFrameP95Ms = ddPercentile(frameGpu, 0.95);
+            s.rtGameFrameMs = ddPercentile(frameRt, 0.50);
+        }
+
+        s.gpuPresentRows = uint32_t(gpuPresent.size());
+        if (!gpuPresent.empty()) {
+            s.gpuPresentMs = ddPercentile(gpuPresent, 0.50);
+        }
+
+        start(nowMs);
+        return s;
+    }
+
+    double ddPercentile(std::vector<double> values, double p) {
+        if (values.empty()) {
+            return 0.0;
+        }
+
+        std::sort(values.begin(), values.end());
+        const double rank = std::ceil(std::clamp(p, 0.0, 1.0) * double(values.size()));
+        const size_t index = (rank < 1.0) ? 0 : std::min(values.size() - 1, size_t(rank) - 1);
+        return values[index];
+    }
+
+    uint32_t ddFpsTarget(uint32_t targetRate, uint32_t viOriginalRate) {
+        return (targetRate > 0) ? targetRate : viOriginalRate;
+    }
+
+    std::vector<std::pair<std::string, double>> ddWindowMetrics(const DdFrameStats &s, const DdProcessSample &process) {
+        std::vector<std::pair<std::string, double>> m;
+        auto put = [&m](const char *name, double value) { m.emplace_back(std::string("aki.game.") + name, value); };
+        put("active", 1.0);
+        if (s.seconds > 0.0) {
+            put("presents_per_s", s.presentsPerS);
+            put("real_fps", s.realFps);
+            put("interpolated_per_s", s.interpolatedPerS);
+            put("pacing.repeated_per_min", s.repeatedPerMin);
+        }
+
+        if (s.hasIntervals) {
+            put("pacing.p50_ms", s.p50Ms);
+            put("pacing.p95_ms", s.p95Ms);
+            put("pacing.p99_ms", s.p99Ms);
+            put("pacing.max_ms", s.maxMs);
+            put("pacing.low_1pct_fps", s.low1PctFps);
+            put("pacing.hitches_per_min", s.hitchesPerMin);
+        }
+
+        if (s.gpuRenderRows > 0) {
+            put("perf.gpu_render_ms", s.gpuRenderMs);
+            put("perf.gpu_render_p95_ms", s.gpuRenderP95Ms);
+            // Only with ray tracing running: 0 ms with it off would read as free RT on a dashboard.
+            if ((s.rtBuildMs > 0.0) || (s.rtTraceMs > 0.0) || (s.rtGameFrameMs > 0.0)) {
+                put("perf.rt_build_ms", s.rtBuildMs);
+                put("perf.rt_trace_ms", s.rtTraceMs);
+            }
+        }
+
+        if (s.gameFrames > 0) {
+            put("perf.gpu_game_frame_ms", s.gpuGameFrameMs);
+            put("perf.gpu_game_frame_p95_ms", s.gpuGameFrameP95Ms);
+            if (s.rtGameFrameMs > 0.0) {
+                put("perf.rt_game_frame_ms", s.rtGameFrameMs);
+            }
+        }
+
+        if (s.gpuPresentRows > 0) {
+            put("perf.gpu_present_ms", s.gpuPresentMs);
+        }
+
+        if (process.has) {
+            put("memory.private_mb", process.privateMb);
+            put("memory.working_set_mb", process.workingSetMb);
+            put("process.handles", double(process.handles));
+        }
+
+        if (process.hasVram) {
+            put("memory.vram_mb", process.vramMb);
+            put("memory.vram_budget_mb", process.vramBudgetMb);
+        }
+
+        return m;
+    }
+
+    bool ddWindowDue(double nowMs, double windowStartMs) {
+        return (nowMs - windowStartMs) >= (DdWindowSeconds * 1000.0);
+    }
+
+    DdVramAdapter ddPickVram(const std::vector<DdVramAdapter> &adapters) {
+        DdVramAdapter out;
+        bool picked = false;
+        uint64_t mostUsage = 0;
+        for (const DdVramAdapter &a : adapters) {
+            out.usage += a.usage;
+            if (!picked || (a.usage > mostUsage)) {
+                picked = true;
+                mostUsage = a.usage;
+                out.budget = a.budget;
+            }
+        }
+
+        return out;
+    }
+
+    bool DdContext::operator==(const DdContext &o) const {
+        return (game == o.game) && (fpsTarget == o.fpsTarget) && (framerate == o.framerate) && (rt == o.rt) && (rtQuality == o.rtQuality) &&
+            (resolution == o.resolution) && (aspect == o.aspect) && (msaa == o.msaa) && (downsample == o.downsample) && (hdr == o.hdr) &&
+            (crt == o.crt) && (beam == o.beam) && (venue == o.venue) && (extraTags == o.extraTags);
+    }
+
+    const char *rtQualityName(uint32_t quality) {
+        switch (RtQuality(quality)) {
+        case RtQuality::Performance:
+            return "performance";
+        case RtQuality::Balanced:
+            return "balanced";
+        case RtQuality::Quality:
+            return "quality";
+        case RtQuality::Ultra:
+            return "ultra";
+        default:
+            return "unknown";
+        }
+    }
+
+    std::string ddCrtPresetName(const std::string &preset) {
+        const size_t slash = preset.find_last_of("/\\");
+        std::string name = (slash == std::string::npos) ? preset : preset.substr(slash + 1);
+        const size_t dot = name.rfind('.');
+        if ((dot != std::string::npos) && (dot > 0)) {
+            std::string ext = name.substr(dot);
+            for (char &ch : ext) {
+                ch = ((ch >= 'A') && (ch <= 'Z')) ? char(ch - 'A' + 'a') : ch;
+            }
+
+            if (ext == ".slangp") {
+                name.resize(dot);
+            }
+        }
+
+        return name;
+    }
+
+    std::vector<std::string> ddContextTags(const DdContext &c) {
+        static const char *builtInKeys[] = { "game", "fps_target", "framerate", "rt", "rt_quality", "resolution", "aspect", "msaa", "downsample",
+            "hdr", "crt", "beam", "rt_venue" };
+        std::vector<std::string> tags;
+        auto add = [&tags](const char *key, const std::string &value) {
+            std::string t = ddTag(key, value);
+            if (!t.empty() && (std::find(tags.begin(), tags.end(), t) == tags.end())) {
+                tags.push_back(std::move(t));
+            }
+        };
+
+        add("game", c.game);
+        add("fps_target", (c.fpsTarget > 0) ? std::to_string(c.fpsTarget) : std::string());
+        add("framerate", c.framerate);
+        add("rt", c.rt ? "on" : "off");
+        if (c.rt) {
+            add("rt_quality", rtQualityName(c.rtQuality));
+        }
+
+        add("resolution", c.resolution);
+        add("aspect", c.aspect);
+        add("msaa", c.msaa);
+        add("downsample", std::to_string(c.downsample));
+        add("hdr", c.hdr ? "on" : "off");
+        add("crt", c.crt.empty() ? std::string("off") : ddCrtPresetName(c.crt));
+        add("beam", c.beam ? "on" : "off");
+        add("rt_venue", c.venue);
+        for (const std::string &t : c.extraTags) {
+            const std::string key = t.substr(0, t.find(':'));
+            bool builtIn = false;
+            for (const char *k : builtInKeys) {
+                builtIn = builtIn || (key == k);
+            }
+
+            if (!builtIn && (std::find(tags.begin(), tags.end(), t) == tags.end())) {
+                tags.push_back(t);
+            }
+        }
+
+        return tags;
+    }
+
+    std::string ddTagChanges(const std::vector<std::string> &before, const std::vector<std::string> &after) {
+        auto keyOf = [](const std::string &t) { return t.substr(0, t.find(':')); };
+        auto find = [&keyOf](const std::vector<std::string> &tags, const std::string &key) -> std::string {
+            for (const std::string &t : tags) {
+                if (keyOf(t) == key) {
+                    return t;
+                }
+            }
+
+            return key + ":(none)";
+        };
+
+        std::vector<std::string> keys;
+        for (const std::vector<std::string> *list : { &after, &before }) {
+            for (const std::string &t : *list) {
+                const std::string k = keyOf(t);
+                if (std::find(keys.begin(), keys.end(), k) == keys.end()) {
+                    keys.push_back(k);
+                }
+            }
+        }
+
+        std::string out;
+        for (const std::string &k : keys) {
+            const std::string b = find(before, k);
+            const std::string a = find(after, k);
+            if (a != b) {
+                out += (out.empty() ? "" : ", ") + b + " -> " + a;
+            }
+        }
+
+        return out;
+    }
+
+    void DdSession::setIdentity(const std::string &gameKey, const std::vector<std::string> &extra) {
+        game = gameKey;
+        extraTags = extra;
+    }
+
+    DdSession::Decision DdSession::noteContext(const DdContext &context, double nowMs) {
+        Decision d;
+        DdContext c = context;
+        c.game = game;
+        c.extraTags = extraTags;
+        c.venue = c.rt ? venue : std::string();
+        if (haveContext && (c == current)) {
+            return d;
+        }
+
+        const std::vector<std::string> before = currentTags;
+        current = c;
+        currentTags = ddContextTags(c);
+        if (!haveContext) {
+            haveContext = true;
+            startMs = nowMs;
+            d.event = Event::SessionStart;
+        }
+        else if ((nowMs - startMs) >= (DdSettleSeconds * 1000.0)) {
+            d.event = Event::SettingsChanged;
+            d.changes = ddTagChanges(before, currentTags);
+        }
+
+        return d;
+    }
+
+    DdSession::Decision DdSession::noteVenue(const std::string &newVenue) {
+        Decision d;
+        if (newVenue == venue) {
+            return d;
+        }
+
+        venue = newVenue;
+        if (haveContext && current.rt) {
+            const std::vector<std::string> before = currentTags;
+            current.venue = venue;
+            currentTags = ddContextTags(current);
+            d.event = Event::VenueChanged;
+            d.changes = ddTagChanges(before, currentTags);
+        }
+
+        return d;
+    }
+
+    std::vector<std::string> DdSession::tags() const {
+        if (haveContext) {
+            return currentTags;
+        }
+
+        const std::string t = ddTag("game", game);
+        return t.empty() ? std::vector<std::string>() : std::vector<std::string>{ t };
+    }
+
+    static std::string ddLower(std::string s) {
+        for (char &c : s) {
+            c = ((c >= 'A') && (c <= 'Z')) ? char(c - 'A' + 'a') : c;
+        }
+
+        return s;
+    }
+
+    static bool ddEndsWith(const std::string &s, const std::string &suffix) {
+        return (s.size() >= suffix.size()) && (s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0);
+    }
+
+    std::string ddGameFromExe(const std::string &exeName) {
+        const size_t slash = exeName.find_last_of("/\\");
+        std::string name = ddLower((slash == std::string::npos) ? exeName : exeName.substr(slash + 1));
+        if (ddEndsWith(name, ".exe")) {
+            name.resize(name.size() - 4);
+        }
+
+        if (ddEndsWith(name, "recompiled")) {
+            name.resize(name.size() - 10);
+        }
+
+        return (name == "wcw") ? std::string("wt") : name;
+    }
+
+    std::vector<std::string> ddParseTags(const char *list) {
+        std::vector<std::string> tags;
+        if (list == nullptr) {
+            return tags;
+        }
+
+        std::string all(list);
+        size_t pos = 0;
+        while (pos <= all.size()) {
+            size_t end = all.find(',', pos);
+            if (end == std::string::npos) {
+                end = all.size();
+            }
+
+            const std::string entry = all.substr(pos, end - pos);
+            const size_t colon = entry.find(':');
+            if (colon != std::string::npos) {
+                std::string t = ddTag(entry.substr(0, colon), entry.substr(colon + 1));
+                if (!t.empty() && (std::find(tags.begin(), tags.end(), t) == tags.end())) {
+                    tags.push_back(std::move(t));
+                }
+            }
+
+            pos = end + 1;
+        }
+
+        return tags;
+    }
+
+    // Lowercases, replaces characters outside allowed with '_' and collapses runs of '_'.
+    static std::string ddSanitize(const std::string &s, const char *allowedPunct) {
+        std::string out;
+        for (char c : ddLower(s)) {
+            const bool ok = ((c >= 'a') && (c <= 'z')) || ((c >= '0') && (c <= '9')) || (c == '_') || ((c != '\0') && (strchr(allowedPunct, c) != nullptr));
+            const char r = ok ? c : '_';
+            if ((r == '_') && !out.empty() && (out.back() == '_')) {
+                continue;
+            }
+
+            out.push_back(r);
+        }
+
+        return out;
+    }
+
+    static std::string ddTrim(const std::string &s, const char *chars) {
+        const size_t a = s.find_first_not_of(chars);
+        if (a == std::string::npos) {
+            return std::string();
+        }
+
+        return s.substr(a, s.find_last_not_of(chars) - a + 1);
+    }
+
+    static bool ddStartsWithLetter(const std::string &s) {
+        return !s.empty() && (s[0] >= 'a') && (s[0] <= 'z');
+    }
+
+    std::string ddMetricName(const std::string &name) {
+        std::string n = ddSanitize(name, ".");
+        return ddStartsWithLetter(n) ? n : ("aki_" + n);
+    }
+
+    std::string ddTag(const std::string &key, const std::string &value) {
+        std::string v = ddTrim(value, " \t\r\n");
+        if (v.empty()) {
+            return std::string();
+        }
+
+        std::string k = ddTrim(ddSanitize(key, "-./"), "_");
+        if (!ddStartsWithLetter(k)) {
+            k = "t_" + k;
+        }
+
+        v = ddTrim(ddSanitize(v, "-:./"), "_");
+        if (v.empty()) {
+            return std::string();
+        }
+
+        std::string t = k + ":" + v;
+        if (t.size() > 200) {
+            t.resize(200);
+        }
+
+        return t;
+    }
+
+    std::string ddFormatValue(double value) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%.6f", value);
+        std::string s(buf);
+        if (s.find('.') != std::string::npos) {
+            while (s.back() == '0') {
+                s.pop_back();
+            }
+
+            if (s.back() == '.') {
+                s.pop_back();
+            }
+        }
+
+        return (s == "-0") ? std::string("0") : s;
+    }
+
+    std::string ddGaugeLine(const std::string &name, double value, const std::vector<std::string> &tags) {
+        if (!std::isfinite(value)) {
+            return std::string();
+        }
+
+        std::string line = ddMetricName(name) + ":" + ddFormatValue(value) + "|g";
+        std::string joined;
+        for (const std::string &t : tags) {
+            if (!t.empty()) {
+                joined += (joined.empty() ? "" : ",") + t;
+            }
+        }
+
+        if (!joined.empty()) {
+            line += "|#" + joined;
+        }
+
+        return line;
+    }
+
+    std::string ddEventLine(const std::string &title, const std::string &text, const std::vector<std::string> &tags,
+        const std::string &alertType, const std::string &aggregationKey)
+    {
+        std::string ti, tx;
+        for (char c : title) {
+            if (c != '\r') {
+                ti.push_back((c == '\n') ? ' ' : c);
+            }
+        }
+
+        for (char c : text) {
+            if (c == '\n') {
+                tx += "\\n";
+            }
+            else if (c != '\r') {
+                tx.push_back(c);
+            }
+        }
+
+        std::string line = "_e{" + std::to_string(ti.size()) + "," + std::to_string(tx.size()) + "}:" + ti + "|" + tx;
+        if (!aggregationKey.empty()) {
+            line += "|k:" + aggregationKey;
+        }
+
+        line += "|s:aki-game";
+        if (!alertType.empty()) {
+            line += "|t:" + alertType;
+        }
+
+        std::string joined;
+        for (const std::string &t : tags) {
+            if (!t.empty()) {
+                joined += (joined.empty() ? "" : ",") + t;
+            }
+        }
+
+        if (!joined.empty()) {
+            line += "|#" + joined;
+        }
+
+        return line;
+    }
+
+    std::vector<std::string> ddPackets(const std::vector<std::string> &lines, size_t maxBytes) {
+        std::vector<std::string> packets;
+        std::string cur;
+        for (const std::string &l : lines) {
+            if (l.empty()) {
+                continue;
+            }
+
+            if (cur.empty()) {
+                cur = l;
+            }
+            else if (cur.size() + 1 + l.size() <= maxBytes) {
+                cur += "\n" + l;
+            }
+            else {
+                packets.push_back(cur);
+                cur = l;
+            }
+        }
+
+        if (!cur.empty()) {
+            packets.push_back(cur);
+        }
+
+        return packets;
     }
 };

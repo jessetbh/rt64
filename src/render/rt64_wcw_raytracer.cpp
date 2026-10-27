@@ -4,6 +4,7 @@
 
 #include "rt64_wcw_raytracer.h"
 
+#include "common/rt64_wcw_dd.h"
 #include "common/rt64_wcw_logic.h"
 #include "rt64_wcw_gpu_timer.h"
 
@@ -315,6 +316,7 @@ namespace RT64 {
         if (change != WcwLogic::VenueSelector::Change::None) {
             // AkiTools' aki-run reads the venue from the last "venue:" line: keep it the bare name.
             fprintf(stderr, "[wcw rt] venue: %s\n", venueName(activeVenue));
+            WcwDd::noteVenue(venueName(activeVenue));
             if (venueTrace) {
                 fprintf(stderr, "[wcw rt] venue switch: %s (%s, present %d, %.3f s)\n", venueName(activeVenue),
                     (change == WcwLogic::VenueSelector::Change::Cut) ? "cut" : "window", int(wcwRtPresentCounter), presentSeconds);
