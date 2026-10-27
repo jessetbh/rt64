@@ -803,8 +803,8 @@ namespace RT64::WcwLogic {
     // 2x at 1600x900 / 150% DPI regrows No Mercy's targets from 3840x1920 to 7670x2880 a few seconds in; the first
     // workload into the new targets hung the GPU every time (NVIDIA Xid 13 GPC SAVE_RESTORE_ADDR_OOB, then
     // DEVICE_HUNG), even with every rt64 queue serialised and the allocations made while the GPU was idle. Waiting
-    // 50 ms or more after the regrow avoided it (10 ms didn't always); the settings-apply hang (aki-roadmap#4) is the
-    // same first-use-after-recreate case. overrideMs: WCW_REGROW_SETTLE_MS (negative = unset, 0 = off). Small regrows
+    // 50 ms or more after the regrow avoided it (10 ms didn't always). The settings-apply hang (aki-roadmap#4, first
+    // draws after the targets are recreated) is probably the same case; not verified yet. overrideMs: WCW_REGROW_SETTLE_MS (negative = unset, 0 = off). Small regrows
     // (N64-sized targets, low resolutions) never wait.
     uint32_t regrowSettleMs(uint64_t regrownPixels, int32_t overrideMs);
 };

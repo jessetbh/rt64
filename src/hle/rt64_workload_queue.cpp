@@ -17,6 +17,12 @@
 #define ENABLE_HIGH_RESOLUTION_RENDERER 1
 
 namespace RT64 {
+    // [wcw fix] WCW_REGROW_SETTLE_MS (aki-roadmap#4): negative when unset.
+    static int32_t wcwRegrowSettleOverride() {
+        static const int32_t value = []() { const char *v = getenv("WCW_REGROW_SETTLE_MS"); return (v != nullptr) ? int32_t(atoi(v)) : -1; }();
+        return value;
+    }
+
     // WorkloadQueue
 
     WorkloadQueue::WorkloadQueue() {
@@ -609,6 +615,7 @@ namespace RT64 {
                         if (dummyDepthTarget == nullptr) {
                             dummyDepthTarget = std::make_unique<RenderTarget>(0, Framebuffer::Type::Depth, targetManager.multisampling, targetManager.usesHDR);
                             dummyDepthTarget->setupDepth(ext.workloadGraphicsWorker, rtWidth, rtHeight);
+                            resizedTargets.emplace(dummyDepthTarget.get());
                         }
 
                         if ((dummyDepthTarget != nullptr) && dummyDepthTarget->resize(ext.workloadGraphicsWorker, rtWidth, rtHeight)) {
@@ -649,8 +656,7 @@ namespace RT64 {
             }
 
             // [wcw fix] Let big new render targets settle before the first workload records into them (aki-roadmap#4).
-            static const int32_t wcwRegrowSettleOverride = []() { const char *v = getenv("WCW_REGROW_SETTLE_MS"); return (v != nullptr) ? int32_t(atoi(v)) : -1; }();
-            const uint32_t wcwSettleMs = WcwLogic::regrowSettleMs(wcwRegrownPixels, wcwRegrowSettleOverride);
+            const uint32_t wcwSettleMs = WcwLogic::regrowSettleMs(wcwRegrownPixels, wcwRegrowSettleOverride());
             if (wcwSettleMs > 0) {
                 fprintf(stderr, "[wcw] render targets regrown (%.1f Mpx); waiting %u ms before using them\n", double(wcwRegrownPixels) / 1e6, wcwSettleMs);
                 std::this_thread::sleep_for(std::chrono::milliseconds(wcwSettleMs));
@@ -802,7 +808,14 @@ namespace RT64 {
                         continue;
                     }
 
-                    primeTarget->resize(ext.workloadGraphicsWorker, liveTarget.width, liveTarget.height);
+                    if (primeTarget->resize(ext.workloadGraphicsWorker, liveTarget.width, liveTarget.height)) {
+                        const uint32_t wcwPrimeSettleMs = WcwLogic::regrowSettleMs(uint64_t(primeTarget->width) * primeTarget->height, wcwRegrowSettleOverride());
+                        if (wcwPrimeSettleMs > 0) {
+                            fprintf(stderr, "[wcw] generated-frame target regrown; waiting %u ms before using it\n", wcwPrimeSettleMs);
+                            std::this_thread::sleep_for(std::chrono::milliseconds(wcwPrimeSettleMs));
+                        }
+                    }
+
                     RenderTextureBarrier primeBarriers[] = {
                         RenderTextureBarrier(liveTarget.texture.get(), RenderTextureLayout::COPY_SOURCE),
                         RenderTextureBarrier(primeTarget->texture.get(), RenderTextureLayout::COPY_DEST)
