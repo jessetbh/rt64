@@ -352,6 +352,13 @@ namespace RT64::WcwLogic {
     // capOverride (WCW_HFR_CAP) replaces it when non-zero.
     uint32_t framesPerGameFrame(uint32_t targetRate, uint32_t viOriginalRate, uint32_t capOverride);
 
+    // Generated-frame targets each target set needs for this game frame. Interpolating, it is the full count for
+    // framesPerGameFrame (one per displayed frame after the first; one per displayed frame with MSAA, which resolves
+    // the real frame into a target too), not just for this frame's displayFrames: a set created on a short frame
+    // (a skip, a catch-up) and grown later made the count, and so GPU memory, depend on timing (aki-roadmap#97).
+    // Not interpolating, displayFrames - 1.
+    uint32_t generatedTargetsNeeded(bool generateInterpolatedFrames, bool usingMSAA, uint32_t displayFrames, uint32_t framesPerGameFrame);
+
     struct FrameWeights {
         float prev = 0.0f;
         float cur = 1.0f;

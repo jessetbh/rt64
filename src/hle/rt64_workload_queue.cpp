@@ -1551,6 +1551,7 @@ namespace RT64 {
 
                 // Estimate amount of frames to render based on how many display frames it'd take to reach the next logical frame.
                 uint32_t displayFrames = 1;
+                uint32_t wcwFramesPerGameFrame = 1;
                 if (generateInterpolatedFrames) {
                     deltaTimeMs = 1.0f / float(workloadConfig.targetRate);
 
@@ -1558,7 +1559,7 @@ namespace RT64 {
                     // game at 60Hz, 4 at 120Hz): the tick accounting can otherwise creep ahead and leave the present
                     // behind. WCW_HFR_CAP=<n> overrides N for debugging.
                     static const uint32_t wcwHfrCapEnv = getenv("WCW_HFR_CAP") ? uint32_t(std::max(atoi(getenv("WCW_HFR_CAP")), 2)) : 0;
-                    const uint32_t wcwFramesPerGameFrame = WcwLogic::framesPerGameFrame(workloadConfig.targetRate, workload.viOriginalRate, wcwHfrCapEnv);
+                    wcwFramesPerGameFrame = WcwLogic::framesPerGameFrame(workloadConfig.targetRate, workload.viOriginalRate, wcwHfrCapEnv);
                     displayFrames = wcwTicks.beginGameFrame(workloadConfig.targetRate, workload.viOriginalRate, wcwHfrCapEnv);
 
                     // At rates that aren't a multiple of the game rate (e.g. 144 Hz) game frames alternate between
@@ -1656,7 +1657,8 @@ namespace RT64 {
                     : ((wcwPairSlot == 1) ? ext.sharedResources->wcwInterpolatedColorTargetsB : ext.sharedResources->wcwInterpolatedColorTargetsC);
                 const bool usingMSAA = (ext.sharedResources->renderTargetManager.multisampling.sampleCount > 1);
                 const bool usesHDR = ext.sharedResources->renderTargetManager.usesHDR;
-                uint32_t requiredFrames = (usingMSAA && generateInterpolatedFrames) ? displayFrames : (displayFrames - 1);
+                // [wcw fix] Sized for the full frames per game frame up front, not this frame's count (aki-roadmap#97).
+                uint32_t requiredFrames = WcwLogic::generatedTargetsNeeded(generateInterpolatedFrames, usingMSAA, displayFrames, wcwFramesPerGameFrame);
                 if ((requiredFrames > 0) && (interpolatedTargets.size() < requiredFrames)) {
                     uint32_t previousSize = uint32_t(interpolatedTargets.size());
                     interpolatedTargets.resize(requiredFrames);

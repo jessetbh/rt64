@@ -410,6 +410,15 @@ namespace RT64::WcwLogic {
         return std::max(2u, (targetRate + gameRate / 2) / gameRate);
     }
 
+    uint32_t generatedTargetsNeeded(bool generateInterpolatedFrames, bool usingMSAA, uint32_t displayFrames, uint32_t framesPerGameFrame) {
+        if (!generateInterpolatedFrames) {
+            return (displayFrames > 0) ? (displayFrames - 1) : 0;
+        }
+
+        const uint32_t frames = std::max(displayFrames, framesPerGameFrame);
+        return usingMSAA ? frames : (frames - 1);
+    }
+
     void InterpolationTicks::reset() {
         logical = 0;
         display = 0;

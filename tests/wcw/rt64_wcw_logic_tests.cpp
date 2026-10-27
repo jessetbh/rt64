@@ -1217,6 +1217,24 @@ TEST_CASE("interpolation: a game frame slower than 20 fps doesn't add generated-
     CHECK_EQ(framesPerGameFrame(60, 15, 5), 5u);
 }
 
+TEST_CASE("generated-frame target sets are sized for the full frames per game frame, not this frame's count (#97)") {
+    // 60 fps, 20 fps game: 3 frames per game frame, 2 generated targets per set, even when this game frame shows
+    // fewer (a skip or catch-up). Sized by displayFrames, a set first created on a 2-frame game frame held 1 target
+    // and grew later, so runs ended with 1/1/1 or 1/2/2 targets.
+    const uint32_t fpg = framesPerGameFrame(60, 20, 0);
+    CHECK_EQ(generatedTargetsNeeded(true, false, 3, fpg), 2u);
+    CHECK_EQ(generatedTargetsNeeded(true, false, 2, fpg), 2u);
+    CHECK_EQ(generatedTargetsNeeded(true, false, 1, fpg), 2u);
+    // MSAA resolves the real frame into a target too.
+    CHECK_EQ(generatedTargetsNeeded(true, true, 2, fpg), 3u);
+    // 120 fps: 6 frames per game frame at 20 fps.
+    CHECK_EQ(generatedTargetsNeeded(true, false, 4, framesPerGameFrame(120, 20, 0)), 5u);
+    // Not interpolating: one per displayed frame after the first, nothing for a single frame.
+    CHECK_EQ(generatedTargetsNeeded(false, false, 1, fpg), 0u);
+    CHECK_EQ(generatedTargetsNeeded(false, true, 1, fpg), 0u);
+    CHECK_EQ(generatedTargetsNeeded(false, false, 0, fpg), 0u);
+}
+
 TEST_CASE("interpolation: a capped slow game frame skips its earliest generated frames and ends on the real one (#97)") {
     // 60 fps with the game at 15 fps: 4 frames are due per game frame, 3 are shown; the weights stay in order and the
     // last is the real frame, and the ticks stay within their bound.
