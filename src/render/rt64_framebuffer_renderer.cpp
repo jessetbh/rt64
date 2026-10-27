@@ -6,6 +6,7 @@
 #include "rt64_wcw_texture_edges.h"
 
 #include <cfloat>
+#include <chrono>
 #include <cstring>
 
 #include "../include/rt64_extended_gbi.h"
@@ -1844,22 +1845,44 @@ namespace RT64 {
             for (uint32_t d = 0; (d < proj.gameCallCount) && (globalCallIndex < p.maxGameCall); d++) {
                 const GameCall &call = proj.gameCalls[d];
 
-                // [wcw diag] aki-roadmap#110 (WCW_DIAG_GENDRAWS=<first>,<last> present numbers, the WCW_PRESENT_LUM
-                // counter): World Tour's generated frame at 70.2 s in the WCW quick match draws a small dark quad huge
+                // [wcw diag] aki-roadmap#110 (WCW_DIAG_GENDRAWS=<startSec>,<endSec>, seconds after the first draw this
+                // code sees): World Tour's generated frame at 70.2 s in the WCW quick match draws a small dark quad huge
                 // across the ring, while object transforms, camera cuts and the scene's view-proj mapping are clean.
-                // On generated frames (interpolated transforms) in the window, log every indexed draw's screen
+                // On generated frames (interpolated transforms) in the window, log each indexed draw's screen
                 // footprint (NDC bounds of its vertices) with this frame's interpolated matrices and with the real
-                // ones, and flag BIG when the generated footprint is over 4x the real one or vertices cross the
-                // camera plane. Diagnostic only.
+                // ones, flagged BIG when the generated footprint is over 4x the real one or vertices cross the
+                // camera plane. Only BIG draws unless WCW_DIAG_GENDRAWS_ALL=1. Written to wcw_gendraws.csv (cwd,
+                // buffered), not stderr: logging every draw to stderr dropped the game to 0.2 presents/s. A time
+                // window, not present numbers: the wrong frame's present number drifts by ~70 between boots.
+                // Diagnostic only.
                 {
-                    static int wcwGenFirst = -1, wcwGenLast = -1;
+                    static double wcwGenFirst = -1.0, wcwGenLast = -1.0;
                     static const bool wcwGenDraws = [&]() {
                         const char *env = getenv("WCW_DIAG_GENDRAWS");
-                        return (env != nullptr) && (sscanf(env, "%d,%d", &wcwGenFirst, &wcwGenLast) == 2);
+                        return (env != nullptr) && (sscanf(env, "%lf,%lf", &wcwGenFirst, &wcwGenLast) == 2);
                     }();
+                    static const bool wcwGenAll = getenv("WCW_DIAG_GENDRAWS_ALL") != nullptr;
+                    static FILE *wcwGenFile = nullptr;
+                    static std::chrono::steady_clock::time_point wcwGenClock0;
+                    static bool wcwGenClockSet = false, wcwGenFlushed = false;
+                    double wcwGenSec = -1.0;
+                    if (wcwGenDraws) {
+                        const std::chrono::steady_clock::time_point wcwGenNow = std::chrono::steady_clock::now();
+                        if (!wcwGenClockSet) {
+                            wcwGenClock0 = wcwGenNow;
+                            wcwGenClockSet = true;
+                        }
+
+                        wcwGenSec = std::chrono::duration<double>(wcwGenNow - wcwGenClock0).count();
+                        if ((wcwGenSec > wcwGenLast) && (wcwGenFile != nullptr) && !wcwGenFlushed) {
+                            fflush(wcwGenFile);
+                            wcwGenFlushed = true;
+                        }
+                    }
+
                     const int wcwPresent = int(wcwRtPresentCounter);
                     const bool wcwGenerated = !drawData.lerpWorldTransforms.empty() && (drawData.lerpWorldTransforms.size() == drawData.worldTransforms.size());
-                    if (wcwGenDraws && wcwGenerated && (wcwPresent >= wcwGenFirst) && (wcwPresent <= wcwGenLast) &&
+                    if (wcwGenDraws && wcwGenerated && (wcwGenSec >= wcwGenFirst) && (wcwGenSec <= wcwGenLast) &&
                         (call.callDesc.triangleCount > 0) && (proj.transformsIndex < drawData.viewProjTransforms.size()) &&
                         (proj.transformsIndex < drawData.modViewProjTransforms.size()))
                     {
@@ -1911,16 +1934,25 @@ namespace RT64 {
                         const float genArea = area(genMin, genMax), realArea = area(realMin, realMax);
                         const bool big = ((genArea > 0.01f) && (genArea > 4.0f * realArea)) || (genBehind != realBehind);
                         static uint32_t wcwGenLogged = 0;
-                        if (wcwGenLogged++ < 20000) {
+                        if ((big || wcwGenAll) && (wcwGenLogged++ < 200000)) {
+                            if (wcwGenFile == nullptr) {
+                                wcwGenFile = fopen("wcw_gendraws.csv", "w");
+                                if (wcwGenFile != nullptr) {
+                                    setvbuf(wcwGenFile, nullptr, _IOFBF, 1 << 20);
+                                }
+                            }
+
                             uint64_t wcwHash = 0;
                             if ((call.callDesc.textureOn != 0) && (call.callDesc.tileCount > 0)) {
                                 wcwHash = drawData.callTiles[call.callDesc.tileIndex].tmemHashOrID;
                             }
 
-                            fprintf(stderr, "[wcw diag gen] present %d fb %u proj %u type %d call %u tris %u matrices %u-%u tex %016llX | gen ndc (%.3f,%.3f)-(%.3f,%.3f) behind %u | real ndc (%.3f,%.3f)-(%.3f,%.3f) behind %u | area x%.2f%s\n",
-                                wcwPresent, p.fbPairIndex, pr, int(proj.type), d, call.callDesc.triangleCount, minMatrix, maxMatrix, (unsigned long long)wcwHash,
-                                genMin[0], genMin[1], genMax[0], genMax[1], genBehind, realMin[0], realMin[1], realMax[0], realMax[1], realBehind,
-                                (realArea > 0.0f) ? (genArea / realArea) : 0.0f, big ? " BIG" : "");
+                            if (wcwGenFile != nullptr) {
+                                fprintf(wcwGenFile, "[wcw diag gen] t=%.3f present %d fb %u proj %u type %d call %u tris %u matrices %u-%u tex %016llX | gen ndc (%.3f,%.3f)-(%.3f,%.3f) behind %u | real ndc (%.3f,%.3f)-(%.3f,%.3f) behind %u | area x%.2f%s\n",
+                                    wcwGenSec, wcwPresent, p.fbPairIndex, pr, int(proj.type), d, call.callDesc.triangleCount, minMatrix, maxMatrix, (unsigned long long)wcwHash,
+                                    genMin[0], genMin[1], genMax[0], genMax[1], genBehind, realMin[0], realMin[1], realMax[0], realMax[1], realBehind,
+                                    (realArea > 0.0f) ? (genArea / realArea) : 0.0f, big ? " BIG" : "");
+                            }
                         }
                     }
                 }
