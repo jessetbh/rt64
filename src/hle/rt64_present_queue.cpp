@@ -432,6 +432,10 @@ namespace RT64 {
                     // [wcw fix] Counter set 1 uses the second set of interpolated targets.
                     auto &wcwTargets = ((wcwPresentSetIndex & 1) != 0) ? ext.sharedResources->wcwInterpolatedColorTargetsB : ext.sharedResources->interpolatedColorTargets;
                     colorTarget = (targetIndex < wcwTargets.size()) ? wcwTargets[targetIndex].get() : nullptr;
+                    // [wcw fix] Sets are created at full size (aki-roadmap#97): a target not rendered yet is empty, not missing.
+                    if ((colorTarget != nullptr) && colorTarget->isEmpty()) {
+                        colorTarget = nullptr;
+                    }
                     // [wcw hfr] Spike diagnostics: fallback set, and how many runs old its content is.
                     wcwHfrFallbackAge = (wcwPairBlendSerial > 0) ? int64_t(wcwPairBlendSerial) - int64_t(RT64::wcwSlotRealSerial[wcwPresentSetIndex & 1].load(std::memory_order_relaxed)) : -1;
                     // [wcw fix] Show the real frame of the same run as the blend just shown, from its
@@ -443,7 +447,7 @@ namespace RT64 {
                             (RT64::wcwSlotRealComplete[k].load(std::memory_order_relaxed) == wcwPairBlendSerial)) {
                             auto &slotTargets = (k == 0) ? ext.sharedResources->interpolatedColorTargets
                                 : ((k == 1) ? ext.sharedResources->wcwInterpolatedColorTargetsB : ext.sharedResources->wcwInterpolatedColorTargetsC);
-                            if (targetIndex < slotTargets.size()) {
+                            if ((targetIndex < slotTargets.size()) && !slotTargets[targetIndex]->isEmpty()) {
                                 colorTarget = slotTargets[targetIndex].get();
                                 wcwHfrFallbackAge = -2;
                             }
