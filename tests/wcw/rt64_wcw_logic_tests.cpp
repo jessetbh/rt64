@@ -1990,12 +1990,18 @@ TEST_CASE("near plane: World Tour's camera-near boxes cross it, ordinary draws d
         12.0f, 10.0f, -120.0f, 100.0f,
     };
     CHECK(!crossesNearPlane(behind, 2));
-    // One vertex behind the camera (w < 0), one in front.
+    // A mesh reaching behind the camera (w < 0) from in front of it doesn't count: a floor or crowd piece.
     const float throughCamera[] = {
         10.0f, 10.0f, 50.0f, 60.0f,
         10.0f, 10.0f, -5.0f, -2.0f,
     };
-    CHECK(crossesNearPlane(throughCamera, 2));
+    CHECK(!crossesNearPlane(throughCamera, 2));
+    // Just behind the near plane (w > 0, z < -w) next to a vertex in front of it.
+    const float nearPair[] = {
+        0.0f, 0.0f, -101.0f, 100.0f,
+        0.0f, 0.0f, -99.0f, 100.0f,
+    };
+    CHECK(crossesNearPlane(nearPair, 2));
     // Exactly on the near plane counts as in front; a single vertex never crosses; non-finite vertices are skipped.
     const float onPlane[] = { 0.0f, 0.0f, -100.0f, 100.0f, 0.0f, 0.0f, 50.0f, 100.0f };
     CHECK(!crossesNearPlane(onPlane, 2));
@@ -2017,6 +2023,27 @@ TEST_CASE("unmapped transforms: only near-plane draws on generated frames in a m
     // Real frames already use the real view; outside a match nothing changes.
     CHECK(!pinUnmappedToRealView(true, false, true, true));
     CHECK(!pinUnmappedToRealView(false, true, true, true));
+    CHECK(!pinUnmappedToRealView(false, false, true, true));
+}
+
+TEST_CASE("unmapped transforms: the real view keeps the widescreen aspect adjustment") {
+    // Column 0 (x of the row-vector product) scales by projRatioScale, like adjustProjectionMatrix; the rest stays.
+    float viewProj[16];
+    for (int i = 0; i < 16; i++) {
+        viewProj[i] = float(i + 1);
+    }
+
+    float out[16];
+    drawnViewProj(viewProj, 0.75f, out);
+    for (int i = 0; i < 16; i++) {
+        CHECK(out[i] == (((i % 4) == 0) ? viewProj[i] * 0.75f : viewProj[i]));
+    }
+
+    // 4:3 (Original): unchanged.
+    drawnViewProj(viewProj, 1.0f, out);
+    for (int i = 0; i < 16; i++) {
+        CHECK(out[i] == viewProj[i]);
+    }
 }
 
 int main() {

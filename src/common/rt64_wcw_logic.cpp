@@ -52,7 +52,11 @@ namespace RT64::WcwLogic {
                 continue;
             }
 
-            if ((w > 0.0f) && (z >= -w)) {
+            if (w <= 0.0f) {
+                continue;
+            }
+
+            if (z >= -w) {
                 front = true;
             }
             else {
@@ -65,6 +69,12 @@ namespace RT64::WcwLogic {
         }
 
         return false;
+    }
+
+    void drawnViewProj(const float viewProj[16], float projRatioScale, float out[16]) {
+        for (int i = 0; i < 16; i++) {
+            out[i] = ((i % 4) == 0) ? (viewProj[i] * projRatioScale) : viewProj[i];
+        }
     }
 
     bool pinUnmappedToRealView(bool inMatch, bool generated, bool realCrosses, bool generatedCrosses) {

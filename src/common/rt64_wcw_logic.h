@@ -772,9 +772,14 @@ namespace RT64::WcwLogic {
     // Unmapped transforms on generated frames (aki-roadmap#110)
 
     // Whether a draw's clip-space vertices (x, y, z, w each; vertexCount of them) cross the camera's near plane: some
-    // in front of it (w > 0 and z >= -w, the N64 convention RSPProcessCS keeps) and some behind it. Vertices that
-    // aren't finite are skipped.
+    // in front of it (z >= -w, the N64 convention RSPProcessCS keeps) and some just behind it (z < -w). Only vertices
+    // in front of the camera (w > 0) count, so big meshes that reach behind the camera (floors, crowds) don't; vertices
+    // that aren't finite are skipped.
     bool crossesNearPlane(const float *clip, size_t vertexCount);
+
+    // The view-projection a real frame draws with: the game's (viewProj, 16 floats, row-major) with the projection's
+    // aspect adjustment (ProjectionProcessor's adjustProjectionMatrix: column 0 times projRatioScale, Expand).
+    void drawnViewProj(const float viewProj[16], float projRatioScale, float out[16]);
 
     // Whether a generated frame draws an unmapped transform (no previous-frame pair: drawn with its current matrix)
     // with the real frame's view-projection instead of the interpolated one, so that it lands and clips exactly as in
