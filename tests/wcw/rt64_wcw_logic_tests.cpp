@@ -1209,6 +1209,10 @@ TEST_CASE("interpolation: a game frame slower than 20 fps doesn't add generated-
     CHECK_EQ(framesPerGameFrame(60, 15, 0), 3u);
     CHECK_EQ(framesPerGameFrame(60, 12, 0), 3u);
     CHECK_EQ(framesPerGameFrame(120, 10, 0), 6u);
+    // Just under 20 fps (the old code gave 4 at 60), and display rates that aren't a multiple of 20.
+    CHECK_EQ(framesPerGameFrame(60, 17, 0), 3u);
+    CHECK_EQ(framesPerGameFrame(144, 15, 0), 7u);
+    CHECK_EQ(framesPerGameFrame(165, 15, 0), 8u);
     // The debug override still wins.
     CHECK_EQ(framesPerGameFrame(60, 15, 5), 5u);
 }
