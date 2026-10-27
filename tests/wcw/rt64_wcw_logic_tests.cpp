@@ -2046,6 +2046,32 @@ TEST_CASE("unmapped transforms: the real view keeps the widescreen aspect adjust
     }
 }
 
+// Render target regrow settle (aki-roadmap#4)
+
+TEST_CASE("regrow settle: big new render targets wait before first use (SS 2x GPU hang #4)") {
+    // The hang: No Mercy's 3840x1920 targets regrown to 7670x2880 color + depth, used at once.
+    CHECK(regrowSettleMs(2ULL * 7670 * 2880, -1) == RegrowSettleDefaultMs);
+    // The settings-apply hang's 5760x2160 targets.
+    CHECK(regrowSettleMs(2ULL * 5760 * 2160, -1) == RegrowSettleDefaultMs);
+    CHECK(RegrowSettleDefaultMs >= 50);
+}
+
+TEST_CASE("regrow settle: no regrow or small regrows never wait") {
+    CHECK(regrowSettleMs(0, -1) == 0);
+    // N64-sized and 1x targets (480x240 color + depth), and 1080p-class ones.
+    CHECK(regrowSettleMs(2ULL * 480 * 240, -1) == 0);
+    CHECK(regrowSettleMs(1920ULL * 1080, -1) == 0);
+    CHECK(regrowSettleMs(RegrowSettleMinPixels - 1, -1) == 0);
+    CHECK(regrowSettleMs(RegrowSettleMinPixels, -1) == RegrowSettleDefaultMs);
+}
+
+TEST_CASE("regrow settle: WCW_REGROW_SETTLE_MS overrides the wait, 0 turns it off") {
+    CHECK(regrowSettleMs(2ULL * 7670 * 2880, 0) == 0);
+    CHECK(regrowSettleMs(2ULL * 7670 * 2880, 250) == 250);
+    // The size threshold still applies.
+    CHECK(regrowSettleMs(2ULL * 480 * 240, 250) == 0);
+}
+
 int main() {
     return WcwTest::runAll("rt64 wcw tests");
 }

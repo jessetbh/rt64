@@ -4,6 +4,9 @@
 
 #include "rt64_workload_queue.h"
 
+#include <chrono>
+#include <thread>
+
 #include "common/rt64_thread.h"
 #include "common/rt64_wcw_logic.h"
 #include "common/rt64_wcw_perf.h"
@@ -639,8 +642,18 @@ namespace RT64 {
                 }
             }
 
+            uint64_t wcwRegrownPixels = 0;
             for (RenderTarget *renderTarget : resizedTargets) {
                 renderFramebufferManager->destroyAllWithRenderTarget(renderTarget);
+                wcwRegrownPixels += uint64_t(renderTarget->width) * renderTarget->height;
+            }
+
+            // [wcw fix] Let big new render targets settle before the first workload records into them (aki-roadmap#4).
+            static const int32_t wcwRegrowSettleOverride = []() { const char *v = getenv("WCW_REGROW_SETTLE_MS"); return (v != nullptr) ? int32_t(atoi(v)) : -1; }();
+            const uint32_t wcwSettleMs = WcwLogic::regrowSettleMs(wcwRegrownPixels, wcwRegrowSettleOverride);
+            if (wcwSettleMs > 0) {
+                fprintf(stderr, "[wcw] render targets regrown (%.1f Mpx); waiting %u ms before using them\n", double(wcwRegrownPixels) / 1e6, wcwSettleMs);
+                std::this_thread::sleep_for(std::chrono::milliseconds(wcwSettleMs));
             }
 
             uint32_t gameCallCursor = 0;

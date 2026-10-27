@@ -791,4 +791,20 @@ namespace RT64::WcwLogic {
     // generated frames removed the dip. Other unmapped objects keep the interpolated view, so they stay in place
     // relative to the interpolated scene around them.
     bool pinUnmappedToRealView(bool inMatch, bool generated, bool realCrosses, bool generatedCrosses);
+
+    // Render target regrow settle (aki-roadmap#4)
+
+    // Render targets newly allocated by one workload (pixels, summed over color and depth) at or above which the
+    // workload waits before recording into them, and how long.
+    constexpr uint64_t RegrowSettleMinPixels = 4ULL * 1024ULL * 1024ULL;
+    constexpr uint32_t RegrowSettleDefaultMs = 100;
+
+    // How long (ms) a workload waits after regrowing its render targets, before it records into them. Supersampling
+    // 2x at 1600x900 / 150% DPI regrows No Mercy's targets from 3840x1920 to 7670x2880 a few seconds in; the first
+    // workload into the new targets hung the GPU every time (NVIDIA Xid 13 GPC SAVE_RESTORE_ADDR_OOB, then
+    // DEVICE_HUNG), even with every rt64 queue serialised and the allocations made while the GPU was idle. Waiting
+    // 50 ms or more after the regrow avoided it (10 ms didn't always); the settings-apply hang (aki-roadmap#4) is the
+    // same first-use-after-recreate case. overrideMs: WCW_REGROW_SETTLE_MS (negative = unset, 0 = off). Small regrows
+    // (N64-sized targets, low resolutions) never wait.
+    uint32_t regrowSettleMs(uint64_t regrownPixels, int32_t overrideMs);
 };
