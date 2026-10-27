@@ -36,6 +36,7 @@ namespace RT64 {
             prevWorldTransforms.clear();
             // [wcw diag] aki-roadmap#110: record how each interpolated matrix was built (WCW_DIAG_GENDRAWS only).
             static const bool wcwLerpDiagOn = getenv("WCW_DIAG_GENDRAWS") != nullptr;
+            static const bool wcwHideUnmapped = getenv("WCW_EXP110_HIDE_UNMAPPED") != nullptr;
             drawData.wcwLerpDiag.clear();
             drawData.wcwDiagWeight = p.curFrameWeight;
             if (wcwLerpDiagOn && prevFrameValid) {
@@ -174,6 +175,13 @@ namespace RT64 {
                         lerpWorldTransforms.emplace_back(curMatrix);
                         invTWorldTransforms.emplace_back(invTMatrix);
                         prevWorldTransforms.emplace_back(prevMatrix);
+                    }
+                    else if (wcwHideUnmapped && (p.curFrameWeight < 1.0f)) {
+                        // [wcw diag] aki-roadmap#110 experiment: hide unmapped transforms' draws on generated frames.
+                        const hlslpp::float4x4 zero(0.0f);
+                        lerpWorldTransforms.emplace_back(zero);
+                        invTWorldTransforms.emplace_back(zero);
+                        prevWorldTransforms.emplace_back(zero);
                     }
                     else {
                         invMatrix = hlslpp::inverse(drawData.worldTransforms[t]);
