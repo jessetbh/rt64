@@ -897,4 +897,12 @@ namespace RT64::WcwLogic {
 
         return Action::None;
     }
+
+    uint32_t regrowSettleMs(uint64_t regrownPixels, int32_t overrideMs) {
+        if (regrownPixels < RegrowSettleMinPixels) {
+            return 0;
+        }
+
+        return (overrideMs >= 0) ? uint32_t(overrideMs) : RegrowSettleDefaultMs;
+    }
 };
