@@ -1969,6 +1969,83 @@ TEST_CASE("matrix split: a pair whose drawn matrix changed more than tenfold dro
     CHECK(!c.splitLayer());
 }
 
+TEST_CASE("near plane: World Tour's camera-near boxes cross it, ordinary draws don't") {
+    // Clip-space vertices of the WCW quick match's box (WCW_DIAG_GENDRAWS, real frame): z/w -1.013 and -0.897.
+    const float box[] = {
+        -37.63f, -136.0f, -100.676f, 99.3569f,
+        -37.30f, -132.5f, -94.4631f, 105.266f,
+        149.69f, -136.9f, -102.331f, 97.7818f,
+    };
+    CHECK(crossesNearPlane(box, 3));
+    // The ring post seen from 500 units away: all in front.
+    const float post[] = {
+        549.73f, 490.19f, 309.871f, 489.875f,
+        537.40f, 505.46f, 329.364f, 508.418f,
+        526.94f, 500.34f, 322.830f, 502.202f,
+    };
+    CHECK(!crossesNearPlane(post, 3));
+    // All behind the camera (w <= 0) or behind the near plane: nothing crosses.
+    const float behind[] = {
+        10.0f, 10.0f, -5.0f, -2.0f,
+        12.0f, 10.0f, -120.0f, 100.0f,
+    };
+    CHECK(!crossesNearPlane(behind, 2));
+    // A mesh reaching behind the camera (w < 0) from in front of it doesn't count: a floor or crowd piece.
+    const float throughCamera[] = {
+        10.0f, 10.0f, 50.0f, 60.0f,
+        10.0f, 10.0f, -5.0f, -2.0f,
+    };
+    CHECK(!crossesNearPlane(throughCamera, 2));
+    // Just behind the near plane (w > 0, z < -w) next to a vertex in front of it.
+    const float nearPair[] = {
+        0.0f, 0.0f, -101.0f, 100.0f,
+        0.0f, 0.0f, -99.0f, 100.0f,
+    };
+    CHECK(crossesNearPlane(nearPair, 2));
+    // Exactly on the near plane counts as in front; a single vertex never crosses; non-finite vertices are skipped.
+    const float onPlane[] = { 0.0f, 0.0f, -100.0f, 100.0f, 0.0f, 0.0f, 50.0f, 100.0f };
+    CHECK(!crossesNearPlane(onPlane, 2));
+    CHECK(!crossesNearPlane(box, 1));
+    const float nan = std::nanf("");
+    const float withNan[] = { 0.0f, 0.0f, nan, 100.0f, 0.0f, 0.0f, 50.0f, 100.0f };
+    CHECK(!crossesNearPlane(withNan, 2));
+    CHECK(!crossesNearPlane(box, 0));
+}
+
+TEST_CASE("unmapped transforms: only near-plane draws on generated frames in a match take the real view") {
+    // The bug: the generated frame drew the box under the interpolated view (dark slabs).
+    CHECK(pinUnmappedToRealView(true, true, true, true));
+    CHECK(pinUnmappedToRealView(true, true, true, false));
+    // Behind the near plane in the real frame, brought in front by the interpolated view.
+    CHECK(pinUnmappedToRealView(true, true, false, true));
+    // Ordinary unmapped objects keep the interpolated view (they stay put in the interpolated scene).
+    CHECK(!pinUnmappedToRealView(true, true, false, false));
+    // Real frames already use the real view; outside a match nothing changes.
+    CHECK(!pinUnmappedToRealView(true, false, true, true));
+    CHECK(!pinUnmappedToRealView(false, true, true, true));
+    CHECK(!pinUnmappedToRealView(false, false, true, true));
+}
+
+TEST_CASE("unmapped transforms: the real view keeps the widescreen aspect adjustment") {
+    // Column 0 (x of the row-vector product) scales by projRatioScale, like adjustProjectionMatrix; the rest stays.
+    float viewProj[16];
+    for (int i = 0; i < 16; i++) {
+        viewProj[i] = float(i + 1);
+    }
+
+    float out[16];
+    drawnViewProj(viewProj, 0.75f, out);
+    for (int i = 0; i < 16; i++) {
+        CHECK(out[i] == (((i % 4) == 0) ? viewProj[i] * 0.75f : viewProj[i]));
+    }
+
+    // 4:3 (Original): unchanged.
+    drawnViewProj(viewProj, 1.0f, out);
+    for (int i = 0; i < 16; i++) {
+        CHECK(out[i] == viewProj[i]);
+    }
+}
+
 int main() {
     return WcwTest::runAll("rt64 wcw tests");
 }

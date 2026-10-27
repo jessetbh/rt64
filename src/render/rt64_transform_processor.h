@@ -13,6 +13,8 @@ namespace RT64 {
     struct TransformProcessor {
         std::unique_ptr<BufferUploader> bufferUploader;
         std::vector<BufferUploader::Upload> uploads;
+        std::vector<float> wcwRealClip; // [wcw fix] scratch for unmapped transforms (aki-roadmap#110)
+        std::vector<float> wcwGenClip;
 
         struct ProcessParams {
             RenderWorker *worker = nullptr;
