@@ -73,6 +73,25 @@ namespace RT64 {
         return uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
     }
 
+    // Stamps released textures and keeps them until WcwLogic::releaseReady (after close they're destroyed at once).
+    static void wcwDefer(std::unique_ptr<WcwReleasedTextures> released, uint64_t bytes) {
+        std::scoped_lock<std::mutex> lock(wcwDeferredMutex);
+        if (wcwDeferredClosed) {
+            return;
+        }
+
+        WcwLogic::ReleaseStamp stamp;
+        stamp.presentsStarted = RenderTarget::wcwPresentsStarted.load();
+        stamp.workloadsDone = RenderTarget::wcwWorkloadsDone.load();
+        stamp.ms = wcwNowMs();
+        wcwDeferred.push(stamp, bytes, std::move(released));
+        if (wcwDeferred.peakPendingBytes() >= (wcwDeferredLoggedPeak + (16ULL << 20))) {
+            wcwDeferredLoggedPeak = wcwDeferred.peakPendingBytes();
+            fprintf(stderr, "[wcw] render target deferred release: peak %.1f MB pending, %llu released\n", double(wcwDeferredLoggedPeak) / 1048576.0,
+                (unsigned long long)(wcwDeferred.destroyedCount() + wcwDeferred.size()));
+        }
+    }
+
     bool RenderTarget::wcwDeferringRelease() {
         static const bool enabled = []() { const char *v = getenv("WCW_TARGET_DEFER"); return (v == nullptr) || (strcmp(v, "0") != 0); }();
         return enabled;
@@ -115,8 +134,11 @@ namespace RT64 {
     }
 
     RenderTarget::~RenderTarget() {
-        // [wcw fix] Deferred too (settings applies destroy every target; aki-roadmap#4).
-        releaseTextures();
+        // [wcw fix] Deferred too (settings applies destroy every target; aki-roadmap#4). With WCW_TARGET_DEFER=0 the
+        // members go in reverse order, as before.
+        if (wcwDeferringRelease()) {
+            releaseTextures();
+        }
 
 #if PRINT_CONSTRUCTOR_DESTRUCTOR
         fprintf(stdout, "~RenderTarget(0x%p)\n", this);
@@ -147,21 +169,12 @@ namespace RT64 {
             uint64_t bytes = 0;
             bytes += (released->texture != nullptr) ? (pixels * samples * formatBytes) : 0;
             bytes += (released->resolvedTexture != nullptr) ? (pixels * formatBytes) : 0;
+            if ((released->downsampledTexture != nullptr) && (downsampledTextureMultiplier > 0)) {
+                bytes += uint64_t(width / downsampledTextureMultiplier) * (height / downsampledTextureMultiplier) * formatBytes;
+            }
             bytes += (released->dummyTexture != nullptr) ? (pixels * samples * RenderFormatSize(colorBufferFormat(usesHDR))) : 0;
 
-            std::scoped_lock<std::mutex> lock(wcwDeferredMutex);
-            if (!wcwDeferredClosed) {
-                WcwLogic::ReleaseStamp stamp;
-                stamp.presentsStarted = wcwPresentsStarted.load();
-                stamp.workloadsDone = wcwWorkloadsDone.load();
-                stamp.ms = wcwNowMs();
-                wcwDeferred.push(stamp, bytes, std::move(released));
-                if (wcwDeferred.peakPendingBytes() >= (wcwDeferredLoggedPeak + (16ULL << 20))) {
-                    wcwDeferredLoggedPeak = wcwDeferred.peakPendingBytes();
-                    fprintf(stderr, "[wcw] render target deferred release: peak %.1f MB pending, %llu released\n", double(wcwDeferredLoggedPeak) / 1048576.0,
-                        (unsigned long long)(wcwDeferred.destroyedCount() + wcwDeferred.size()));
-                }
-            }
+            wcwDefer(std::move(released), bytes);
         }
 
         textureView.reset();
@@ -489,6 +502,15 @@ namespace RT64 {
         };
 
         if (downsampledTextureMultiplier != downsampleMultiplier) {
+            // [wcw fix] Deferred like the other released textures (aki-roadmap#4).
+            if (wcwDeferringRelease() && (downsampledTexture != nullptr)) {
+                std::unique_ptr<WcwReleasedTextures> released = std::make_unique<WcwReleasedTextures>();
+                released->downsampledTexture = std::move(downsampledTexture);
+                const uint64_t bytes = uint64_t(width / std::max(downsampledTextureMultiplier, 1U)) * (height / std::max(downsampledTextureMultiplier, 1U)) *
+                    RenderFormatSize(colorBufferFormat(usesHDR));
+                wcwDefer(std::move(released), bytes);
+            }
+
             downsampledTexture.reset(nullptr);
             downsampledTextureMultiplier = 0;
         }
