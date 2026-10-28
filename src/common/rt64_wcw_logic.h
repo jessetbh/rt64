@@ -12,6 +12,9 @@
 #include <utility>
 #include <vector>
 #include <array>
+#include <algorithm>
+#include <deque>
+#include <memory>
 
 // [wcw] Decision logic for frame interpolation, present pacing, the CRT beam simulator and ray-traced shadows, kept
 // free of renderer state so it can be unit tested (tests/wcw). The renderer calls these functions; a change to any
@@ -807,7 +810,87 @@ namespace RT64::WcwLogic {
     // 50 ms or more after the regrow avoided it (10 ms didn't always). The settings-apply hang (aki-roadmap#4, first
     // draws after the targets are recreated) is probably the same case; not verified yet. overrideMs: WCW_REGROW_SETTLE_MS (negative = unset, 0 = off). Small regrows
     // (N64-sized targets, low resolutions) never wait.
-    uint32_t regrowSettleMs(uint64_t regrownPixels, int32_t overrideMs);
+    // deferringRelease: released textures are destroyed later (DeferredReleaseList), which is what the wait really
+    // bought: the hang came from destroying the textures a regrow releases, not from first use of the new ones
+    // (keeping them alive with no wait was clean, destroying them at once with no wait hung). Then nothing waits
+    // unless overrideMs asks for it.
+    uint32_t regrowSettleMs(uint64_t regrownPixels, int32_t overrideMs, bool deferringRelease);
+
+    // Deferred release of render target textures (aki-roadmap#4)
+
+    // When a render target's textures were released: how many presents had started and how many workloads had
+    // finished (their GPU work waited for) by then, and the time.
+    struct ReleaseStamp {
+        uint64_t presentsStarted = 0;
+        uint64_t workloadsDone = 0;
+        uint64_t ms = 0;
+    };
+
+    // Released textures live on for at least this many finished workloads and this long.
+    constexpr uint64_t DeferredReleaseWorkloads = 2;
+    constexpr uint64_t DeferredReleaseMinMs = 100;
+
+    // Whether textures released at stamp can be destroyed: every present that had started by then has finished (the
+    // present thread records the targets' textures without the workload thread's locks), the workload thread has
+    // finished DeferredReleaseWorkloads more workloads, and DeferredReleaseMinMs have passed (the old settle needed
+    // 50 ms or more). A clock that went backwards isn't ready.
+    bool releaseReady(const ReleaseStamp &stamp, uint64_t presentsFinished, uint64_t workloadsDone, uint64_t nowMs);
+
+    // Released render target textures waiting to be destroyed, oldest first. T is the bundle of GPU objects a target
+    // released (destroyed with the entry).
+    template<typename T>
+    class DeferredReleaseList {
+    public:
+        void push(const ReleaseStamp &stamp, uint64_t bytes, std::unique_ptr<T> item) {
+            if (item == nullptr) {
+                return;
+            }
+
+            entries.push_back({ stamp, bytes, std::move(item) });
+            pending += bytes;
+            peakPending = std::max(peakPending, pending);
+        }
+
+        // Destroys the entries that are ready (releaseReady), oldest first, stopping at the first that isn't: stamps
+        // only grow, so later entries aren't ready either. Returns how many were destroyed.
+        size_t collect(uint64_t presentsFinished, uint64_t workloadsDone, uint64_t nowMs) {
+            size_t count = 0;
+            while (!entries.empty() && releaseReady(entries.front().stamp, presentsFinished, workloadsDone, nowMs)) {
+                pending -= entries.front().bytes;
+                entries.pop_front();
+                count++;
+            }
+
+            destroyed += count;
+            return count;
+        }
+
+        // Destroys everything (shutdown, once no queue uses the textures).
+        size_t clear() {
+            const size_t count = entries.size();
+            entries.clear();
+            pending = 0;
+            destroyed += count;
+            return count;
+        }
+
+        uint64_t pendingBytes() const { return pending; }
+        uint64_t peakPendingBytes() const { return peakPending; }
+        uint64_t destroyedCount() const { return destroyed; }
+        size_t size() const { return entries.size(); }
+
+    private:
+        struct Entry {
+            ReleaseStamp stamp;
+            uint64_t bytes;
+            std::unique_ptr<T> item;
+        };
+
+        std::deque<Entry> entries;
+        uint64_t pending = 0;
+        uint64_t peakPending = 0;
+        uint64_t destroyed = 0;
+    };
 
     // In-game Datadog metrics (aki-roadmap#125)
 

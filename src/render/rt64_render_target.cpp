@@ -5,11 +5,15 @@
 #include "rt64_render_target.h"
 
 #include <algorithm>
+#include <chrono>
+#include <mutex>
 
 #include "gbi/rt64_f3d.h"
 #include "shared/rt64_fb_common.h"
 #include "shared/rt64_render_target_copy.h"
 #include "shared/rt64_texture_copy.h"
+
+#include "common/rt64_wcw_logic.h"
 
 #include "rt64_raster_shader.h"
 
@@ -19,6 +23,85 @@ namespace RT64 {
     // RenderTarget
     
     const long RenderTarget::MaxDimension = 0x4000L;
+
+    // [wcw fix] Deferred release of render target textures (aki-roadmap#4). Supersampling 2x hung the GPU (NVIDIA
+    // Xid 13, DEVICE_HUNG) when a regrow destroyed the textures it replaced; keeping them alive avoided it with no
+    // wait at all. Everything a target made from its textures goes with them and is destroyed first.
+    struct WcwReleasedTextures {
+        std::unique_ptr<RenderTexture> texture;
+        std::unique_ptr<RenderTexture> resolvedTexture;
+        std::unique_ptr<RenderTexture> downsampledTexture;
+        std::unique_ptr<RenderTexture> dummyTexture;
+        std::unique_ptr<RenderTextureView> textureView;
+        std::unique_ptr<RenderTextureView> resolvedTextureView;
+        std::unique_ptr<RenderFramebuffer> textureFramebuffer;
+        std::unique_ptr<RenderFramebuffer> resolveFramebuffer;
+        std::unique_ptr<RenderTargetCopyDescriptorSet> targetCopyDescSet;
+        std::unique_ptr<TextureCopyDescriptorSet> textureCopyDescSet;
+        std::unique_ptr<TextureCopyDescriptorSet> textureResolveDescSet;
+        std::unique_ptr<BoxFilterDescriptorSet> filterDescSet;
+        std::unique_ptr<FramebufferWriteDescriptorTextureSet> fbWriteDescSet;
+
+        ~WcwReleasedTextures() {
+            fbWriteDescSet.reset();
+            filterDescSet.reset();
+            textureResolveDescSet.reset();
+            textureCopyDescSet.reset();
+            targetCopyDescSet.reset();
+            resolveFramebuffer.reset();
+            textureFramebuffer.reset();
+            resolvedTextureView.reset();
+            textureView.reset();
+            dummyTexture.reset();
+            downsampledTexture.reset();
+            resolvedTexture.reset();
+            texture.reset();
+        }
+    };
+
+    std::atomic<uint64_t> RenderTarget::wcwPresentsStarted = 0;
+    std::atomic<uint64_t> RenderTarget::wcwPresentsFinished = 0;
+    std::atomic<uint64_t> RenderTarget::wcwWorkloadsDone = 0;
+
+    // Never destroyed statically: whatever is left at exit is destroyed by wcwCloseDeferred, before the device.
+    static std::mutex wcwDeferredMutex;
+    static WcwLogic::DeferredReleaseList<WcwReleasedTextures> &wcwDeferred = *new WcwLogic::DeferredReleaseList<WcwReleasedTextures>();
+    static bool wcwDeferredClosed = false;
+    static uint64_t wcwDeferredLoggedPeak = 0;
+
+    static uint64_t wcwNowMs() {
+        return uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+    }
+
+    bool RenderTarget::wcwDeferringRelease() {
+        static const bool enabled = []() { const char *v = getenv("WCW_TARGET_DEFER"); return (v == nullptr) || (strcmp(v, "0") != 0); }();
+        return enabled;
+    }
+
+    void RenderTarget::wcwNotePresentStart() {
+        wcwPresentsStarted++;
+    }
+
+    void RenderTarget::wcwNotePresentEnd() {
+        wcwPresentsFinished++;
+    }
+
+    void RenderTarget::wcwNoteWorkloadDone() {
+        const uint64_t done = ++wcwWorkloadsDone;
+        std::scoped_lock<std::mutex> lock(wcwDeferredMutex);
+        wcwDeferred.collect(wcwPresentsFinished.load(), done, wcwNowMs());
+    }
+
+    void RenderTarget::wcwCloseDeferred() {
+        std::scoped_lock<std::mutex> lock(wcwDeferredMutex);
+        if (wcwDeferred.destroyedCount() > 0) {
+            fprintf(stderr, "[wcw] render target deferred release: peak %.1f MB pending, %llu released\n", double(wcwDeferred.peakPendingBytes()) / 1048576.0,
+                (unsigned long long)(wcwDeferred.destroyedCount() + wcwDeferred.size()));
+        }
+
+        wcwDeferred.clear();
+        wcwDeferredClosed = true;
+    }
 
     RenderTarget::RenderTarget(uint32_t addressForName, Framebuffer::Type type, const RenderMultisampling &multisampling, bool usesHDR) {
         this->addressForName = addressForName;
@@ -32,12 +115,55 @@ namespace RT64 {
     }
 
     RenderTarget::~RenderTarget() {
+        // [wcw fix] Deferred too (settings applies destroy every target; aki-roadmap#4).
+        releaseTextures();
+
 #if PRINT_CONSTRUCTOR_DESTRUCTOR
         fprintf(stdout, "~RenderTarget(0x%p)\n", this);
 #endif
     }
 
     void RenderTarget::releaseTextures() {
+        // [wcw fix] Defer the textures' destruction (aki-roadmap#4). The stamp is taken after they left the target,
+        // so a present that starts later can't pick them up.
+        if (wcwDeferringRelease() && ((texture != nullptr) || (resolvedTexture != nullptr) || (dummyTexture != nullptr))) {
+            std::unique_ptr<WcwReleasedTextures> released = std::make_unique<WcwReleasedTextures>();
+            released->texture = std::move(texture);
+            released->resolvedTexture = std::move(resolvedTexture);
+            released->downsampledTexture = std::move(downsampledTexture);
+            released->dummyTexture = std::move(dummyTexture);
+            released->textureView = std::move(textureView);
+            released->resolvedTextureView = std::move(resolvedTextureView);
+            released->textureFramebuffer = std::move(textureFramebuffer);
+            released->resolveFramebuffer = std::move(resolveFramebuffer);
+            released->targetCopyDescSet = std::move(targetCopyDescSet);
+            released->textureCopyDescSet = std::move(textureCopyDescSet);
+            released->textureResolveDescSet = std::move(textureResolveDescSet);
+            released->filterDescSet = std::move(filterDescSet);
+            released->fbWriteDescSet = std::move(fbWriteDescSet);
+            const uint64_t pixels = uint64_t(width) * height;
+            const uint64_t samples = std::max<uint32_t>(multisampling.sampleCount, 1);
+            const uint64_t formatBytes = (format != RenderFormat::UNKNOWN) ? RenderFormatSize(format) : 0;
+            uint64_t bytes = 0;
+            bytes += (released->texture != nullptr) ? (pixels * samples * formatBytes) : 0;
+            bytes += (released->resolvedTexture != nullptr) ? (pixels * formatBytes) : 0;
+            bytes += (released->dummyTexture != nullptr) ? (pixels * samples * RenderFormatSize(colorBufferFormat(usesHDR))) : 0;
+
+            std::scoped_lock<std::mutex> lock(wcwDeferredMutex);
+            if (!wcwDeferredClosed) {
+                WcwLogic::ReleaseStamp stamp;
+                stamp.presentsStarted = wcwPresentsStarted.load();
+                stamp.workloadsDone = wcwWorkloadsDone.load();
+                stamp.ms = wcwNowMs();
+                wcwDeferred.push(stamp, bytes, std::move(released));
+                if (wcwDeferred.peakPendingBytes() >= (wcwDeferredLoggedPeak + (16ULL << 20))) {
+                    wcwDeferredLoggedPeak = wcwDeferred.peakPendingBytes();
+                    fprintf(stderr, "[wcw] render target deferred release: peak %.1f MB pending, %llu released\n", double(wcwDeferredLoggedPeak) / 1048576.0,
+                        (unsigned long long)(wcwDeferred.destroyedCount() + wcwDeferred.size()));
+                }
+            }
+        }
+
         textureView.reset();
         resolvedTextureView.reset();
         texture.reset();

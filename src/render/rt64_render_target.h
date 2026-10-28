@@ -18,6 +18,20 @@ namespace RT64 {
 
     struct RenderTarget {
         static const long MaxDimension;
+        // [wcw fix] Deferred release (aki-roadmap#4): releaseTextures hands the textures and the objects made from
+        // them to a list, destroyed once WcwLogic::releaseReady says no queue can still be using them. The counters
+        // it uses: presents started and finished by the present thread (wcwNotePresentStart / wcwNotePresentEnd) and
+        // workloads finished by the workload thread (wcwNoteWorkloadDone, which also destroys what is ready).
+        static std::atomic<uint64_t> wcwPresentsStarted;
+        static std::atomic<uint64_t> wcwPresentsFinished;
+        static std::atomic<uint64_t> wcwWorkloadsDone;
+        static void wcwNotePresentStart();
+        static void wcwNotePresentEnd();
+        static void wcwNoteWorkloadDone();
+        // Whether released textures are deferred (WCW_TARGET_DEFER=0 destroys them at once, as before).
+        static bool wcwDeferringRelease();
+        // Destroys everything still deferred and stops deferring (Application::end, before the device goes).
+        static void wcwCloseDeferred();
 
         std::unique_ptr<RenderTexture> texture;
         std::unique_ptr<RenderTexture> resolvedTexture;

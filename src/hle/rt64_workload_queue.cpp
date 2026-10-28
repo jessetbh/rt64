@@ -658,7 +658,8 @@ namespace RT64 {
             }
 
             // [wcw fix] Let big new render targets settle before the first workload records into them (aki-roadmap#4).
-            const uint32_t wcwSettleMs = WcwLogic::regrowSettleMs(wcwRegrownPixels, wcwRegrowSettleOverride());
+            // Only with WCW_TARGET_DEFER=0 or WCW_REGROW_SETTLE_MS: released textures are destroyed later instead.
+            const uint32_t wcwSettleMs = WcwLogic::regrowSettleMs(wcwRegrownPixels, wcwRegrowSettleOverride(), RenderTarget::wcwDeferringRelease());
             if (wcwSettleMs > 0) {
                 fprintf(stderr, "[wcw] render targets regrown (%.1f Mpx); waiting %u ms before using them\n", double(wcwRegrownPixels) / 1e6, wcwSettleMs);
                 std::this_thread::sleep_for(std::chrono::milliseconds(wcwSettleMs));
@@ -811,7 +812,7 @@ namespace RT64 {
                     }
 
                     if (primeTarget->resize(ext.workloadGraphicsWorker, liveTarget.width, liveTarget.height)) {
-                        const uint32_t wcwPrimeSettleMs = WcwLogic::regrowSettleMs(uint64_t(primeTarget->width) * primeTarget->height, wcwRegrowSettleOverride());
+                        const uint32_t wcwPrimeSettleMs = WcwLogic::regrowSettleMs(uint64_t(primeTarget->width) * primeTarget->height, wcwRegrowSettleOverride(), RenderTarget::wcwDeferringRelease());
                         if (wcwPrimeSettleMs > 0) {
                             fprintf(stderr, "[wcw] generated-frame target regrown; waiting %u ms before using it\n", wcwPrimeSettleMs);
                             std::this_thread::sleep_for(std::chrono::milliseconds(wcwPrimeSettleMs));
@@ -980,6 +981,7 @@ namespace RT64 {
             const WcwPerf::Clock::time_point wcwSubmit = wcwPerf ? WcwPerf::Clock::now() : WcwPerf::Clock::time_point();
             ext.workloadGraphicsWorker->execute();
             ext.workloadGraphicsWorker->wait();
+            RenderTarget::wcwNoteWorkloadDone();
             if (wcwPerf) {
                 const WcwPerf::Clock::time_point wcwDone = WcwPerf::Clock::now();
                 WcwPerf::cpuPhase(WcwPerf::CpuPhase::Rt64Record, wcwRecordStart, wcwSubmit);

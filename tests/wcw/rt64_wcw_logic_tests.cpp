@@ -2048,28 +2048,132 @@ TEST_CASE("unmapped transforms: the real view keeps the widescreen aspect adjust
 
 // Render target regrow settle (aki-roadmap#4)
 
-TEST_CASE("regrow settle: big new render targets wait before first use (SS 2x GPU hang #4)") {
+TEST_CASE("regrow settle: with deferred release nothing waits (#4 regression: 8.7 presents/s in the settings stress)") {
+    // The 100 ms wait on every big regrow cost No Mercy's settings stress 90% of its presents. Deferring the release
+    // of the old textures is what avoids the hang, so the wait goes.
+    CHECK(regrowSettleMs(2ULL * 7670 * 2880, -1, true) == 0);
+    CHECK(regrowSettleMs(2ULL * 5760 * 2160, -1, true) == 0);
+    // WCW_REGROW_SETTLE_MS still asks for one (diagnosis).
+    CHECK(regrowSettleMs(2ULL * 7670 * 2880, 100, true) == 100);
+}
+
+TEST_CASE("regrow settle: WCW_TARGET_DEFER=0 keeps the old wait for big regrows (SS 2x GPU hang #4)") {
     // The hang: No Mercy's 3840x1920 targets regrown to 7670x2880 color + depth, used at once.
-    CHECK(regrowSettleMs(2ULL * 7670 * 2880, -1) == RegrowSettleDefaultMs);
+    CHECK(regrowSettleMs(2ULL * 7670 * 2880, -1, false) == RegrowSettleDefaultMs);
     // The settings-apply hang's 5760x2160 targets.
-    CHECK(regrowSettleMs(2ULL * 5760 * 2160, -1) == RegrowSettleDefaultMs);
+    CHECK(regrowSettleMs(2ULL * 5760 * 2160, -1, false) == RegrowSettleDefaultMs);
     CHECK(RegrowSettleDefaultMs >= 50);
 }
 
 TEST_CASE("regrow settle: no regrow or small regrows never wait") {
-    CHECK(regrowSettleMs(0, -1) == 0);
+    CHECK(regrowSettleMs(0, -1, false) == 0);
     // N64-sized and 1x targets (480x240 color + depth), and 1080p-class ones.
-    CHECK(regrowSettleMs(2ULL * 480 * 240, -1) == 0);
-    CHECK(regrowSettleMs(1920ULL * 1080, -1) == 0);
-    CHECK(regrowSettleMs(RegrowSettleMinPixels - 1, -1) == 0);
-    CHECK(regrowSettleMs(RegrowSettleMinPixels, -1) == RegrowSettleDefaultMs);
+    CHECK(regrowSettleMs(2ULL * 480 * 240, -1, false) == 0);
+    CHECK(regrowSettleMs(1920ULL * 1080, -1, false) == 0);
+    CHECK(regrowSettleMs(RegrowSettleMinPixels - 1, -1, false) == 0);
+    CHECK(regrowSettleMs(RegrowSettleMinPixels, -1, false) == RegrowSettleDefaultMs);
 }
 
 TEST_CASE("regrow settle: WCW_REGROW_SETTLE_MS overrides the wait, 0 turns it off") {
-    CHECK(regrowSettleMs(2ULL * 7670 * 2880, 0) == 0);
-    CHECK(regrowSettleMs(2ULL * 7670 * 2880, 250) == 250);
+    CHECK(regrowSettleMs(2ULL * 7670 * 2880, 0, false) == 0);
+    CHECK(regrowSettleMs(2ULL * 7670 * 2880, 250, false) == 250);
     // The size threshold still applies.
-    CHECK(regrowSettleMs(2ULL * 480 * 240, 250) == 0);
+    CHECK(regrowSettleMs(2ULL * 480 * 240, 250, false) == 0);
+    CHECK(regrowSettleMs(2ULL * 480 * 240, 250, true) == 0);
+}
+
+// Deferred release of render target textures (aki-roadmap#4)
+
+static ReleaseStamp releaseStamp(uint64_t presentsStarted, uint64_t workloadsDone, uint64_t ms) {
+    ReleaseStamp stamp;
+    stamp.presentsStarted = presentsStarted;
+    stamp.workloadsDone = workloadsDone;
+    stamp.ms = ms;
+    return stamp;
+}
+
+TEST_CASE("deferred release: released textures outlive the present in flight (#4)") {
+    // Released while present 11 was being recorded (11 started, 10 finished), after workload 50.
+    const ReleaseStamp stamp = releaseStamp(11, 50, 1000);
+    // Everything else is ready; the present that may still hold the old texture hasn't finished.
+    CHECK(!releaseReady(stamp, 10, 60, 5000));
+    CHECK(releaseReady(stamp, 11, 60, 5000));
+    // The present thread was idle (as many finished as started): nothing holds them.
+    CHECK(releaseReady(releaseStamp(10, 50, 1000), 10, 60, 5000));
+}
+
+TEST_CASE("deferred release: released textures outlive two more workloads and the old settle time (#4)") {
+    const ReleaseStamp stamp = releaseStamp(10, 50, 1000);
+    // The workload that released them, and the next one.
+    CHECK(!releaseReady(stamp, 10, 50, 5000));
+    CHECK(!releaseReady(stamp, 10, 51, 5000));
+    CHECK(releaseReady(stamp, 10, 50 + DeferredReleaseWorkloads, 5000));
+    // Not before DeferredReleaseMinMs (the settle needed 50 ms or more; 120 fps workloads come every 8 ms).
+    CHECK(!releaseReady(stamp, 10, 60, 1000));
+    CHECK(!releaseReady(stamp, 10, 60, 1000 + DeferredReleaseMinMs - 1));
+    CHECK(releaseReady(stamp, 10, 60, 1000 + DeferredReleaseMinMs));
+    CHECK(DeferredReleaseMinMs >= 50);
+    // A clock that went backwards isn't ready.
+    CHECK(!releaseReady(stamp, 10, 60, 999));
+}
+
+// A stand-in for the released textures that counts how many were destroyed.
+struct DeferredTestTextures {
+    static int destroyed;
+    int id = 0;
+
+    explicit DeferredTestTextures(int id) : id(id) {}
+    ~DeferredTestTextures() { destroyed++; }
+};
+
+int DeferredTestTextures::destroyed = 0;
+
+TEST_CASE("deferred release: a settings apply's textures are destroyed a few frames later, not at once (#4 regression)") {
+    // SS 2x: a regrow releases No Mercy's 3840x1920 color + depth (the hang came from destroying them right away).
+    DeferredTestTextures::destroyed = 0;
+    DeferredReleaseList<DeferredTestTextures> list;
+    list.push(releaseStamp(5, 100, 1000), 29491200, std::make_unique<DeferredTestTextures>(1));
+    list.push(releaseStamp(5, 100, 1000), 29491200, std::make_unique<DeferredTestTextures>(2));
+    list.push(releaseStamp(5, 100, 1000), 0, nullptr);
+    CHECK(list.size() == 2);
+    CHECK(list.pendingBytes() == 58982400);
+    // The workload that regrew them finishes: nothing destroyed yet.
+    CHECK(list.collect(4, 101, 1016) == 0);
+    CHECK(DeferredTestTextures::destroyed == 0);
+    // Frames go by at 60 fps.
+    uint64_t presents = 5, workloads = 101, ms = 1016;
+    while (list.size() > 0) {
+        presents++;
+        workloads++;
+        ms += 16;
+        list.collect(presents, workloads, ms);
+    }
+
+    CHECK(ms >= 1000 + DeferredReleaseMinMs);
+    CHECK(DeferredTestTextures::destroyed == 2);
+    CHECK(list.pendingBytes() == 0);
+    CHECK(list.peakPendingBytes() == 58982400);
+    CHECK(list.destroyedCount() == 2);
+}
+
+TEST_CASE("deferred release: entries go oldest first and later releases wait their own turn (#4)") {
+    DeferredTestTextures::destroyed = 0;
+    DeferredReleaseList<DeferredTestTextures> list;
+    list.push(releaseStamp(5, 100, 1000), 10, std::make_unique<DeferredTestTextures>(1));
+    list.push(releaseStamp(9, 104, 1200), 20, std::make_unique<DeferredTestTextures>(2));
+    // Ready for the first only.
+    CHECK(list.collect(9, 104, 1150) == 1);
+    CHECK(list.pendingBytes() == 20);
+    CHECK(list.collect(9, 105, 1400) == 0);
+    CHECK(list.collect(9, 106, 1400) == 1);
+    CHECK(DeferredTestTextures::destroyed == 2);
+    // Shutdown destroys what is left.
+    list.push(releaseStamp(20, 200, 3000), 30, std::make_unique<DeferredTestTextures>(3));
+    CHECK(list.clear() == 1);
+    CHECK(DeferredTestTextures::destroyed == 3);
+    CHECK(list.size() == 0);
+    CHECK(list.pendingBytes() == 0);
+    CHECK(list.destroyedCount() == 3);
 }
 
 int main() {
