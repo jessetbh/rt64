@@ -278,8 +278,7 @@ namespace RT64 {
                 maxTlut = tlut; maxTmem = loadTile.tmem; maxRows = rows;
             }
             if (std::chrono::duration<double>(now - last).count() >= 2.0) {
-                fprintf(stderr, "[wcw][texhash] %llu calls (%llu row-by-row, %llu new) %.1f ms; slowest %.0f us: %ux%u line %u siz %u fmt %u tlut %u tmem %u rows %u
-",
+                fprintf(stderr, "[wcw][texhash] %llu calls (%llu row-by-row, %llu new) %.1f ms; slowest %.0f us: %ux%u line %u siz %u fmt %u tlut %u tmem %u rows %u\n",
                     (unsigned long long)calls, (unsigned long long)rowCalls, (unsigned long long)fresh, totalUs / 1000.0, maxUs,
                     maxW, maxH, maxLine, maxSiz, maxFmt, maxTlut, maxTmem, maxRows);
                 last = now; calls = fresh = rowCalls = 0; totalUs = maxUs = 0.0;
