@@ -5,6 +5,9 @@
 #include "rt64_rdp_tmem.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cassert>
 #include <cinttypes>
 #include <cstring>
@@ -252,7 +255,35 @@ namespace RT64 {
 
     uint64_t TextureManager::uploadTexture(State *state, const LoadTile &loadTile, TextureCache *textureCache, uint64_t creationFrame, uint16_t width, uint16_t height, uint32_t tlut) {
         const uint8_t *TMEM = reinterpret_cast<const uint8_t *>(state->rdp->TMEM);
+        // [wcw] aki-roadmap#119 (experiment): WCW_TEXHASH_LOG=1 logs, every 2 s, how many texture hashes ran, their time,
+        // how many were new, and the slowest call's tile.
+        static const bool wcwHashLog = getenv("WCW_TEXHASH_LOG") != nullptr;
+        std::chrono::steady_clock::time_point wcwT0;
+        if (wcwHashLog) wcwT0 = std::chrono::steady_clock::now();
         uint64_t hash = TMEMHasher::hash(TMEM, loadTile, width, height, tlut, TMEMHasher::CurrentHashVersion);
+        if (wcwHashLog) {
+            static std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
+            static uint64_t calls = 0, fresh = 0, rowCalls = 0;
+            static double totalUs = 0.0, maxUs = 0.0;
+            static uint32_t maxW = 0, maxH = 0, maxLine = 0, maxSiz = 0, maxFmt = 0, maxTlut = 0, maxTmem = 0, maxRows = 0;
+            const auto now = std::chrono::steady_clock::now();
+            const double us = std::chrono::duration<double, std::micro>(now - wcwT0).count();
+            const bool rows = TMEMHasher::needsToHashRowsIndividually(loadTile, width);
+            calls++;
+            rowCalls += rows ? 1 : 0;
+            fresh += (hashSet.find(hash) == hashSet.end()) ? 1 : 0;
+            totalUs += us;
+            if (us > maxUs) {
+                maxUs = us; maxW = width; maxH = height; maxLine = loadTile.line; maxSiz = loadTile.siz; maxFmt = loadTile.fmt;
+                maxTlut = tlut; maxTmem = loadTile.tmem; maxRows = rows;
+            }
+            if (std::chrono::duration<double>(now - last).count() >= 2.0) {
+                fprintf(stderr, "[wcw][texhash] %llu calls (%llu row-by-row, %llu new) %.1f ms; slowest %.0f us: %ux%u line %u siz %u fmt %u tlut %u tmem %u rows %u\n",
+                    (unsigned long long)calls, (unsigned long long)rowCalls, (unsigned long long)fresh, totalUs / 1000.0, maxUs,
+                    maxW, maxH, maxLine, maxSiz, maxFmt, maxTlut, maxTmem, maxRows);
+                last = now; calls = fresh = rowCalls = 0; totalUs = maxUs = 0.0;
+            }
+        }
         if (hashSet.find(hash) == hashSet.end()) {
             hashSet.insert(hash);
             WcwRice::TextureKey legacyKey = computeRiceKey(state, loadTile, tlut);

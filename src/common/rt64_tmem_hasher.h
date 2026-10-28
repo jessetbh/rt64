@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <cstring>
+
 // Referenced from zstd.
 
 static unsigned bitScanForward64(uint64_t val) {
@@ -66,25 +68,48 @@ namespace RT64 {
             const uint32_t tmemMask = halfTMEM ? TMEMMask16 : TMEMMask8;
             const uint32_t tmemAddress = (loadTile.tmem << 3) & tmemMask;
             uint64_t tlutBitset[4] = {};
+            auto addToBitset = [&](const uint8_t *tmemBytes, uint32_t byteCount) {
+                if (loadTile.siz == G_IM_SIZ_4b) {
+                    for (uint32_t i = 0; i < byteCount; i++) {
+                        tlutBitset[0] |= (1ULL << (tmemBytes[i] & 0xFU));
+                        tlutBitset[0] |= (1ULL << ((tmemBytes[i] >> 4U) & 0xFU));
+                    }
+                }
+                else {
+                    for (uint32_t i = 0; i < byteCount; i++) {
+                        tlutBitset[tmemBytes[i] >> 6U] |= (1ULL << (tmemBytes[i] & 0x3FU));
+                    }
+                }
+            };
+
+            // [wcw] aki-roadmap#119: the bitset is an OR over the hashed bytes, so a byte hashed again adds nothing. Past
+            // a TMEM's worth of scanning, bytes are only marked, and each marked byte is scanned once at the end: a tile
+            // whose rows are hashed one by one with a garbage height (thousands of rows wrapping TMEM) scanned every row
+            // byte by byte, 30-48 ms per display list (Starrcade 2.0). The hash is unchanged.
+            uint32_t bitsetScanned = 0;
+            bool bitsetMarking = false;
+            uint8_t bitsetMarked[TMEMBytes];   // zeroed when marking starts
             auto hashUpdate = [&](const uint8_t *tmemBytes, uint32_t byteCount) {
                 XXH3_64bits_update(&xxh3, tmemBytes, byteCount);
 
                 // Version 5 parses every byte individually if TLUT is enabled to determine the TLUT bytes that can be hashed.
                 if ((version >= 5) && usesTLUT) {
-                    if (loadTile.siz == G_IM_SIZ_4b) {
-                        for (uint32_t i = 0; i < byteCount; i++) {
-                            tlutBitset[0] |= (1ULL << (tmemBytes[i] & 0xFU));
-                            tlutBitset[0] |= (1ULL << ((tmemBytes[i] >> 4U) & 0xFU));
-                        }
+                    const uint32_t offset = uint32_t(tmemBytes - TMEM);
+                    if (!bitsetMarking && ((bitsetScanned + byteCount) > TMEMBytes)) {
+                        bitsetMarking = true;
+                        memset(bitsetMarked, 0, sizeof(bitsetMarked));
                     }
-                    else {
-                        for (uint32_t i = 0; i < byteCount; i++) {
-                            tlutBitset[tmemBytes[i] >> 6U] |= (1ULL << (tmemBytes[i] & 0x3FU));
-                        }
+
+                    if (bitsetMarking && ((offset + byteCount) <= TMEMBytes)) {
+                        memset(&bitsetMarked[offset], 1, byteCount);
+                        return;
                     }
+
+                    // (Defensive: hashTMEM keeps every range inside TMEM, so a range past its end never comes here.)
+                    bitsetScanned += byteCount;
+                    addToBitset(tmemBytes, byteCount);
                 }
             };
-
             auto hashTMEM = [&](uint32_t tmemBaseAddress, uint32_t tmemOrAddress, uint32_t byteCount, bool oddRow) {
                 assert((tmemBaseAddress < tmemSize) && "Base address must be masked within the bounds of the TMEM size.");
 
@@ -138,6 +163,15 @@ namespace RT64 {
 
                 if (RGBA32) {
                     hashTMEM(tmemAddress, tmemSize, drawBytesTotal, false);
+                }
+            }
+
+            // [wcw] The marked bytes, each once (see bitsetMarking).
+            if (bitsetMarking) {
+                for (uint32_t i = 0; i < TMEMBytes; i++) {
+                    if (bitsetMarked[i]) {
+                        addToBitset(&TMEM[i], 1);
+                    }
                 }
             }
 
