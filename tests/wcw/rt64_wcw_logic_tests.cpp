@@ -2087,7 +2087,7 @@ TEST_CASE("hdr readback: half floats convert exactly") {
     CHECK(std::isnan(halfToFloat(0x7E00)));
 }
 
-TEST_CASE("hdr readback: the table conversion gives the same pixels and nits as the per-pixel one (#128 regression)") {
+TEST_CASE("hdr readback: the table conversion gives the same pixels and nits as the per-pixel one (#128)") {
     // The old present-thread code: halfToFloat + sRGB per channel, nits from the linear values.
     const float invScale = 1.0f / 3.0f;
     std::vector<uint16_t> src;

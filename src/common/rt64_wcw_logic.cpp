@@ -946,7 +946,8 @@ namespace RT64::WcwLogic {
             }
         }
 
-        if (srgbTable.empty() || (srgbTableScale != invScale)) {
+        // Compared by bits: a NaN scale must not rebuild the table every row.
+        if (srgbTable.empty() || (memcmp(&srgbTableScale, &invScale, sizeof(float)) != 0)) {
             srgbTable.resize(65536);
             for (uint32_t i = 0; i < 65536; i++) {
                 srgbTable[i] = linearToSrgb8(halfTable[i] * invScale);
