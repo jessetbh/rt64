@@ -478,6 +478,7 @@ if (RT64_WCW_TESTS AND NOT CMAKE_CROSSCOMPILING)
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_rice_tests.cpp"
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_jabo_tests.cpp"
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_packfs_tests.cpp"
+        "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_tmem_hash_tests.cpp"
         "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_logic.cpp"
         "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_jabo.cpp"
         "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_perf.cpp"
@@ -485,6 +486,7 @@ if (RT64_WCW_TESTS AND NOT CMAKE_CROSSCOMPILING)
         "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_texdump.cpp"
         "${PROJECT_SOURCE_DIR}/src/common/rt64_wcw_venues.cpp"
         "${PROJECT_SOURCE_DIR}/src/common/rt64_replacement_database.cpp"
+        "${PROJECT_SOURCE_DIR}/src/common/rt64_load_types.cpp"
         "${PROJECT_SOURCE_DIR}/src/contrib/miniz/miniz.c"
     )
     target_include_directories(rt64_wcw_tests PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/src/contrib" "${PROJECT_SOURCE_DIR}/tests/wcw")
