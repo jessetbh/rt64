@@ -272,6 +272,16 @@ namespace RT64::WcwLogic {
     // at or below the game rate) and without the beam simulator (it paces its own presents). 0 rates are unknown.
     bool holdPresentsToGameRate(uint32_t displayRate, uint32_t targetRate, uint32_t viOriginalRate, bool beamActive);
 
+    // VI rate estimate (aki-roadmap#121)
+
+    // A present for screen RAM that changed while the VI stayed the same counts as a game frame (its VIs feed the rate
+    // estimate) when the CPU drew the screen (no RDP framebuffer is tracked there) or the RDP drew into the shown
+    // framebuffer since the last present (single buffering): its write timestamp moved. Without either, only the CPU
+    // edited a frame the RDP drew earlier, which isn't a new frame. AEW 64's cheat codes write body-shape data and
+    // scratch variables at the top of RDRAM, No Mercy's second framebuffer outside matches, every frame: counted as
+    // frames, they read as 60 fps and turned frame interpolation off at the 60 fps setting.
+    bool screenChangeIsGameFrame(bool rdpFramebufferAtScreen, uint64_t fbWriteTimestamp, uint64_t writeTimestampAtLastPresent);
+
     // Holds a frame that arrives early until one game frame period after the previous present's target, so the
     // presents settle at the later phase (on hardware's: the frame shows 1 VI later than at the early phase) and come
     // one game frame apart. A late frame moves the grid to its arrival. A hold of a whole game frame period or more

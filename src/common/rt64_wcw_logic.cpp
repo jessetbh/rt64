@@ -336,6 +336,10 @@ namespace RT64::WcwLogic {
         return havePreviousPresent && (targetRate > 0) && (targetRate > viOriginalRate) && !beamActive;
     }
 
+    bool screenChangeIsGameFrame(bool rdpFramebufferAtScreen, uint64_t fbWriteTimestamp, uint64_t writeTimestampAtLastPresent) {
+        return !rdpFramebufferAtScreen || (fbWriteTimestamp != writeTimestampAtLastPresent);
+    }
+
     bool holdPresentsToGameRate(uint32_t displayRate, uint32_t targetRate, uint32_t viOriginalRate, bool beamActive) {
         return (viOriginalRate > 0) && (displayRate > 0) && ((displayRate * 2) >= (viOriginalRate * 3)) && (targetRate <= viOriginalRate) && !beamActive;
     }

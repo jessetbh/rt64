@@ -1855,6 +1855,20 @@ TEST_CASE("matrix split: a pair whose drawn matrix changed more than tenfold dro
     CHECK(!c.splitLayer());
 }
 
+TEST_CASE("VI rate: CPU edits of a frame the RDP drew don't count as game frames (#121, AEW 64 title read as 60 fps)") {
+    // The shown framebuffer's RDP write timestamp hasn't moved since the last present: only cheat-code writes changed it.
+    CHECK(!screenChangeIsGameFrame(true, 41, 41));
+}
+
+TEST_CASE("VI rate: the RDP drawing into the shown framebuffer (single buffering) still counts as a game frame") {
+    CHECK(screenChangeIsGameFrame(true, 42, 41));
+}
+
+TEST_CASE("VI rate: a screen the CPU drew itself (no RDP framebuffer there) still counts as a game frame") {
+    CHECK(screenChangeIsGameFrame(false, 0, 0));
+    CHECK(screenChangeIsGameFrame(false, 0, 7));
+}
+
 int main() {
     return WcwTest::runAll("rt64 wcw tests");
 }

@@ -16,6 +16,7 @@
 #include "common/rt64_elapsed_timer.h"
 #include "common/rt64_math.h"
 #include "common/rt64_tmem_hasher.h"
+#include "common/rt64_wcw_logic.h"
 #include "preset/rt64_preset_draw_call.h"
 #include "preset/rt64_preset_light.h"
 
@@ -98,6 +99,7 @@ namespace RT64 {
         workloadCounter = 0;
         lastScreenHash = 0;
         lastScreenFactorCounter = 0;
+        lastScreenWriteTimestamp = 0;
         lastWorkloadIndex = 0;
         addLightsOnFlush = false;
         activeSpriteCommand.replacementHash = 0;
@@ -1914,6 +1916,8 @@ namespace RT64 {
         screenCpuProfiler.start();
         bool fbChangesMade = false;
         bool screenChangesMade = false;
+        bool rdpFramebufferAtScreen = false;
+        uint64_t screenWriteTimestamp = 0;
         // [wcw] DIAGNOSTIC (env WCW_PRESENT_LOG=1): once a second, report what the present path sees.
         { static const bool wcwPlog = getenv("WCW_PRESENT_LOG") != nullptr;
           static int n = 0;
@@ -1968,6 +1972,9 @@ namespace RT64 {
                 }
             }
 
+            rdpFramebufferAtScreen = (screenFb != nullptr);
+            screenWriteTimestamp = (screenFb != nullptr) ? screenFb->lastWriteTimestamp : 0;
+
             // Store the RAM required by the VI so the render thread can display it if necessary.
             if (screenFbSiz >= G_IM_SIZ_16b) {
                 uint32_t screenFbBytes = uint32_t(screenFbSize.x * screenFbSize.y) << (screenFbSiz - 1);
@@ -1988,10 +1995,14 @@ namespace RT64 {
 
             // This presentation originates from screen changes being made manually by the CPU
             // or the game somehow not doing some form of buffering (instant input romhacks).
-            if (!fromEarlyPresent && !viDifferent && !fbChangesMade && screenChangesMade) {
+            // [wcw] Not when only the CPU edited a frame the RDP drew (WcwLogic::screenChangeIsGameFrame, aki-roadmap#121).
+            if (!fromEarlyPresent && !viDifferent && !fbChangesMade && screenChangesMade &&
+                WcwLogic::screenChangeIsGameFrame(rdpFramebufferAtScreen, screenWriteTimestamp, lastScreenWriteTimestamp)) {
                 viHistory.pushFactor(lastScreenFactorCounter);
                 lastScreenFactorCounter = 0;
             }
+
+            lastScreenWriteTimestamp = screenWriteTimestamp;
         }
 
         screenCpuProfiler.end();
