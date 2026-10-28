@@ -908,6 +908,66 @@ namespace RT64::WcwLogic {
         return (overrideMs >= 0) ? uint32_t(overrideMs) : RegrowSettleDefaultMs;
     }
 
+    // HDR readback for the luminance log and BMP dumps (aki-roadmap#128)
+
+    float halfToFloat(uint16_t half) {
+        const uint32_t sign = uint32_t(half & 0x8000) << 16;
+        const uint32_t exponent = (half >> 10) & 0x1F;
+        const uint32_t mantissa = half & 0x3FF;
+        uint32_t bits = sign;
+        if (exponent == 0x1F) {
+            bits |= 0x7F800000 | (mantissa << 13);
+        }
+        else if (exponent != 0) {
+            bits |= ((exponent + 112) << 23) | (mantissa << 13);
+        }
+        else if (mantissa != 0) {
+            const float value = float(mantissa) / 16777216.0f;
+            return (sign != 0) ? -value : value;
+        }
+
+        float value;
+        memcpy(&value, &bits, sizeof(value));
+        return value;
+    }
+
+    uint8_t linearToSrgb8(float linearValue) {
+        // NaN clamps to 0 (std::clamp would keep it).
+        const float c = (linearValue > 0.0f) ? std::min(linearValue, 1.0f) : 0.0f;
+        const float s = (c <= 0.0031308f) ? (c * 12.92f) : (1.055f * powf(c, 1.0f / 2.4f) - 0.055f);
+        return uint8_t(std::lround(s * 255.0f));
+    }
+
+    void HdrReadbackConverter::convertRow(const uint16_t *src, uint8_t *dst, uint32_t width, float invScale, double &nitsSum, float &nitsMax) {
+        if (halfTable.empty()) {
+            halfTable.resize(65536);
+            for (uint32_t i = 0; i < 65536; i++) {
+                halfTable[i] = halfToFloat(uint16_t(i));
+            }
+        }
+
+        if (srgbTable.empty() || (srgbTableScale != invScale)) {
+            srgbTable.resize(65536);
+            for (uint32_t i = 0; i < 65536; i++) {
+                srgbTable[i] = linearToSrgb8(halfTable[i] * invScale);
+            }
+
+            srgbTableScale = invScale;
+            srgbBuilds++;
+        }
+
+        for (uint32_t x = 0; x < width; x++) {
+            const uint16_t *pixel = src + uint64_t(x) * 4;
+            const float nits = 80.0f * (0.2126f * halfTable[pixel[0]] + 0.7152f * halfTable[pixel[1]] + 0.0722f * halfTable[pixel[2]]);
+            nitsSum += nits;
+            nitsMax = std::max(nitsMax, nits);
+            dst[x * 4 + 0] = srgbTable[pixel[2]];
+            dst[x * 4 + 1] = srgbTable[pixel[1]];
+            dst[x * 4 + 2] = srgbTable[pixel[0]];
+            dst[x * 4 + 3] = 255;
+        }
+    }
+
     // In-game Datadog metrics (aki-roadmap#125)
 
     bool envSwitchOn(const char *value) {

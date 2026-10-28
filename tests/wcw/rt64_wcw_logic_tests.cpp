@@ -2072,6 +2072,82 @@ TEST_CASE("regrow settle: WCW_REGROW_SETTLE_MS overrides the wait, 0 turns it of
     CHECK(regrowSettleMs(2ULL * 480 * 240, 250) == 0);
 }
 
+// HDR readback for the luminance log and BMP dumps (aki-roadmap#128)
+
+TEST_CASE("hdr readback: half floats convert exactly") {
+    CHECK(halfToFloat(0x0000) == 0.0f);
+    CHECK(halfToFloat(0x3C00) == 1.0f);
+    CHECK(halfToFloat(0xC000) == -2.0f);
+    CHECK(halfToFloat(0x3800) == 0.5f);
+    CHECK(halfToFloat(0x7BFF) == 65504.0f);
+    // Subnormals: the smallest is 2^-24.
+    CHECK(halfToFloat(0x0001) == 1.0f / 16777216.0f);
+    CHECK(halfToFloat(0x8001) == -1.0f / 16777216.0f);
+    CHECK(std::isinf(halfToFloat(0x7C00)));
+    CHECK(std::isnan(halfToFloat(0x7E00)));
+}
+
+TEST_CASE("hdr readback: the table conversion gives the same pixels and nits as the per-pixel one (#128 regression)") {
+    // The old present-thread code: halfToFloat + sRGB per channel, nits from the linear values.
+    const float invScale = 1.0f / 3.0f;
+    std::vector<uint16_t> src;
+    for (uint32_t i = 0; i < 65536; i += 7) {
+        src.push_back(uint16_t(i));
+    }
+
+    while ((src.size() % 4) != 0) {
+        src.push_back(0x3C00);
+    }
+
+    const uint32_t width = uint32_t(src.size() / 4);
+    std::vector<uint8_t> dst(width * 4);
+    HdrReadbackConverter converter;
+    double nitsSum = 0.0;
+    float nitsMax = 0.0f;
+    converter.convertRow(src.data(), dst.data(), width, invScale, nitsSum, nitsMax);
+    double refSum = 0.0;
+    float refMax = 0.0f;
+    uint32_t mismatches = 0;
+    for (uint32_t x = 0; x < width; x++) {
+        const uint16_t *pixel = &src[x * 4];
+        const float nits = 80.0f * (0.2126f * halfToFloat(pixel[0]) + 0.7152f * halfToFloat(pixel[1]) + 0.0722f * halfToFloat(pixel[2]));
+        refSum += nits;
+        refMax = std::max(refMax, nits);
+        mismatches += (dst[x * 4 + 0] != linearToSrgb8(halfToFloat(pixel[2]) * invScale)) ? 1 : 0;
+        mismatches += (dst[x * 4 + 1] != linearToSrgb8(halfToFloat(pixel[1]) * invScale)) ? 1 : 0;
+        mismatches += (dst[x * 4 + 2] != linearToSrgb8(halfToFloat(pixel[0]) * invScale)) ? 1 : 0;
+        mismatches += (dst[x * 4 + 3] != 255) ? 1 : 0;
+    }
+
+    CHECK(mismatches == 0);
+    CHECK((std::isnan(refSum) && std::isnan(nitsSum)) || (refSum == nitsSum));
+    CHECK(nitsMax == refMax);
+}
+
+TEST_CASE("hdr readback: paper white maps to sRGB white, black and negatives to 0, and the table follows the scale (#128)") {
+    HdrReadbackConverter converter;
+    // Paper white 240 nits: scRGB 3.0 (0x4200), scale 3.
+    const uint16_t white[4] = { 0x4200, 0x4200, 0x4200, 0x3C00 };
+    const uint16_t black[4] = { 0x0000, 0x8000, 0xBC00, 0x3C00 };
+    uint8_t out[4] = {};
+    double nitsSum = 0.0;
+    float nitsMax = 0.0f;
+    converter.convertRow(white, out, 1, 1.0f / 3.0f, nitsSum, nitsMax);
+    CHECK((out[0] == 255) && (out[1] == 255) && (out[2] == 255) && (out[3] == 255));
+    CHECK(std::fabs(nitsMax - 240.0f) < 0.01f);
+    converter.convertRow(black, out, 1, 1.0f / 3.0f, nitsSum, nitsMax);
+    CHECK((out[0] == 0) && (out[1] == 0) && (out[2] == 0));
+    CHECK(converter.srgbTableBuilds() == 1);
+    // Another HDR Picture setting (paper white 160 nits, scale 2): the same pixel is now over-white, clamped.
+    converter.convertRow(white, out, 1, 1.0f / 2.0f, nitsSum, nitsMax);
+    CHECK(converter.srgbTableBuilds() == 2);
+    CHECK(out[0] == 255);
+    const uint16_t grey[4] = { 0x3C00, 0x3C00, 0x3C00, 0x3C00 };
+    converter.convertRow(grey, out, 1, 1.0f / 2.0f, nitsSum, nitsMax);
+    CHECK(out[0] == linearToSrgb8(0.5f));
+    CHECK(converter.srgbTableBuilds() == 2);
+}
+
 int main() {
     return WcwTest::runAll("rt64 wcw tests");
 }
