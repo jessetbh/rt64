@@ -892,6 +892,34 @@ namespace RT64::WcwLogic {
         uint64_t destroyed = 0;
     };
 
+    // HDR readback for the luminance log and BMP dumps (aki-roadmap#128)
+
+    // An IEEE half float's value (subnormals, infinities and NaNs included).
+    float halfToFloat(uint16_t half);
+
+    // Converts the scRGB (RGBA16F) swap chain read back by WCW_PRESENT_LUM / WCW_BMP_* to 8-bit sRGB BGRA, undoing
+    // the paper white scale, so the luminance log and BMPs stay comparable with SDR, and adds up the nits. Per pixel
+    // this was three powf calls and three half conversions on the present thread: 30+ ms a present at 1280x720,
+    // which took HDR runs with the luminance log from 60 presents/s to 10-20 from present 240 on (where the log
+    // starts). Tables indexed by the half's bits do the same per channel; the sRGB table is rebuilt when the scale
+    // changes.
+    class HdrReadbackConverter {
+    public:
+        // src: width RGBA16F pixels; dst: width BGRA8 pixels. invScale: 1 / the paper white scale.
+        void convertRow(const uint16_t *src, uint8_t *dst, uint32_t width, float invScale, double &nitsSum, float &nitsMax);
+        // How many times the sRGB table was built (tests).
+        uint32_t srgbTableBuilds() const { return srgbBuilds; }
+
+    private:
+        std::vector<float> halfTable;
+        std::vector<uint8_t> srgbTable;
+        float srgbTableScale = 0.0f;
+        uint32_t srgbBuilds = 0;
+    };
+
+    // The 8-bit sRGB value of a linear value (clamped to 0-1), as the readback always converted it.
+    uint8_t linearToSrgb8(float linearValue);
+
     // In-game Datadog metrics (aki-roadmap#125)
 
     // WCW_DD_METRICS=1 sends aggregated performance numbers to the local Datadog Agent (DogStatsD, udp

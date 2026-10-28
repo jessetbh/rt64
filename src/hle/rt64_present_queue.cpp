@@ -828,33 +828,9 @@ namespace RT64 {
                         // (undoing the paper white scale) so the luminance log and BMPs stay comparable.
                         static std::vector<uint8_t> wcwHdrConverted;
                         if (HdrOutput::active()) {
-                            auto halfToFloat = [](uint16_t h) {
-                                const uint32_t sign = uint32_t(h & 0x8000) << 16;
-                                const uint32_t exponent = (h >> 10) & 0x1F;
-                                const uint32_t mantissa = h & 0x3FF;
-                                uint32_t bits = sign;
-                                if (exponent == 0x1F) {
-                                    bits |= 0x7F800000 | (mantissa << 13);
-                                }
-                                else if (exponent != 0) {
-                                    bits |= ((exponent + 112) << 23) | (mantissa << 13);
-                                }
-                                else if (mantissa != 0) {
-                                    float value = float(mantissa) / 16777216.0f;
-                                    return (sign != 0) ? -value : value;
-                                }
-
-                                float value;
-                                memcpy(&value, &bits, sizeof(value));
-                                return value;
-                            };
-
-                            auto toSrgb8 = [](float linearValue) {
-                                const float c = std::clamp(linearValue, 0.0f, 1.0f);
-                                const float s = (c <= 0.0031308f) ? (c * 12.92f) : (1.055f * powf(c, 1.0f / 2.4f) - 0.055f);
-                                return uint8_t(std::lround(s * 255.0f));
-                            };
-
+                            // [wcw hdr] Table-driven (WcwLogic::HdrReadbackConverter): converting per pixel cost
+                            // 30+ ms a present and took HDR runs to 10-20 presents/s (aki-roadmap#128).
+                            static WcwLogic::HdrReadbackConverter wcwHdrConverter;
                             const float invScale = 1.0f / HdrOutput::sdrScale();
                             double nitsSum = 0.0;
                             float nitsMax = 0.0f;
@@ -862,15 +838,7 @@ namespace RT64 {
                             for (uint32_t y = 0; y < wcwRbH; y++) {
                                 const uint16_t *src = (const uint16_t *)(p + uint64_t(y) * wcwRbRow * 8);
                                 uint8_t *dst = wcwHdrConverted.data() + uint64_t(y) * wcwRbRow * 4;
-                                for (uint32_t x = 0; x < wcwRbW; x++) {
-                                    const float nits = 80.0f * (0.2126f * halfToFloat(src[x * 4 + 0]) + 0.7152f * halfToFloat(src[x * 4 + 1]) + 0.0722f * halfToFloat(src[x * 4 + 2]));
-                                    nitsSum += nits;
-                                    nitsMax = std::max(nitsMax, nits);
-                                    dst[x * 4 + 0] = toSrgb8(halfToFloat(src[x * 4 + 2]) * invScale);
-                                    dst[x * 4 + 1] = toSrgb8(halfToFloat(src[x * 4 + 1]) * invScale);
-                                    dst[x * 4 + 2] = toSrgb8(halfToFloat(src[x * 4 + 0]) * invScale);
-                                    dst[x * 4 + 3] = 255;
-                                }
+                                wcwHdrConverter.convertRow(src, dst, wcwRbW, invScale, nitsSum, nitsMax);
                             }
 
                             fprintf(stderr, "[wcw hdr] present %d: mean %.0f nits, max %.0f nits\n", wcwPresentN, nitsSum / (double(wcwRbW) * wcwRbH), nitsMax);
