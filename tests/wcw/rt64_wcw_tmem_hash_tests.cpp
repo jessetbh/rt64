@@ -177,7 +177,7 @@ namespace {
 
     };
 
-    uint8_t tmemBuffer[4096 + 64];   // an odd row's swap may read a few bytes past TMEM, as on the RDP struct
+    uint8_t tmemBuffer[4096 + 64];   // TMEM plus slack (hashTMEM never reads past 4096)
 
     LoadTile randomTile(std::mt19937 &rng) {
         LoadTile t = {};

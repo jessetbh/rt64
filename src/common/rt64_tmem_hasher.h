@@ -105,7 +105,7 @@ namespace RT64 {
                         return;
                     }
 
-                    // (A range past the end of TMEM, from an odd row's swap: scanned as it always was.)
+                    // (Defensive: hashTMEM keeps every range inside TMEM, so a range past its end never comes here.)
                     bitsetScanned += byteCount;
                     addToBitset(tmemBytes, byteCount);
                 }
