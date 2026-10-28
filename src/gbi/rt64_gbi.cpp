@@ -286,7 +286,7 @@ namespace RT64 {
             GBISegment{ 0x10B0,     0xE8028E4BC6529E6EULL,  { &ZSORTP_0_33 } }, // Needs confirmation.
     };
 
-    static std::array<GBISegment, 108> dataSegments = {
+    static std::array<GBISegment, 109> dataSegments = {
             GBISegment{ 0x800,      0xEEB10D73400213B3ULL,  { &F3D_SDK_E } }, // Needs confirmation.
             GBISegment{ 0x800,      0x49651E384B48F694ULL,  { &F3D_SDK_F } }, // Needs confirmation.
             GBISegment{ 0x800,      0x1A736198F90E81C5ULL,  { &F3D_SDK_UNKNOWN_G } }, // Needs confirmation.
@@ -317,6 +317,7 @@ namespace RT64 {
             GBISegment{ 0x800,      0x312E7A6E9F144186ULL,  { &F3DEX_NON_1_22_A } }, // Needs confirmation.
             GBISegment{ 0x800,      0x3828B4F75B0A0E6AULL,  { &F3DEX_1_23 } },
             GBISegment{ 0x800,      0x4A9D9C1BBFFEA48DULL,  { &F3DEX_1_23_A } }, // Needs confirmation.
+            GBISegment{ 0x800,      0x53F88229711355B1ULL,  { &F3DEX_1_23_A } }, // [wcw fullconv] World Tour 9 Underground keeps a table in the unused tail of the data (238 words from +0x13C).
             GBISegment{ 0x800,      0xEDDB46181FE78DE8ULL,  { &F3DLX_1_23 } }, // Needs confirmation.
             GBISegment{ 0x800,      0x2773FDFC5E62C0B0ULL,  { &F3DLX_1_23_A } }, // Needs confirmation.
             GBISegment{ 0x800,      0x6BD0FEA8C97D3442ULL,  { &F3DLX_1_23_REJ } }, // Needs confirmation.
