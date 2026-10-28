@@ -1492,7 +1492,10 @@ namespace RT64 {
                 }
                 else {
                     std::scoped_lock<std::mutex> presentTargetsLock(wcwPresentTargetsMutex);
+                    // [wcw fix] Released render target textures outlive every present that started before (aki-roadmap#4).
+                    RenderTarget::wcwNotePresentStart();
                     threadPresent(present, swapChainValid);
+                    RenderTarget::wcwNotePresentEnd();
                 }
 
                 if (!present.paused) {

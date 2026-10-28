@@ -900,12 +900,21 @@ namespace RT64::WcwLogic {
         return Action::None;
     }
 
-    uint32_t regrowSettleMs(uint64_t regrownPixels, int32_t overrideMs) {
+    uint32_t regrowSettleMs(uint64_t regrownPixels, int32_t overrideMs, bool deferringRelease) {
         if (regrownPixels < RegrowSettleMinPixels) {
             return 0;
         }
 
-        return (overrideMs >= 0) ? uint32_t(overrideMs) : RegrowSettleDefaultMs;
+        if (overrideMs >= 0) {
+            return uint32_t(overrideMs);
+        }
+
+        return deferringRelease ? 0 : RegrowSettleDefaultMs;
+    }
+
+    bool releaseReady(const ReleaseStamp &stamp, uint64_t presentsFinished, uint64_t workloadsDone, uint64_t nowMs) {
+        return (presentsFinished >= stamp.presentsStarted) && (workloadsDone >= (stamp.workloadsDone + DeferredReleaseWorkloads)) &&
+            (nowMs >= stamp.ms) && ((nowMs - stamp.ms) >= DeferredReleaseMinMs);
     }
 
     // In-game Datadog metrics (aki-roadmap#125)

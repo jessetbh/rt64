@@ -757,6 +757,7 @@ namespace RT64 {
         workloadVelocityUploader.reset();
         workloadTilesUploader.reset();
         sharedQueueResources.reset();
+        RenderTarget::wcwCloseDeferred();
         rasterShaderCache.reset();
 #   if RT_ENABLED
         rtShaderCache.reset();
