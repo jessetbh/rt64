@@ -253,6 +253,69 @@ namespace RT64 {
         return hash;
     }
 
+    // [wcw] aki-roadmap#105: a CI4 mat's TMEM with its painted rope-shadow lines filled in. Each line texel takes the
+    // palette entry nearest the colour interpolated from the texels on both sides of its line, so the GPU decodes the
+    // copy like any other texture. Returns empty when the texture has no lines.
+    static std::vector<uint8_t> wcwDelineTMEM(const uint8_t *TMEM, const LoadTile &loadTile, uint32_t width, uint32_t height, uint32_t tlut, uint32_t &changedTexels) {
+        changedTexels = 0;
+        WcwTexDump::TileFormat tileFormat;
+        tileFormat.fmt = loadTile.fmt;
+        tileFormat.siz = loadTile.siz;
+        tileFormat.address = uint32_t(loadTile.tmem) << 3;
+        tileFormat.stride = uint32_t(loadTile.line) << 3;
+        tileFormat.tlut = tlut;
+        tileFormat.palette = loadTile.palette;
+        const std::vector<uint8_t> rgba = WcwTexDump::decodeTexture(TMEM, width, height, tileFormat);
+        std::vector<float> luminance(size_t(width) * height);
+        for (size_t i = 0; i < luminance.size(); i++) {
+            luminance[i] = 0.299f * rgba[i * 4 + 0] + 0.587f * rgba[i * 4 + 1] + 0.114f * rgba[i * 4 + 2];
+        }
+
+        const std::vector<WcwLogic::DelineLine> lines = WcwLogic::delineFind(luminance, width, height);
+        if (lines.empty()) {
+            return {};
+        }
+
+        std::vector<uint8_t> filled = rgba;
+        WcwLogic::delineFill(filled, width, height, lines);
+
+        // The tile's 16 palette colours, decoded like WcwTexDump does.
+        uint8_t palette[16 * 4];
+        for (uint32_t i = 0; i < 16; i++) {
+            const uint32_t address = 0x800 + (uint32_t(loadTile.palette) << 7) + (i << 3);
+            const uint32_t value = (uint32_t(TMEM[address & 0xFFF]) << 8) | TMEM[(address + 1) & 0xFFF];
+            uint8_t *c = &palette[i * 4];
+            if (tlut == WcwTexDump::TlutIA16) {
+                c[0] = c[1] = c[2] = uint8_t(value >> 8);
+                c[3] = uint8_t(value & 0xFF);
+            }
+            else {
+                const uint32_t r = (value >> 11) & 0x1F, g = (value >> 6) & 0x1F, b = (value >> 1) & 0x1F;
+                c[0] = uint8_t((r << 3) | (r >> 2));
+                c[1] = uint8_t((g << 3) | (g >> 2));
+                c[2] = uint8_t((b << 3) | (b >> 2));
+                c[3] = (value & 1) ? 255 : 0;
+            }
+        }
+
+        std::vector<uint8_t> bytes(TMEM, TMEM + RDP_TMEM_BYTES);
+        for (uint32_t y = 0; y < height; y++) {
+            for (uint32_t x = 0; x < width; x++) {
+                const size_t i = (size_t(y) * width + x) * 4;
+                if (memcmp(&filled[i], &rgba[i], 4) == 0) {
+                    continue;
+                }
+
+                const uint32_t index = WcwLogic::nearestPaletteIndex(&filled[i], palette, 16);
+                const uint32_t byte = WcwLogic::tmem4bTexelByte(tileFormat.address, tileFormat.stride, x, y);
+                bytes[byte] = (x & 1) ? uint8_t((bytes[byte] & 0xF0) | index) : uint8_t((bytes[byte] & 0x0F) | (index << 4));
+                changedTexels++;
+            }
+        }
+
+        return bytes;
+    }
+
     uint64_t TextureManager::uploadTexture(State *state, const LoadTile &loadTile, TextureCache *textureCache, uint64_t creationFrame, uint16_t width, uint16_t height, uint32_t tlut) {
         const uint8_t *TMEM = reinterpret_cast<const uint8_t *>(state->rdp->TMEM);
         // [wcw] aki-roadmap#119 (experiment): WCW_TEXHASH_LOG=1 logs, every 2 s, how many texture hashes ran, their time,
@@ -289,6 +352,26 @@ namespace RT64 {
             WcwRice::TextureKey legacyKey = computeRiceKey(state, loadTile, tlut);
             computeJaboKey(state, loadTile, width, height, legacyKey);
             textureCache->queueGPUUploadTMEM(hash, creationFrame, TMEM, RDP_TMEM_BYTES, width, height, tlut, loadTile, true, legacyKey);
+        }
+
+        // [wcw] aki-roadmap#105: the listed mats also get a copy with their painted rope shadows filled in, which the
+        // renderer uses with RT on. It has its own cache key, so it is evicted and uploaded again like any texture.
+        if ((loadTile.fmt == WcwTexDump::FmtCI) && (loadTile.siz == WcwTexDump::Siz4b) && (tlut != 0) && TextureCache::wcwDelineListed(hash)) {
+            const uint64_t delinedHash = WcwLogic::delinedHash(hash);
+            if (hashSet.find(delinedHash) == hashSet.end()) {
+                hashSet.insert(delinedHash);
+                uint32_t changedTexels = 0;
+                const std::vector<uint8_t> delined = wcwDelineTMEM(TMEM, loadTile, width, height, tlut, changedTexels);
+                if (!delined.empty()) {
+                    textureCache->queueGPUUploadTMEM(delinedHash, creationFrame, delined.data(), int(delined.size()), width, height, tlut, loadTile, true);
+                }
+
+                static bool logged = false;
+                if (!logged) {
+                    logged = true;
+                    fprintf(stderr, "[wcw][deline] %016" PRIx64 ": %u texels filled in (RT on uses the copy)\n", hash, changedTexels);
+                }
+            }
         }
 
         // Dump memory contents into a file if the process is active.

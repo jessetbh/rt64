@@ -5,6 +5,8 @@
 #include "rt64_wcw_logic.h"
 
 #include <algorithm>
+#include <climits>
+#include <cstdlib>
 #include <cmath>
 #include <vector>
 
@@ -843,5 +845,222 @@ namespace RT64::WcwLogic {
         }
 
         return Action::None;
+    }
+
+    std::vector<DelineLine> delineFind(const std::vector<float> &luminance, uint32_t width, uint32_t height) {
+        std::vector<DelineLine> lines;
+        if ((width < 4) || (height < 4) || (luminance.size() < size_t(width) * height)) {
+            return lines;
+        }
+
+        for (int axis = 0; axis < 2; axis++) {
+            const bool column = (axis == 0);
+            const int32_t n = int32_t(column ? width : height);
+            const int32_t m = int32_t(column ? height : width);
+            const auto at = [&](int32_t i, int32_t j) {
+                return column ? luminance[size_t(j) * width + i] : luminance[size_t(i) * width + j];
+            };
+
+            std::vector<float> mean(n, 0.0f);
+            for (int32_t i = 0; i < n; i++) {
+                float sum = 0.0f;
+                for (int32_t j = 0; j < m; j++) {
+                    sum += at(i, j);
+                }
+
+                mean[i] = sum / float(m);
+            }
+
+            const int32_t band = std::max(3, int32_t(float(n) * DelineEdgeBand));
+            std::vector<int32_t> starts;
+            for (int32_t i = 1; i < band; i++) {
+                starts.push_back(i);
+            }
+
+            for (int32_t i = std::max(band, n - band); i < n - 1; i++) {
+                starts.push_back(i);
+            }
+
+            std::vector<DelineLine> candidates;
+            for (int32_t i : starts) {
+                for (int32_t lineWidth = 1; lineWidth <= 2; lineWidth++) {
+                    const int32_t a = i - 1;
+                    const int32_t b = i + lineWidth;
+                    if ((a < 0) || (b >= n)) {
+                        continue;
+                    }
+
+                    float lineMean = 0.0f;
+                    for (int32_t k = 0; k < lineWidth; k++) {
+                        lineMean += mean[i + k];
+                    }
+
+                    lineMean /= float(lineWidth);
+                    const float sides = (mean[a] + mean[b]) / 2.0f;
+                    const float dip = sides - lineMean;
+                    if (dip < DelineMinDip) {
+                        continue;
+                    }
+
+                    // The edge of a wider dark band: one side is barely brighter than the line.
+                    if ((std::min(mean[a], mean[b]) - lineMean) < (DelineMinDip * DelineBorderRatio)) {
+                        continue;
+                    }
+
+                    int32_t darker = 0;
+                    for (int32_t j = 0; j < m; j++) {
+                        float texel = 0.0f;
+                        for (int32_t k = 0; k < lineWidth; k++) {
+                            texel += at(i + k, j);
+                        }
+
+                        if (((at(a, j) + at(b, j)) / 2.0f) > (texel / float(lineWidth))) {
+                            darker++;
+                        }
+                    }
+
+                    const float share = float(darker) / float(m);
+                    if (share < DelineMinShare) {
+                        continue;
+                    }
+
+                    // Part of a wider dark band: the texels beyond the neighbours are brighter still.
+                    if ((a >= 1) && ((b + 1) < n) && ((((mean[a - 1] + mean[b + 1]) / 2.0f) - sides) > (DelineMinDip * DelineBorderRatio))) {
+                        continue;
+                    }
+
+                    DelineLine line;
+                    line.column = column;
+                    line.index = uint32_t(i);
+                    line.width = uint32_t(lineWidth);
+                    line.dip = dip;
+                    line.share = share;
+                    candidates.push_back(line);
+                }
+            }
+
+            std::stable_sort(candidates.begin(), candidates.end(), [](const DelineLine &x, const DelineLine &y) {
+                return (x.dip * x.share) > (y.dip * y.share);
+            });
+
+            std::vector<bool> claimed(n, false);
+            for (const DelineLine &line : candidates) {
+                const int32_t first = int32_t(line.index) - 1;
+                const int32_t last = int32_t(line.index + line.width);
+                bool free = true;
+                for (int32_t i = first; i <= last; i++) {
+                    free = free && !claimed[i];
+                }
+
+                if (!free) {
+                    continue;
+                }
+
+                for (int32_t i = first; i <= last; i++) {
+                    claimed[i] = true;
+                }
+
+                lines.push_back(line);
+            }
+        }
+
+        return lines;
+    }
+
+    void delineFill(std::vector<uint8_t> &rgba, uint32_t width, uint32_t height, const std::vector<DelineLine> &lines) {
+        if (rgba.size() < (size_t(width) * height * 4)) {
+            return;
+        }
+
+        const std::vector<uint8_t> source = rgba;
+        const auto offset = [width](uint32_t x, uint32_t y) {
+            return (size_t(y) * width + x) * 4;
+        };
+
+        for (const DelineLine &line : lines) {
+            const uint32_t n = line.column ? width : height;
+            const uint32_t m = line.column ? height : width;
+            if ((line.width == 0) || (line.index < 1) || ((line.index + line.width) >= n)) {
+                continue;
+            }
+
+            for (uint32_t j = 0; j < m; j++) {
+                const size_t a = line.column ? offset(line.index - 1, j) : offset(j, line.index - 1);
+                const size_t b = line.column ? offset(line.index + line.width, j) : offset(j, line.index + line.width);
+                for (uint32_t k = 0; k < line.width; k++) {
+                    const float t = float(k + 1) / float(line.width + 1);
+                    const size_t out = line.column ? offset(line.index + k, j) : offset(j, line.index + k);
+                    for (int c = 0; c < 4; c++) {
+                        rgba[out + c] = uint8_t(float(source[a + c]) + (float(source[b + c]) - float(source[a + c])) * t);
+                    }
+                }
+            }
+        }
+    }
+
+    uint32_t nearestPaletteIndex(const uint8_t rgba[4], const uint8_t *palette, uint32_t count) {
+        uint32_t best = 0;
+        int32_t bestDistance = INT32_MAX;
+        for (uint32_t i = 0; i < count; i++) {
+            int32_t distance = 0;
+            for (int c = 0; c < 4; c++) {
+                const int32_t d = int32_t(rgba[c]) - int32_t(palette[i * 4 + c]);
+                distance += d * d;
+            }
+
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = i;
+            }
+        }
+
+        return best;
+    }
+
+    uint32_t tmem4bTexelByte(uint32_t tileAddress, uint32_t stride, uint32_t x, uint32_t y) {
+        uint32_t address = tileAddress + y * stride + (x >> 1);
+        if (y & 1) {
+            address ^= 4;
+        }
+
+        return address & 0x7FF;
+    }
+
+    uint64_t delinedHash(uint64_t hash) {
+        // Any nonzero constant: hash ^ c never equals hash.
+        return hash ^ 0xD311E5A7C0FFEE01ULL;
+    }
+
+    std::vector<uint64_t> delineHashes(const char *extraList, bool disabled) {
+        std::vector<uint64_t> hashes;
+        if (disabled) {
+            return hashes;
+        }
+
+        // No Mercy's ring mat, 64x64 CI4 (TMEM hash v5).
+        hashes.push_back(0x1b97a9b8d43d12a1ULL);
+        if (extraList == nullptr) {
+            return hashes;
+        }
+
+        const std::string list(extraList);
+        size_t start = 0;
+        while (start < list.size()) {
+            size_t end = list.find(',', start);
+            if (end == std::string::npos) {
+                end = list.size();
+            }
+
+            const std::string item = list.substr(start, end - start);
+            char *parsedEnd = nullptr;
+            const unsigned long long value = std::strtoull(item.c_str(), &parsedEnd, 16);
+            if (!item.empty() && (parsedEnd != nullptr) && (*parsedEnd == '\0') && (value != 0)) {
+                hashes.push_back(uint64_t(value));
+            }
+
+            start = end + 1;
+        }
+
+        return hashes;
     }
 };
