@@ -1578,6 +1578,8 @@ namespace RT64::WcwLogic {
 
         return packets;
 
+    }
+
     std::vector<DelineLine> delineFind(const std::vector<float> &luminance, uint32_t width, uint32_t height) {
         std::vector<DelineLine> lines;
         if ((width < 4) || (height < 4) || (luminance.size() < size_t(width) * height)) {

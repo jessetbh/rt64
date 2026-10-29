@@ -2251,6 +2251,8 @@ TEST_CASE("hdr readback: paper white maps to sRGB white, black and negatives to 
     CHECK(out[0] == linearToSrgb8(0.5f));
     CHECK(converter.srgbTableBuilds() == 2);
 
+}
+
 TEST_CASE("VI rate: CPU edits of a frame the RDP drew don't count as game frames (#121, AEW 64 title read as 60 fps)") {
     // The shown framebuffer's RDP write timestamp hasn't moved since the last present: only cheat-code writes changed it.
     CHECK(!screenChangeIsGameFrame(true, 41, 41));
