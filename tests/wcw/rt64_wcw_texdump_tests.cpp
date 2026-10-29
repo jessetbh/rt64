@@ -6,6 +6,7 @@
 // loader's hash-named file fallback in ReplacementDatabase::resolvePaths.
 
 #include "common/rt64_wcw_texdump.h"
+#include "common/rt64_wcw_logic.h"
 #include "common/rt64_replacement_database.h"
 
 #include <cstring>
@@ -312,4 +313,34 @@ TEST_CASE("replacement database: shift filters saved before #99 (under \"operati
 TEST_CASE("texdump: Rice-mode packs don't pick up hash-named files") {
     const std::string db = R"({ "configuration": { "autoPath": "rice", "configurationVersion": 3, "hashVersion": 5 }, "textures": [] })";
     CHECK(resolve(db, { "0000000000000001.png" }).empty());
+}
+
+TEST_CASE("texdump: WcwLogic::tmem4bTexelByte writes exactly the CI4 texel sampleTexel reads (aki-roadmap#105 de-line)") {
+    // A 16x4 CI4 tile at a nonzero TMEM address, all texels index 0 (black), palette bank 1: index 7 is red.
+    Tmem tmem;
+    TileFormat tile;
+    tile.fmt = FmtCI;
+    tile.siz = Siz4b;
+    tile.address = 0x140;
+    tile.stride = 16;
+    tile.tlut = TlutRGBA16;
+    tile.palette = 1;
+    tmem.put16(0x800 + (1 << 7) + (0 << 3), rgba16(0, 0, 0, 1));
+    tmem.put16(0x800 + (1 << 7) + (7 << 3), rgba16(31, 0, 0, 1));
+    const uint32_t width = 16, height = 4;
+    for (uint32_t y = 0; y < height; y++) {
+        for (uint32_t x = 0; x < width; x++) {
+            // Even and odd columns, even and odd rows: set one texel to index 7 the way the de-line does.
+            Tmem written = tmem;
+            const uint32_t byte = WcwLogic::tmem4bTexelByte(tile.address, tile.stride, x, y);
+            written.bytes[byte] = (x & 1) ? uint8_t((written.bytes[byte] & 0xF0) | 7) : uint8_t((written.bytes[byte] & 0x0F) | (7 << 4));
+            const std::vector<uint8_t> decoded = decodeTexture(written.bytes, width, height, tile);
+            for (uint32_t v = 0; v < height; v++) {
+                for (uint32_t u = 0; u < width; u++) {
+                    const uint8_t red = decoded[(size_t(v) * width + u) * 4];
+                    CHECK(red == (((u == x) && (v == y)) ? 255 : 0));
+                }
+            }
+        }
+    }
 }

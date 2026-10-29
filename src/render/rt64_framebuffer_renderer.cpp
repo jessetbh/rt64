@@ -511,13 +511,16 @@ namespace RT64 {
                 textureCache->useTexture(callTile.tmemHashOrID, submissionFrame, textureIndex, gpuTile.tcScale, gpuTile.textureDimensions, textureReplaced, hasMipmaps, shiftedByHalf);
 
                 // [wcw] aki-roadmap#105: with RT on, a listed mat draws its copy without the painted rope shadows (the
-                // ropes cast real ones). A texture pack's replacement of the mat still wins. WCW_DELINE=2 uses it with RT off too.
-                if ((rtEnabled || TextureCache::wcwDelineForced()) && !textureReplaced && TextureCache::wcwDelineListed(callTile.tmemHashOrID)) {
+                // ropes cast real ones). A texture pack's replacement of the mat still wins. WCW_DELINE=2 uses it with RT
+                // off too. The copy is used (touched) with RT off as well, so it isn't evicted and rebuilt every few
+                // frames while nothing draws it.
+                if (!textureReplaced && TextureCache::wcwDelineListed(callTile.tmemHashOrID)) {
                     uint32_t delinedIndex = 0;
                     interop::float2 delinedScale;
                     interop::float3 delinedDimensions;
                     bool delinedReplaced = false, delinedMipmaps = false, delinedShifted = false;
-                    if (textureCache->useTexture(WcwLogic::delinedHash(callTile.tmemHashOrID), submissionFrame, delinedIndex, delinedScale, delinedDimensions, delinedReplaced, delinedMipmaps, delinedShifted)) {
+                    const bool delinedFound = textureCache->useTexture(WcwLogic::delinedHash(callTile.tmemHashOrID), submissionFrame, delinedIndex, delinedScale, delinedDimensions, delinedReplaced, delinedMipmaps, delinedShifted);
+                    if (delinedFound && (rtEnabled || TextureCache::wcwDelineForced())) {
                         textureIndex = delinedIndex;
                     }
                 }

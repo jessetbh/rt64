@@ -256,6 +256,9 @@ namespace RT64 {
     // [wcw] aki-roadmap#105: a CI4 mat's TMEM with its painted rope-shadow lines filled in. Each line texel takes the
     // palette entry nearest the colour interpolated from the texels on both sides of its line, so the GPU decodes the
     // copy like any other texture. Returns empty when the texture has no lines.
+    // The listed mat hashes (WcwLogic::delineHashes) are TMEM hash v5: a new hash version needs them measured again.
+    static_assert(TMEMHasher::CurrentHashVersion == 5, "aki-roadmap#105: re-measure WcwLogic::delineHashes for the new hash version");
+
     static std::vector<uint8_t> wcwDelineTMEM(const uint8_t *TMEM, const LoadTile &loadTile, uint32_t width, uint32_t height, uint32_t tlut, uint32_t &changedTexels) {
         changedTexels = 0;
         WcwTexDump::TileFormat tileFormat;
@@ -308,8 +311,9 @@ namespace RT64 {
 
                 const uint32_t index = WcwLogic::nearestPaletteIndex(&filled[i], palette, 16);
                 const uint32_t byte = WcwLogic::tmem4bTexelByte(tileFormat.address, tileFormat.stride, x, y);
-                bytes[byte] = (x & 1) ? uint8_t((bytes[byte] & 0xF0) | index) : uint8_t((bytes[byte] & 0x0F) | (index << 4));
-                changedTexels++;
+                const uint8_t updated = (x & 1) ? uint8_t((bytes[byte] & 0xF0) | index) : uint8_t((bytes[byte] & 0x0F) | (index << 4));
+                changedTexels += (updated != bytes[byte]) ? 1 : 0;
+                bytes[byte] = updated;
             }
         }
 
