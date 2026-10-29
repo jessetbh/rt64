@@ -81,6 +81,9 @@ namespace RT64 {
         };
         WcwLayerSnap wcwLayerSnaps[WCW_SNAPSHOT_SLOTS];
         uint32_t wcwSnapCounter = 0;
+        // [wcw rt] Display frames per game frame of the current game frame, for the ray tracer's trace reuse limit
+        // (aki-roadmap#165).
+        uint32_t wcwFramesPerGameFrameNow = 2;
         int threadCursor;
         int writeCursor;
         int barrierCursor;

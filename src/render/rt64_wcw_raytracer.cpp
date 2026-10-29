@@ -168,8 +168,9 @@ namespace RT64 {
         blueNoiseBuffer->unmap();
     }
 
-    void WcwRaytracer::beginWorkload(uint64_t presentId, float curFrameWeight) {
+    void WcwRaytracer::beginWorkload(uint64_t presentId, float curFrameWeight, uint32_t framesPerGameFrame) {
         generatedRender = WcwLogic::generatedFrame(curFrameWeight);
+        maxReuse = WcwLogic::maxGeneratedReuse(framesPerGameFrame);
         if (presentId != lastPresentId) {
             finishPresent();
             lastPresentId = presentId;
@@ -772,7 +773,7 @@ namespace RT64 {
         passDarkens = (sceneTarget != nullptr) && missDarkening.darkenThisPass(sceneTarget, lastPresentId, meshes.size());
         passHaveTrace = WcwLogic::reusableTrace(slot.tracedPresent != UINT64_MAX, slot.tracedSignature, passSignatureValue, slot.tracedDarkened, passDarkens);
         const bool texturesChange = (sceneTarget == nullptr) || traceTexturesChange(sceneTarget, slot);
-        passReuses = !WcwLogic::buildForPass(traceGenerated, generatedRender, passHaveTrace, slot.reusesSinceTrace, texturesChange);
+        passReuses = !WcwLogic::buildForPass(traceGenerated, generatedRender, passHaveTrace, slot.reusesSinceTrace, texturesChange, maxReuse);
         if (passReuses) {
             // Still a fresh shadow caster for the other passes' TLAS (its BLAS holds the real frame's geometry), and
             // in use: chooseSlot evicts the slot built longest ago.

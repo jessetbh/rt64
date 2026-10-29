@@ -87,16 +87,21 @@ namespace RT64::WcwLogic {
         return curFrameWeight < (1.0f - 1e-4f);
     }
 
-    bool traceRender(bool generated, bool haveTrace, uint32_t reusesSinceTrace) {
-        return !generated || !haveTrace || (reusesSinceTrace >= MaxGeneratedReuse);
+    uint32_t maxGeneratedReuse(uint32_t framesPerGameFrame) {
+        return std::max(MaxGeneratedReuse, (framesPerGameFrame * 3) / 2);
+    }
+
+    bool traceRender(bool generated, bool haveTrace, uint32_t reusesSinceTrace, uint32_t maxReuse) {
+        return !generated || !haveTrace || (reusesSinceTrace >= maxReuse);
     }
 
     bool reusableTrace(bool traced, uint64_t tracedSignature, uint64_t signature, bool tracedDarkened, bool darkens) {
         return traced && (tracedSignature == signature) && (tracedDarkened == darkens);
     }
 
-    bool buildForPass(bool traceEveryFrame, bool generated, bool haveTrace, uint32_t reusesSinceTrace, bool traceTexturesChange) {
-        return traceEveryFrame || traceTexturesChange || traceRender(generated, haveTrace, reusesSinceTrace);
+    bool buildForPass(bool traceEveryFrame, bool generated, bool haveTrace, uint32_t reusesSinceTrace, bool traceTexturesChange,
+        uint32_t maxReuse) {
+        return traceEveryFrame || traceTexturesChange || traceRender(generated, haveTrace, reusesSinceTrace, maxReuse);
     }
 
     bool traceTexturesChange(const TraceTextures &textures, uint32_t targetWidth, uint32_t targetHeight, float targetScale, uint32_t mode) {
