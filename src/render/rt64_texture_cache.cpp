@@ -964,6 +964,11 @@ namespace RT64 {
 
         Texture *replacementTexture = new Texture();
         uint32_t magicNumber = *reinterpret_cast<const uint32_t *>(fileBytes.data());
+        // [wcw] BMP replacements (Rice Video packs) take the PNG path: stb_image decodes both (aki-roadmap#93).
+        if (WcwRice::isBmp(fileBytes.data(), fileBytes.size())) {
+            magicNumber = PNG_MAGIC;
+        }
+
         bool loadedTexture = false;
         switch (magicNumber) {
         case ddspp::DDS_MAGIC:

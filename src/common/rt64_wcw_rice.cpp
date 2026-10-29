@@ -212,10 +212,18 @@ namespace RT64 {
                 return false;
             }
 
+            const std::string lowerPath = toLower(relativePath);
+            const bool bmpFile = (lowerPath.size() >= 4) && (lowerPath.compare(lowerPath.size() - 4, 4, ".bmp") == 0);
+            // Rice _ci.bmp files are 8-bit colour indices meant for the game's TLUT; decoding them through the BMP's own
+            // palette (no alpha) would draw wrong or opaque texels, so they stay unindexed and the game's texture shows.
+            if ((parsed.suffix == Suffix::Ci) && bmpFile) {
+                return true;
+            }
+
             if (parsed.suffix == Suffix::Alpha) {
-                const std::string lower = toLower(relativePath);
+                const std::string &lower = lowerPath;
                 const size_t suffix = lower.rfind("_a.");
-                if ((suffix != std::string::npos) && (lower.compare(lower.size() - 4, 4, ".png") == 0)) {
+                if ((suffix != std::string::npos) && ((lower.compare(lower.size() - 4, 4, ".png") == 0) || bmpFile)) {
                     alphaTwins.emplace(lower.substr(0, suffix), relativePath);
                 }
 
@@ -260,6 +268,16 @@ namespace RT64 {
             for (size_t i = 0; i < pixelCount; i++) {
                 rgba[i * 4 + 3] = 0xFF;
             }
+        }
+
+        bool isBmp(const uint8_t *bytes, size_t size) {
+            // 14-byte file header, then the DIB header's size: 12 (OS/2 core) or at least 40 (BITMAPINFOHEADER and later).
+            if ((bytes == nullptr) || (size < 18) || (bytes[0] != 'B') || (bytes[1] != 'M')) {
+                return false;
+            }
+
+            const uint32_t dibSize = uint32_t(bytes[14]) | (uint32_t(bytes[15]) << 8) | (uint32_t(bytes[16]) << 16) | (uint32_t(bytes[17]) << 24);
+            return (dibSize == 12) || ((dibSize >= 40) && (dibSize <= 124));
         }
 
         const std::string *Index::find(uint32_t crc, uint32_t paletteCrc, uint8_t fmt, uint8_t siz, bool hasPalette) const {

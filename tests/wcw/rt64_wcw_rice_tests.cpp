@@ -156,19 +156,20 @@ TEST_CASE("rice: crc#$#$ names (GLideN64 caches without format/size) match any f
     CHECK((path != nullptr) && (*path == "G#44444444#$#$_all.png"));
 }
 
-TEST_CASE("rice: an _rgb file finds its _a twin in the same folder, case-insensitively, PNG only") {
+TEST_CASE("rice: an _rgb file finds its _a twin (PNG or BMP) in the same folder, case-insensitively") {
     Index index;
     CHECK(index.add("Pack/Ring/G#AAAAAAAA#0#2_rgb.png"));
     CHECK(index.add("Pack/Ring/g#aaaaaaaa#0#2_A.PNG"));
     CHECK(index.add("Pack/Ring/G#BBBBBBBB#2#1#CCCCCCCC_rgb.png"));
-    CHECK(index.add("Pack/Ring/G#BBBBBBBB#2#1#CCCCCCCC_a.bmp")); // rt64 can't load BMP: no twin
+    CHECK(index.add("Pack/Ring/G#BBBBBBBB#2#1#CCCCCCCC_a.bmp")); // a BMP twin counts (#93)
     CHECK(index.add("Pack/Other/G#DDDDDDDD#0#2_a.png"));
     CHECK(index.add("Pack/Ring/G#DDDDDDDD#0#2_rgb.png"));        // its _a is in another folder: no twin
     CHECK(index.add("Pack/Ring/G#EEEEEEEE#0#2_all.png"));
 
     const std::string *alpha = index.alphaFor("Pack/Ring/G#AAAAAAAA#0#2_rgb.png");
     CHECK((alpha != nullptr) && (*alpha == "Pack/Ring/g#aaaaaaaa#0#2_A.PNG"));
-    CHECK(index.alphaFor("Pack/Ring/G#BBBBBBBB#2#1#CCCCCCCC_rgb.png") == nullptr);
+    const std::string *alphaBmp = index.alphaFor("Pack/Ring/G#BBBBBBBB#2#1#CCCCCCCC_rgb.png");
+    CHECK((alphaBmp != nullptr) && (*alphaBmp == "Pack/Ring/G#BBBBBBBB#2#1#CCCCCCCC_a.bmp"));
     CHECK(index.alphaFor("Pack/Ring/G#DDDDDDDD#0#2_rgb.png") == nullptr);
     // Only _rgb files have twins.
     CHECK(index.alphaFor("Pack/Ring/G#EEEEEEEE#0#2_all.png") == nullptr);
@@ -374,4 +375,43 @@ TEST_CASE("rice: which textures carry a palette CRC") {
     CHECK(!usesPalette(3, 1, false));
     CHECK(!usesPalette(0, 2, true));
     CHECK(!usesPalette(2, 2, true));
+}
+
+// A BMP file header ("BM", size, reserved, pixel offset) followed by a DIB header of dibSize bytes (only its size field).
+static std::vector<uint8_t> bmpHeader(uint32_t dibSize) {
+    std::vector<uint8_t> b(14 + 40, 0);
+    b[0] = 'B';
+    b[1] = 'M';
+    b[14] = uint8_t(dibSize);
+    b[15] = uint8_t(dibSize >> 8);
+    b[16] = uint8_t(dibSize >> 16);
+    b[17] = uint8_t(dibSize >> 24);
+    return b;
+}
+
+TEST_CASE("rice: Windows and OS/2 BMP headers are recognized, so Rice .bmp packs load (#93)") {
+    CHECK(isBmp(bmpHeader(40).data(), 54));  // BITMAPINFOHEADER (what Rice Video and Paint write)
+    CHECK(isBmp(bmpHeader(108).data(), 54)); // BITMAPV4HEADER
+    CHECK(isBmp(bmpHeader(124).data(), 54)); // BITMAPV5HEADER (what Pillow writes for RGBA)
+    CHECK(isBmp(bmpHeader(12).data(), 54));  // OS/2 BITMAPCOREHEADER
+}
+
+TEST_CASE("rice: PNG, DDS, truncated files and a bogus DIB size are not BMPs") {
+    const uint8_t png[] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D, 'I', 'H', 'D', 'R', 0, 0 };
+    const uint8_t dds[] = { 'D', 'D', 'S', ' ', 124, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    CHECK(!isBmp(png, sizeof(png)));
+    CHECK(!isBmp(dds, sizeof(dds)));
+    CHECK(!isBmp(bmpHeader(40).data(), 17));
+    CHECK(!isBmp(nullptr, 0));
+    CHECK(!isBmp(bmpHeader(0).data(), 54));
+    CHECK(!isBmp(bmpHeader(500).data(), 54));
+}
+
+TEST_CASE("rice: _ci.bmp files (colour indices for the game's TLUT) are not indexed; other BMPs are (#93)") {
+    Index index;
+    CHECK(index.add("Pack/G#11111111#2#1#22222222_ci.bmp"));        // a Rice name, but left out
+    CHECK(index.find(0x11111111, 0x22222222, 2, 1, true) == nullptr);
+    CHECK(index.add("Pack/G#33333333#2#1#44444444_ciByRGBA.bmp"));
+    const std::string *path = index.find(0x33333333, 0x44444444, 2, 1, true);
+    CHECK((path != nullptr) && (*path == "Pack/G#33333333#2#1#44444444_ciByRGBA.bmp"));
 }

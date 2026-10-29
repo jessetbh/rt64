@@ -115,7 +115,7 @@ namespace RT64 {
             size_t size() const { return entries.size(); }
 
             // For an _rgb file: its _a twin's path, or nullptr when the pack has none (GLideN64 then treats the
-            // texture as opaque). Only PNG twins count (rt64 can't load BMP). nullptr for any other file.
+            // texture as opaque). PNG and BMP twins count. nullptr for any other file.
             const std::string *alphaFor(const std::string &rgbPath) const;
 
             // The best file for a texture: exact key with palette, crc#fmt#siz#00000000 (Rice Video names TLUT textures
@@ -145,6 +145,12 @@ namespace RT64 {
 
         // An _rgb file without its _a twin is drawn opaque (GLideN64: "treat as opaque texture").
         void makeOpaque(uint8_t *rgba, size_t pixelCount);
+
+        // Whether a replacement file's bytes are a Windows BMP ("BM", then an OS/2 core or BITMAPINFOHEADER-or-later DIB
+        // header: Rice Video packs ship _all.bmp / _rgb.bmp / _a.bmp / ciByRGBA.bmp files). The loader decodes them with
+        // stb_image like PNGs (aki-roadmap#93); stb_image doesn't read RLE-compressed BMPs, so those still fail to load.
+        // _ci.bmp files (colour indices for the game's TLUT) are not indexed (Index::add).
+        bool isBmp(const uint8_t *bytes, size_t size);
 
         // Rice's CRC (RiceCRC32 in GLideN64's TxUtil.cpp, Rice Video's CalculateRDRAMCRC): rows from the last to the first,
         // 32-bit words from the end of the row to its start, each XORed with its byte offset, rotated in; the row's
