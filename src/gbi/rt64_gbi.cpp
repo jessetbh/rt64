@@ -160,7 +160,7 @@ namespace RT64 {
     // 
     //                  Length      Hash                    Known instances               
     //     
-    static std::array<GBISegment, 107> textSegments = {
+    static std::array<GBISegment, 108> textSegments = {
             // [wcw2k] WM2000's "F3DLX.Rej xbus 2.08" (AKI 1999): bytes past 0x1000 of the
             // text are VOLATILE at runtime (hashed differently seconds apart mid-run —
             // self-modified or yield-state spill), so match on the stable 0x1000-byte
@@ -202,6 +202,7 @@ namespace RT64 {
             GBISegment{ 0x1430,     0x158A39AE852C6A07ULL,  { &F3DLX_1_23 } }, // Needs confirmation.
             GBISegment{ 0x13D0,     0xDE1E6BCF9EBFBAE9ULL,  { &F3DLX_1_23_REJ } }, // Needs confirmation.
             GBISegment{ 0x13D0,     0xBDC34FD53910D3CCULL,  { &F3DLX_1_23_REJ_A } }, // Needs confirmation.
+            GBISegment{ 0x13D0,     0x55EFE0FF9C9123D9ULL,  { &F3DLX_1_23_REJ_A } }, // [wcw fullconv] World Tour 9 Underground keeps a 98-word pointer table in the unused text from +0x1030.
             GBISegment{ 0x13C8,     0x9CA29A9ADD6CFC0BULL,  { &F3DLP_1_23_REJ } }, // Needs confirmation.
             GBISegment{ 0x1430,     0xEE7CC90B5F7AB1D9ULL,  { &F3DTEXA_1_23 } }, // Needs confirmation.
             GBISegment{ 0x13C0,     0x600945CCAE7BFEC8ULL,  { &F3DEX_NON_0_96, &F3DEX_NON_1_00 } }, // Needs confirmation.
@@ -286,7 +287,7 @@ namespace RT64 {
             GBISegment{ 0x10B0,     0xE8028E4BC6529E6EULL,  { &ZSORTP_0_33 } }, // Needs confirmation.
     };
 
-    static std::array<GBISegment, 108> dataSegments = {
+    static std::array<GBISegment, 109> dataSegments = {
             GBISegment{ 0x800,      0xEEB10D73400213B3ULL,  { &F3D_SDK_E } }, // Needs confirmation.
             GBISegment{ 0x800,      0x49651E384B48F694ULL,  { &F3D_SDK_F } }, // Needs confirmation.
             GBISegment{ 0x800,      0x1A736198F90E81C5ULL,  { &F3D_SDK_UNKNOWN_G } }, // Needs confirmation.
@@ -317,6 +318,7 @@ namespace RT64 {
             GBISegment{ 0x800,      0x312E7A6E9F144186ULL,  { &F3DEX_NON_1_22_A } }, // Needs confirmation.
             GBISegment{ 0x800,      0x3828B4F75B0A0E6AULL,  { &F3DEX_1_23 } },
             GBISegment{ 0x800,      0x4A9D9C1BBFFEA48DULL,  { &F3DEX_1_23_A } }, // Needs confirmation.
+            GBISegment{ 0x800,      0x53F88229711355B1ULL,  { &F3DEX_1_23_A } }, // [wcw fullconv] World Tour 9 Underground keeps a table in the unused tail of the data (238 words from +0x13C).
             GBISegment{ 0x800,      0xEDDB46181FE78DE8ULL,  { &F3DLX_1_23 } }, // Needs confirmation.
             GBISegment{ 0x800,      0x2773FDFC5E62C0B0ULL,  { &F3DLX_1_23_A } }, // Needs confirmation.
             GBISegment{ 0x800,      0x6BD0FEA8C97D3442ULL,  { &F3DLX_1_23_REJ } }, // Needs confirmation.
