@@ -685,7 +685,7 @@ namespace RT64 {
             scratchFbChangePool.reset();
             fbManager.resetOperations();
             if (framebufferRenderer->wcwRaytracer != nullptr) {
-                framebufferRenderer->wcwRaytracer->beginWorkload(workload.presentId, curFrameWeight);
+                framebufferRenderer->wcwRaytracer->beginWorkload(workload.presentId, curFrameWeight, wcwFramesPerGameFrameNow);
             }
 
             framebufferRenderer->resetFramebuffers(ext.workloadGraphicsWorker, ubershadersVisible, workload.extended.ditherNoiseStrength, targetManager.multisampling);
@@ -1590,6 +1590,7 @@ namespace RT64 {
                     // behind. WCW_HFR_CAP=<n> overrides N for debugging.
                     static const uint32_t wcwHfrCapEnv = getenv("WCW_HFR_CAP") ? uint32_t(std::max(atoi(getenv("WCW_HFR_CAP")), 2)) : 0;
                     const uint32_t wcwFramesPerGameFrame = WcwLogic::framesPerGameFrame(workloadConfig.targetRate, workload.viOriginalRate, wcwHfrCapEnv);
+                    wcwFramesPerGameFrameNow = wcwFramesPerGameFrame;
                     displayFrames = wcwTicks.beginGameFrame(workloadConfig.targetRate, workload.viOriginalRate, wcwHfrCapEnv);
 
                     // At rates that aren't a multiple of the game rate (e.g. 144 Hz) game frames alternate between

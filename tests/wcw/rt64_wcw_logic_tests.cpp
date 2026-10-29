@@ -411,6 +411,30 @@ TEST_CASE("generated frames: shadows don't freeze when real frames are skipped u
     CHECK(traceRender(true, true, MaxGeneratedReuse + 5));
 }
 
+TEST_CASE("generated frames: the reuse limit is about 1.5 game frames at every display rate (#165)") {
+    CHECK(maxGeneratedReuse(2) == 3);   // 60 fps: unchanged
+    CHECK(maxGeneratedReuse(4) == 6);   // 120 fps
+    CHECK(maxGeneratedReuse(5) == 7);   // 144 fps (5 or 6 display frames per game frame)
+    CHECK(maxGeneratedReuse(0) == MaxGeneratedReuse);
+    CHECK(maxGeneratedReuse(1) == MaxGeneratedReuse);
+}
+
+TEST_CASE("generated frames: a game frame running a little long at 120 fps doesn't trace generated frames (#165)") {
+    // 120 fps: 3 generated frames + the real one per game frame. One late game frame adds a 4th generated frame in a
+    // row: with the old fixed limit of 3 it traced at full cost (RT Ultra fell to ~7 presents/s as that slowed the
+    // game further); now it reuses, and only ~1.5 game frames without a real frame trace again.
+    const uint32_t limit = maxGeneratedReuse(4);
+    CHECK(traceRender(true, true, 3, MaxGeneratedReuse));   // the old limit traced here
+    CHECK(!traceRender(true, true, 3, limit));
+    CHECK(!traceRender(true, true, 5, limit));
+    CHECK(traceRender(true, true, 6, limit));
+    CHECK(!buildForPass(false, true, true, 4, false, limit));
+    CHECK(buildForPass(false, true, true, 6, false, limit));
+    // 60 fps keeps its limit.
+    CHECK(traceRender(true, true, 3, maxGeneratedReuse(2)));
+    CHECK(!traceRender(true, true, 2, maxGeneratedReuse(2)));
+}
+
 TEST_CASE("acceleration structures: a generated frame that reuses its pass's trace doesn't build them (#36)") {
     // The reusing generated frame: no build (every generated frame built BLAS + TLAS for nothing).
     CHECK(!buildForPass(false, true, true, 0, false));
