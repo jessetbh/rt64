@@ -511,8 +511,8 @@ namespace RT64 {
                 textureCache->useTexture(callTile.tmemHashOrID, submissionFrame, textureIndex, gpuTile.tcScale, gpuTile.textureDimensions, textureReplaced, hasMipmaps, shiftedByHalf);
 
                 // [wcw] aki-roadmap#105: with RT on, a listed mat draws its copy without the painted rope shadows (the
-                // ropes cast real ones). A texture pack's replacement of the mat still wins.
-                if (rtEnabled && !textureReplaced && TextureCache::wcwDelineListed(callTile.tmemHashOrID)) {
+                // ropes cast real ones). A texture pack's replacement of the mat still wins. WCW_DELINE=2 uses it with RT off too.
+                if ((rtEnabled || TextureCache::wcwDelineForced()) && !textureReplaced && TextureCache::wcwDelineListed(callTile.tmemHashOrID)) {
                     uint32_t delinedIndex = 0;
                     interop::float2 delinedScale;
                     interop::float3 delinedDimensions;

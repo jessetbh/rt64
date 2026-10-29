@@ -791,5 +791,6 @@ namespace RT64::WcwLogic {
 
     // The mat textures to de-line: No Mercy's ring mat (the same texture in every venue), plus the hex hashes
     // (comma separated) of extraList, the WCW_DELINE_HASHES environment variable. disabled (WCW_DELINE=0) lists none.
+    // WCW_DELINE=2 also uses the copies with RT off (comparisons only).
     std::vector<uint64_t> delineHashes(const char *extraList, bool disabled);
 };

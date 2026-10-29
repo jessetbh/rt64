@@ -1449,6 +1449,15 @@ namespace RT64 {
         return std::find(hashes.begin(), hashes.end(), hash) != hashes.end();
     }
 
+    bool TextureCache::wcwDelineForced() {
+        static const bool forced = [] {
+            const char *value = getenv("WCW_DELINE");
+            return (value != nullptr) && (strcmp(value, "2") == 0);
+        }();
+
+        return forced;
+    }
+
     bool TextureCache::useTexture(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex) {
         interop::float2 textureScale;
         interop::float3 textureDimensions;

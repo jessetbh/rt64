@@ -256,6 +256,8 @@ namespace RT64 {
         // [wcw] Whether a texture is one of the mats whose painted rope shadows the renderer fills in with RT on
         // (WcwLogic::delineHashes, read once from WCW_DELINE / WCW_DELINE_HASHES; aki-roadmap#105).
         static bool wcwDelineListed(uint64_t hash);
+        // [wcw] WCW_DELINE=2: the renderer uses the de-lined copies with RT off too (before/after comparisons).
+        static bool wcwDelineForced();
         bool addReplacement(uint64_t hash, const std::string &relativePath, ReplacementShift shift);
         bool hasReplacement(uint64_t hash);
         void clearReplacementDirectories();
