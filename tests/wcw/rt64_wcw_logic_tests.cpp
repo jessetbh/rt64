@@ -1869,6 +1869,186 @@ TEST_CASE("VI rate: a screen the CPU drew itself (no RDP framebuffer there) stil
     CHECK(screenChangeIsGameFrame(false, 0, 7));
 }
 
+// Ray tracing: painted rope shadows on the ring mat (aki-roadmap#105)
+
+namespace {
+    // A 64x64 mat-like luminance: ~150 with +-3 noise, dark (-40) columns and rows at the given indices.
+    std::vector<float> matLuminance(const std::vector<uint32_t> &darkColumns, const std::vector<uint32_t> &darkRows, uint32_t size = 64) {
+        std::vector<float> lum(size_t(size) * size);
+        uint32_t seed = 12345;
+        for (uint32_t y = 0; y < size; y++) {
+            for (uint32_t x = 0; x < size; x++) {
+                seed = seed * 1103515245u + 12345u;
+                float v = 150.0f + float(int32_t((seed >> 16) % 7) - 3);
+                if (std::find(darkColumns.begin(), darkColumns.end(), x) != darkColumns.end()) v -= 40.0f;
+                if (std::find(darkRows.begin(), darkRows.end(), y) != darkRows.end()) v -= 40.0f;
+                lum[size_t(y) * size + x] = v;
+            }
+        }
+
+        return lum;
+    }
+
+    bool hasLine(const std::vector<DelineLine> &lines, bool column, uint32_t index, uint32_t width) {
+        for (const DelineLine &line : lines) {
+            if ((line.column == column) && (line.index == index) && (line.width == width)) return true;
+        }
+
+        return false;
+    }
+}
+
+TEST_CASE("mat de-line: No Mercy's painted rope shadows (columns and rows 1, 4, 8) are found, nothing else") {
+    const std::vector<DelineLine> lines = delineFind(matLuminance({ 1, 4, 8 }, { 1, 4, 8 }), 64, 64);
+    CHECK(lines.size() == 6);
+    for (uint32_t i : { 1u, 4u, 8u }) {
+        CHECK(hasLine(lines, true, i, 1));
+        CHECK(hasLine(lines, false, i, 1));
+    }
+}
+
+TEST_CASE("mat de-line: a 2-texel line is one line, not two 1-texel ones") {
+    const std::vector<DelineLine> lines = delineFind(matLuminance({ 5, 6 }, {}), 64, 64);
+    CHECK(lines.size() == 1);
+    CHECK(hasLine(lines, true, 5, 2));
+}
+
+TEST_CASE("mat de-line: lines at the far edge are found too") {
+    const std::vector<DelineLine> lines = delineFind(matLuminance({ 59 }, { 62 }), 64, 64);
+    CHECK(lines.size() == 2);
+    CHECK(hasLine(lines, true, 59, 1));
+    CHECK(hasLine(lines, false, 62, 1));
+}
+
+TEST_CASE("mat de-line: a 3+ texel dark border is left alone (the guard against erasing real borders)") {
+    CHECK(delineFind(matLuminance({ 1, 2, 3 }, {}), 64, 64).empty());
+    CHECK(delineFind(matLuminance({}, { 2, 3, 4, 5 }), 64, 64).empty());
+    // A dark outermost texel is a border, never a line.
+    CHECK(delineFind(matLuminance({ 0 }, { 63 }), 64, 64).empty());
+}
+
+TEST_CASE("mat de-line: lines away from the edges, plain noise and scattered dark texels are left alone") {
+    CHECK(delineFind(matLuminance({ 32 }, { 20 }), 64, 64).empty());
+    CHECK(delineFind(matLuminance({}, {}), 64, 64).empty());
+    // Very dark texels in a third of column 3 dip its mean by ~13, but the rest of the column is brighter than its
+    // sides: darker in a third of its texels, not 60%.
+    std::vector<float> lum = matLuminance({}, {});
+    for (uint32_t y = 0; y < 64; y++) lum[size_t(y) * 64 + 3] += ((y % 3) == 0) ? -60.0f : 10.0f;
+    CHECK(delineFind(lum, 64, 64).empty());
+}
+
+TEST_CASE("mat de-line: a weak dip is not a line") {
+    std::vector<float> lum = matLuminance({}, {});
+    for (uint32_t y = 0; y < 64; y++) lum[size_t(y) * 64 + 4] -= 6.0f;
+    CHECK(delineFind(lum, 64, 64).empty());
+}
+
+TEST_CASE("mat de-line: textures too small or short data find nothing") {
+    CHECK(delineFind(std::vector<float>(9, 100.0f), 3, 3).empty());
+    CHECK(delineFind(std::vector<float>(10, 100.0f), 64, 64).empty());
+}
+
+TEST_CASE("mat de-line: the fill interpolates each line from its sides and leaves every other texel alone") {
+    const uint32_t w = 8, h = 4;
+    std::vector<uint8_t> rgba(w * h * 4);
+    for (uint32_t y = 0; y < h; y++) {
+        for (uint32_t x = 0; x < w; x++) {
+            uint8_t *p = &rgba[(y * w + x) * 4];
+            p[0] = p[1] = p[2] = uint8_t(100 + x * 10);
+            p[3] = 255;
+        }
+    }
+
+    // Columns 2 and 3 (a 2-texel line) painted black.
+    std::vector<uint8_t> painted = rgba;
+    for (uint32_t y = 0; y < h; y++) {
+        for (uint32_t x : { 2u, 3u }) {
+            uint8_t *p = &painted[(y * w + x) * 4];
+            p[0] = p[1] = p[2] = 0;
+        }
+    }
+
+    DelineLine line;
+    line.column = true;
+    line.index = 2;
+    line.width = 2;
+    delineFill(painted, w, h, { line });
+    for (uint32_t y = 0; y < h; y++) {
+        // Sides 110 and 140: one third and two thirds of the way.
+        CHECK(painted[(y * w + 2) * 4] == 120);
+        CHECK(painted[(y * w + 3) * 4] == 130);
+        CHECK(painted[(y * w + 2) * 4 + 3] == 255);
+        for (uint32_t x : { 0u, 1u, 4u, 5u, 6u, 7u }) {
+            CHECK(painted[(y * w + x) * 4] == rgba[(y * w + x) * 4]);
+        }
+    }
+
+    // A line touching the outermost texel has no side to fill from: left as it is.
+    std::vector<uint8_t> edge = rgba;
+    line.index = 0;
+    line.width = 1;
+    delineFill(edge, w, h, { line });
+    CHECK(edge == rgba);
+}
+
+TEST_CASE("mat de-line: crossing lines fill from the image as it was, not from each other's fill") {
+    const uint32_t w = 6, h = 6;
+    std::vector<uint8_t> rgba(w * h * 4, 200);
+    for (uint32_t i = 0; i < w; i++) {
+        for (int c = 0; c < 3; c++) {
+            rgba[(i * w + 2) * 4 + c] = 50;   // column 2
+            rgba[(2 * w + i) * 4 + c] = 50;   // row 2
+        }
+    }
+
+    DelineLine column;
+    column.column = true;
+    column.index = 2;
+    column.width = 1;
+    DelineLine row = column;
+    row.column = false;
+    delineFill(rgba, w, h, { column, row });
+    // Away from the crossing both lines are gone.
+    CHECK(rgba[(0 * w + 2) * 4] == 200);
+    CHECK(rgba[(2 * w + 0) * 4] == 200);
+    // The crossing texel takes the row's fill, from the original column texels above and below it (dark).
+    CHECK(rgba[(2 * w + 2) * 4] == 50);
+}
+
+TEST_CASE("mat de-line: the nearest palette entry wins, ties go to the lower index") {
+    const uint8_t palette[] = { 0, 0, 0, 255, 100, 100, 100, 255, 110, 110, 110, 255, 100, 100, 100, 255 };
+    const uint8_t a[4] = { 104, 104, 104, 255 };
+    const uint8_t b[4] = { 106, 106, 106, 255 };
+    CHECK(nearestPaletteIndex(a, palette, 4) == 1);
+    CHECK(nearestPaletteIndex(b, palette, 4) == 2);
+    const uint8_t black[4] = { 0, 0, 0, 255 };
+    CHECK(nearestPaletteIndex(black, palette, 4) == 0);
+}
+
+TEST_CASE("mat de-line: 4-bit TMEM texels: odd rows swap 32-bit words, palette tiles use the low half") {
+    CHECK(tmem4bTexelByte(0, 32, 0, 0) == 0);
+    CHECK(tmem4bTexelByte(0, 32, 1, 0) == 0);
+    CHECK(tmem4bTexelByte(0, 32, 2, 0) == 1);
+    CHECK(tmem4bTexelByte(0, 32, 0, 1) == 36);
+    CHECK(tmem4bTexelByte(0, 32, 8, 1) == 32);
+    CHECK(tmem4bTexelByte(0x100, 32, 10, 2) == 0x145);
+    CHECK(tmem4bTexelByte(0x7F0, 32, 0, 1) == ((0x810 ^ 4) & 0x7FF));
+}
+
+TEST_CASE("mat de-line: the de-lined copy has its own cache key, and the list holds NM's mat plus extras") {
+    CHECK(delinedHash(0x1b97a9b8d43d12a1ULL) != 0x1b97a9b8d43d12a1ULL);
+    CHECK(delinedHash(0) != 0);
+    CHECK(delinedHash(delinedHash(42)) == 42);
+    const std::vector<uint64_t> base = delineHashes(nullptr, false);
+    CHECK(base.size() == 1);
+    CHECK(base[0] == 0x1b97a9b8d43d12a1ULL);
+    const std::vector<uint64_t> extra = delineHashes("00000000000000ff,bogus,,ABCDEF0123456789", false);
+    CHECK(extra.size() == 3);
+    CHECK(extra[1] == 0xffULL);
+    CHECK(extra[2] == 0xABCDEF0123456789ULL);
+    CHECK(delineHashes("00000000000000ff", true).empty());
+}
+
 int main() {
     return WcwTest::runAll("rt64 wcw tests");
 }

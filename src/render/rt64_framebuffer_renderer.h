@@ -158,7 +158,7 @@ namespace RT64 {
         ~FramebufferRenderer();
         void resetFramebuffers(RenderWorker *worker, bool ubershadersVisible, float ditherNoiseStrength, const RenderMultisampling &multisampling);
         void updateTextureCache(TextureCache *textureCache);
-        void createGPUTiles(const DrawCallTile *callTiles, uint32_t callTileCount, interop::GPUTile *dstGPUTiles, const FramebufferManager *fbManager, TextureCache *textureCache, uint64_t submissionFrame);
+        void createGPUTiles(const DrawCallTile *callTiles, uint32_t callTileCount, interop::GPUTile *dstGPUTiles, const FramebufferManager *fbManager, TextureCache *textureCache, uint64_t submissionFrame, bool rtEnabled = false);
         uint32_t getDestinationIndex();
         uint32_t getTextureIndex(RenderTarget *renderTarget);
         uint32_t getTextureIndex(const FramebufferManager::TileCopy &tileCopy);

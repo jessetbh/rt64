@@ -8,6 +8,10 @@
 #include "stb/stb_image.h"
 #include "xxHash/xxh3.h"
 
+#include <algorithm>
+#include <cstdlib>
+#include <cstring>
+
 // Needs to be included before other headers.
 #include "gbi/rt64_f3d.h"
 
@@ -1439,6 +1443,24 @@ namespace RT64 {
     bool TextureCache::useTexture(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex, interop::float2 &textureScale, interop::float3 &textureDimensions, bool &textureReplaced, bool &hasMipmaps, bool &shiftedByHalf) {
         std::unique_lock lock(textureMapMutex);
         return textureMap.use(hash, submissionFrame, textureIndex, textureScale, textureDimensions, textureReplaced, hasMipmaps, shiftedByHalf);
+    }
+
+    bool TextureCache::wcwDelineListed(uint64_t hash) {
+        static const std::vector<uint64_t> hashes = [] {
+            const char *enabled = getenv("WCW_DELINE");
+            return WcwLogic::delineHashes(getenv("WCW_DELINE_HASHES"), (enabled != nullptr) && (strcmp(enabled, "0") == 0));
+        }();
+
+        return std::find(hashes.begin(), hashes.end(), hash) != hashes.end();
+    }
+
+    bool TextureCache::wcwDelineForced() {
+        static const bool forced = [] {
+            const char *value = getenv("WCW_DELINE");
+            return (value != nullptr) && (strcmp(value, "2") == 0);
+        }();
+
+        return forced;
     }
 
     bool TextureCache::useTexture(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex) {

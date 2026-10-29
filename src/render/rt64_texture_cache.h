@@ -253,6 +253,11 @@ namespace RT64 {
         void addResolvedPaths(uint64_t hash, uint32_t width, uint32_t height, uint32_t tlut, const LoadTile &loadTile, const std::vector<uint8_t> &bytesTMEM, bool decodeTMEM, const WcwRice::TextureKey &riceKey, std::vector<ReplacementResolvedPath> &resolvedPaths, uint64_t exclusiveDbHash = 0);
         bool useTexture(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex, interop::float2 &textureScale, interop::float3 &textureDimensions, bool &textureReplaced, bool &hasMipmaps, bool &shiftedByHalf);
         bool useTexture(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex);
+        // [wcw] Whether a texture is one of the mats whose painted rope shadows the renderer fills in with RT on
+        // (WcwLogic::delineHashes, read once from WCW_DELINE / WCW_DELINE_HASHES; aki-roadmap#105).
+        static bool wcwDelineListed(uint64_t hash);
+        // [wcw] WCW_DELINE=2: the renderer uses the de-lined copies with RT off too (before/after comparisons).
+        static bool wcwDelineForced();
         bool addReplacement(uint64_t hash, const std::string &relativePath, ReplacementShift shift);
         bool hasReplacement(uint64_t hash);
         void clearReplacementDirectories();

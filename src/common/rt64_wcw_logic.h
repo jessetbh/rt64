@@ -739,4 +739,58 @@ namespace RT64::WcwLogic {
         void add(bool pairSplit, float drawnChange = -1.0f);
         bool splitLayer() const;
     };
+
+    // Ray tracing: painted rope shadows on the ring mat (aki-roadmap#105)
+
+    // No Mercy paints the ropes' shadows into its mat texture: dark lines at columns and rows 1, 4 and 8 near the
+    // edges. With RT on, the real ropes cast shadows too, so the mat showed both. When RT is on, the renderer uses a
+    // copy of the listed mat textures with those lines filled in. Only listed hashes: run on the 132 CI4 textures of
+    // six NM venue dumps, the detector also found lines in 53 others (borders, trim, sign edges that are meant to be
+    // there).
+
+    // One painted line: a column (or row) index and its width in texels.
+    struct DelineLine {
+        bool column = false;
+        uint32_t index = 0;
+        uint32_t width = 0;
+        float dip = 0.0f;
+        float share = 0.0f;
+    };
+
+    // A line is darker than the texels on both sides of it by at least this much on average (luminance, 0-255).
+    constexpr float DelineMinDip = 10.0f;
+    // And darker than both of them in at least this share of its texels: a stripe, not a few dark spots.
+    constexpr float DelineMinShare = 0.6f;
+    // Not part of a wider dark band: each side is at least DelineMinDip * this brighter than the line, and the texels
+    // beyond the sides are at most that much brighter than the sides.
+    constexpr float DelineBorderRatio = 0.5f;
+    // Lines are searched for only in this share of the texture at each edge, never at the outermost texel.
+    constexpr float DelineEdgeBand = 0.2f;
+
+    // The painted lines in a texture's luminance (row-major, width * height). A line is 1 or 2 texels wide. A wider
+    // dark border is not a line, and neither is anything in the middle of the texture. Stronger lines win: each
+    // line also claims the texels on both sides of it, and a weaker candidate on the same axis that overlaps a
+    // claimed texel is dropped.
+    std::vector<DelineLine> delineFind(const std::vector<float> &luminance, uint32_t width, uint32_t height);
+
+    // Fills each line of an RGBA8 image (row-major, width * height * 4) in place, interpolating every texel from the
+    // two texels on either side of its line in the image as it was before the call.
+    void delineFill(std::vector<uint8_t> &rgba, uint32_t width, uint32_t height, const std::vector<DelineLine> &lines);
+
+    // The palette entry (RGBA8, count entries) closest to a colour (squared distance, alpha included). Ties go to the
+    // lower index.
+    uint32_t nearestPaletteIndex(const uint8_t rgba[4], const uint8_t *palette, uint32_t count);
+
+    // The TMEM byte that holds texel (x, y) of a 4-bit tile with a palette: tileAddress and stride are in bytes. Odd
+    // rows swap the 32-bit words of each 64-bit TMEM word, and palette textures address only the low half of TMEM.
+    // The texel is the byte's high nibble for an even x and the low one for an odd x.
+    uint32_t tmem4bTexelByte(uint32_t tileAddress, uint32_t stride, uint32_t x, uint32_t y);
+
+    // The texture cache key of a mat's de-lined copy. It never equals the texture's own hash.
+    uint64_t delinedHash(uint64_t hash);
+
+    // The mat textures to de-line: No Mercy's ring mat (the same texture in every venue), plus the hex hashes
+    // (comma separated) of extraList, the WCW_DELINE_HASHES environment variable. disabled (WCW_DELINE=0) lists none.
+    // WCW_DELINE=2 also uses the copies with RT off (comparisons only).
+    std::vector<uint64_t> delineHashes(const char *extraList, bool disabled);
 };
