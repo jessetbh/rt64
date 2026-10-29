@@ -24,7 +24,7 @@ namespace RT64 {
         std::vector<WcwPerf::Marker> markers;
         bool recorded = false;
 
-        // Creates the query pool when WCW_PERF_LOG is set and the device supports timestamps.
+        // Creates the query pool when WCW_PERF_LOG or WCW_DD_METRICS is set and the device supports timestamps.
         void setup(RenderDevice *device);
         bool available() const { return pool != nullptr; }
 

@@ -7,9 +7,11 @@
 #include <thread>
 
 #include "common/rt64_thread.h"
+#include "common/rt64_wcw_dd.h"
 #include "common/rt64_wcw_logic.h"
 #include "common/rt64_wcw_perf.h"
 #include "render/rt64_hdr_output.h"
+#include "render/rt64_wcw_raytracer.h"
 #include "render/rt64_wcw_device_lost.h"
 #include "rhi/rt64_render_hooks.h"
 
@@ -33,6 +35,61 @@ namespace RT64 {
     }
 
     static uint32_t beamWaitForVBlank(RenderWindow window, uint32_t refreshRate);
+
+    // [wcw dd] WCW_DD_METRICS: the settings the in-game Datadog metrics are tagged with (WcwLogic::DdContext).
+    static const char *wcwDdRefreshRateName(UserConfiguration::RefreshRate v) {
+        switch (v) {
+        case UserConfiguration::RefreshRate::Original:
+            return "original";
+        case UserConfiguration::RefreshRate::Display:
+            return "display";
+        case UserConfiguration::RefreshRate::Manual:
+            return "manual";
+        default:
+            return "unknown";
+        }
+    }
+
+    static const char *wcwDdResolutionName(UserConfiguration::Resolution v) {
+        switch (v) {
+        case UserConfiguration::Resolution::Original:
+            return "original";
+        case UserConfiguration::Resolution::WindowIntegerScale:
+            return "windowintegerscale";
+        case UserConfiguration::Resolution::Manual:
+            return "manual";
+        default:
+            return "unknown";
+        }
+    }
+
+    static const char *wcwDdAspectName(UserConfiguration::AspectRatio v) {
+        switch (v) {
+        case UserConfiguration::AspectRatio::Original:
+            return "original";
+        case UserConfiguration::AspectRatio::Expand:
+            return "expand";
+        case UserConfiguration::AspectRatio::Manual:
+            return "manual";
+        default:
+            return "unknown";
+        }
+    }
+
+    static const char *wcwDdMsaaName(UserConfiguration::Antialiasing v) {
+        switch (v) {
+        case UserConfiguration::Antialiasing::None:
+            return "none";
+        case UserConfiguration::Antialiasing::MSAA2X:
+            return "msaa2x";
+        case UserConfiguration::Antialiasing::MSAA4X:
+            return "msaa4x";
+        case UserConfiguration::Antialiasing::MSAA8X:
+            return "msaa8x";
+        default:
+            return "unknown";
+        }
+    }
 
     // PresentQueue
 
@@ -142,6 +199,10 @@ namespace RT64 {
         UserConfiguration::Filtering filtering;
         uint32_t viOriginalRate;
         uint32_t targetRate;
+        UserConfiguration::Resolution wcwDdResolution;
+        UserConfiguration::AspectRatio wcwDdAspect;
+        UserConfiguration::Antialiasing wcwDdMsaa;
+        int wcwDdDownsample;
         {
             std::scoped_lock<std::mutex> configurationLock(ext.sharedResources->configurationMutex);
             resolutionScale = ext.sharedResources->resolutionScale;
@@ -151,6 +212,10 @@ namespace RT64 {
             filtering = ext.sharedResources->userConfig.filtering;
             viOriginalRate = ext.sharedResources->viOriginalRate;
             targetRate = ext.sharedResources->targetRate;
+            wcwDdResolution = ext.sharedResources->userConfig.resolution;
+            wcwDdAspect = ext.sharedResources->userConfig.aspectRatio;
+            wcwDdMsaa = ext.sharedResources->userConfig.antialiasing;
+            wcwDdDownsample = ext.sharedResources->userConfig.downsampleMultiplier;
         }
 
         RenderTarget *colorTarget = nullptr;
@@ -589,7 +654,7 @@ namespace RT64 {
                 RenderTexture *swapChainTexture = ext.swapChain->getTexture(swapChainIndex);
                 RenderFramebuffer *swapChainFramebuffer = swapChainFramebuffers[swapChainIndex].get();
                 RenderCommandList *commandList = ext.presentGraphicsWorker->commandList.get();
-                const bool wcwPerf = WcwPerf::enabled();
+                const bool wcwPerf = WcwPerf::timingEnabled();
                 const WcwPerf::Clock::time_point wcwRecordStart = wcwPerf ? WcwPerf::Clock::now() : WcwPerf::Clock::time_point();
                 commandList->begin();
                 wcwGpuTimer.begin(commandList);
@@ -752,6 +817,7 @@ namespace RT64 {
                             wcwRow.presentId = present.presentId;
                             wcwRow.generated = (i > 0);
                             WcwPerf::gpuRow(wcwRow);
+                            WcwDd::noteGpuRow(wcwRow);
                         }
                     }
 
@@ -762,33 +828,9 @@ namespace RT64 {
                         // (undoing the paper white scale) so the luminance log and BMPs stay comparable.
                         static std::vector<uint8_t> wcwHdrConverted;
                         if (HdrOutput::active()) {
-                            auto halfToFloat = [](uint16_t h) {
-                                const uint32_t sign = uint32_t(h & 0x8000) << 16;
-                                const uint32_t exponent = (h >> 10) & 0x1F;
-                                const uint32_t mantissa = h & 0x3FF;
-                                uint32_t bits = sign;
-                                if (exponent == 0x1F) {
-                                    bits |= 0x7F800000 | (mantissa << 13);
-                                }
-                                else if (exponent != 0) {
-                                    bits |= ((exponent + 112) << 23) | (mantissa << 13);
-                                }
-                                else if (mantissa != 0) {
-                                    float value = float(mantissa) / 16777216.0f;
-                                    return (sign != 0) ? -value : value;
-                                }
-
-                                float value;
-                                memcpy(&value, &bits, sizeof(value));
-                                return value;
-                            };
-
-                            auto toSrgb8 = [](float linearValue) {
-                                const float c = std::clamp(linearValue, 0.0f, 1.0f);
-                                const float s = (c <= 0.0031308f) ? (c * 12.92f) : (1.055f * powf(c, 1.0f / 2.4f) - 0.055f);
-                                return uint8_t(std::lround(s * 255.0f));
-                            };
-
+                            // [wcw hdr] Table-driven (WcwLogic::HdrReadbackConverter): converting per pixel cost
+                            // 30+ ms a present and took HDR runs to 10-20 presents/s (aki-roadmap#128).
+                            static WcwLogic::HdrReadbackConverter wcwHdrConverter;
                             const float invScale = 1.0f / HdrOutput::sdrScale();
                             double nitsSum = 0.0;
                             float nitsMax = 0.0f;
@@ -796,15 +838,7 @@ namespace RT64 {
                             for (uint32_t y = 0; y < wcwRbH; y++) {
                                 const uint16_t *src = (const uint16_t *)(p + uint64_t(y) * wcwRbRow * 8);
                                 uint8_t *dst = wcwHdrConverted.data() + uint64_t(y) * wcwRbRow * 4;
-                                for (uint32_t x = 0; x < wcwRbW; x++) {
-                                    const float nits = 80.0f * (0.2126f * halfToFloat(src[x * 4 + 0]) + 0.7152f * halfToFloat(src[x * 4 + 1]) + 0.0722f * halfToFloat(src[x * 4 + 2]));
-                                    nitsSum += nits;
-                                    nitsMax = std::max(nitsMax, nits);
-                                    dst[x * 4 + 0] = toSrgb8(halfToFloat(src[x * 4 + 2]) * invScale);
-                                    dst[x * 4 + 1] = toSrgb8(halfToFloat(src[x * 4 + 1]) * invScale);
-                                    dst[x * 4 + 2] = toSrgb8(halfToFloat(src[x * 4 + 0]) * invScale);
-                                    dst[x * 4 + 3] = 255;
-                                }
+                                wcwHdrConverter.convertRow(src, dst, wcwRbW, invScale, nitsSum, nitsMax);
                             }
 
                             fprintf(stderr, "[wcw hdr] present %d: mean %.0f nits, max %.0f nits\n", wcwPresentN, nitsSum / (double(wcwRbW) * wcwRbH), nitsMax);
@@ -977,6 +1011,25 @@ namespace RT64 {
                 swapChainValid = ext.swapChain->present(swapChainIndex, &waitSemaphore, 1);
                 if (WcwPerf::enabled()) {
                     wcwPerfPresentCall(wcwPresentStart, WcwPerf::Clock::now());
+                }
+
+                // [wcw dd] WCW_DD_METRICS: the present (game presents only, as WCW_HFR_LOG counts them; beam sub-frames
+                // are not counted) and the settings it was drawn with.
+                if (WcwDd::enabled()) {
+                    WcwDd::notePresent(WcwDd::Clock::now(), i > 0, (i == 0) && wcwHfrRealRepeat);
+                    WcwLogic::DdContext wcwDdContext;
+                    wcwDdContext.fpsTarget = WcwLogic::ddFpsTarget(targetRate, viOriginalRate);
+                    wcwDdContext.framerate = wcwDdRefreshRateName(refreshRate);
+                    wcwDdContext.rt = WcwRaytracer::active();
+                    wcwDdContext.rtQuality = WcwRaytracer::userQuality();
+                    wcwDdContext.resolution = wcwDdResolutionName(wcwDdResolution);
+                    wcwDdContext.aspect = wcwDdAspectName(wcwDdAspect);
+                    wcwDdContext.msaa = wcwDdMsaaName(wcwDdMsaa);
+                    wcwDdContext.downsample = wcwDdDownsample;
+                    wcwDdContext.hdr = HdrOutput::active();
+                    wcwDdContext.crt = crtFilter->active() ? CrtFilter::userSettings().preset : std::string();
+                    wcwDdContext.beam = crtFilter->beamActive();
+                    WcwDd::noteContext(wcwDdContext);
                 }
 
                 presentProfiler.logAndRestart();
@@ -1407,7 +1460,10 @@ namespace RT64 {
                 }
                 else {
                     std::scoped_lock<std::mutex> presentTargetsLock(wcwPresentTargetsMutex);
+                    // [wcw fix] Released render target textures outlive every present that started before (aki-roadmap#4).
+                    RenderTarget::wcwNotePresentStart();
                     threadPresent(present, swapChainValid);
+                    RenderTarget::wcwNotePresentEnd();
                 }
 
                 if (!present.paused) {

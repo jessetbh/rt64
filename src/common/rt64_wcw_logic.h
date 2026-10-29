@@ -9,8 +9,12 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include <array>
+#include <algorithm>
+#include <deque>
+#include <memory>
 
 // [wcw] Decision logic for frame interpolation, present pacing, the CRT beam simulator and ray-traced shadows, kept
 // free of renderer state so it can be unit tested (tests/wcw). The renderer calls these functions; a change to any
@@ -99,6 +103,36 @@ namespace RT64::WcwLogic {
     // every pass on every target as if it traced). A reused arena pass that didn't count as the target's darkening
     // pass let a second pass darken the misses again: generated frames ~5% darker, 3% of game frames off.
     bool reusableTrace(bool traced, uint64_t tracedSignature, uint64_t signature, bool tracedDarkened, bool darkens);
+
+    // Whether a pass builds its acceleration structures (BLAS + TLAS) on this render (aki-roadmap#36). A pass that
+    // composites its slot's latest trace (traceRender false) reads neither, yet every generated frame built them:
+    // ~0.1 ms each, over half the workloads at 120 fps. It still builds when it traces every frame
+    // (traceEveryFrame: WCW_RT_TRACE_GENERATED), or when its trace textures are made again on this render
+    // (traceTexturesChange: target size or trace scale changed), which drops the trace it would composite.
+    bool buildForPass(bool traceEveryFrame, bool generated, bool haveTrace, uint32_t reusesSinceTrace, bool traceTexturesChange);
+
+    // What a pass's latest trace was made with: the ray tracer's trace textures and the slot's history.
+    struct TraceTextures {
+        // Ray tracing also ran on the previous render (re-enabled after being off, every history is stale).
+        bool active = false;
+        bool haveTextures = false;
+        // The color target size and trace scale the textures were made for.
+        uint32_t outputWidth = 0;
+        uint32_t outputHeight = 0;
+        float traceScale = 0.0f;
+        bool haveHistory = false;
+        uint32_t historyWidth = 0;
+        uint32_t historyHeight = 0;
+        // The mode (WCW_RT_MODE_*) that wrote the history: shadows and AO, or a debug view's color.
+        uint32_t historyMode = UINT32_MAX;
+    };
+
+    // Whether recordTrace makes the trace textures or the slot's history again, or drops the history, for a pass
+    // into a target of targetWidth x targetHeight at targetScale in mode: the latest trace can't be composited then
+    // (buildForPass's traceTexturesChange). A changed mode (the Lighting editor's debug views) and a changed trace
+    // scale (an RT quality change between recordBuild and recordTrace) count, as do the target size and the
+    // trace size the history was made at.
+    bool traceTexturesChange(const TraceTextures &textures, uint32_t targetWidth, uint32_t targetHeight, float targetScale, uint32_t mode);
 
     // Ray tracing quality presets
 
@@ -319,8 +353,17 @@ namespace RT64::WcwLogic {
 
     // Frame interpolation
 
+    // The slowest game rate frame interpolation spreads a game frame over (the AKI games run at 30 or 20 fps).
+    // The measured rate dips below it on slow frames (ray tracing), and each displayed frame beyond the second needs
+    // a generated-frame target in each of the three rotating target sets, kept for the rest of the run: No Mercy at
+    // 60 fps with RT grew them to 3 or 4 targets of 58.5 MB each depending on timing, so GPU memory differed by up to
+    // 0.5 GB between identical runs (aki-roadmap#97). A slower game frame shows at most this many frames' worth;
+    // the earliest generated frames of a catch-up are skipped instead (InterpolationTicks::beginGameFrame).
+    constexpr uint32_t MinInterpolatedGameRate = 20;
+
     // Displayed frames per game frame: display rate / game rate, rounded, at least 2 (2 for a 30 fps game at 60,
-    // 4 at 120). capOverride (WCW_HFR_CAP) replaces it when non-zero.
+    // 4 at 120), the game rate taken as at least MinInterpolatedGameRate (at most 3 at 60, 6 at 120).
+    // capOverride (WCW_HFR_CAP) replaces it when non-zero.
     uint32_t framesPerGameFrame(uint32_t targetRate, uint32_t viOriginalRate, uint32_t capOverride);
 
     struct FrameWeights {
@@ -599,19 +642,6 @@ namespace RT64::WcwLogic {
     // player's edits, because only the per-session set was checked.
     TexDumpWrite texDumpWrite(bool dumpedThisSession, bool packFileExists);
 
-    // The Windows extended-length form of an absolute path (aki-roadmap#115): "\\?\C:\..." or "\\?\UNC\server\share\...".
-    // The ports aren't long-path aware, so a pack file whose full path reached MAX_PATH (260) didn't open (the texture
-    // silently stayed stock), and a folder nested past it threw from the directory walk and ended the game (0xC0000409).
-    // Win32 doesn't normalize a \\?\ path, so this also turns '/' into '\', drops "." and empty components and resolves
-    // "..". Empty, relative or drive-relative ("C:foo") input, and a path already in \\?\ or \\.\ form, come back unchanged.
-    std::wstring extendedLengthPath(const std::wstring &absolutePath);
-
-    // A file inside a pack root (aki-roadmap#115 review): root joined with a pack-relative path. Pack paths come with
-    // '/' (rt64.json entries, Rice names, the forward-slash forms the database builds) and may hold "." or "..", and
-    // Win32 resolves neither inside a \\?\ path, so with an extended-length root the joined path goes through
-    // extendedLengthPath again: '/' becomes '\' and "."/".." are resolved. Any other root is joined as given.
-    std::wstring extendedLengthJoin(const std::wstring &root, const std::wstring &relative);
-
     // Display lists (aki-roadmap#116)
 
     // Most commands the interpreter runs for one display list task. A list that branches back into itself (a hack's
@@ -645,6 +675,19 @@ namespace RT64::WcwLogic {
             return (commands > limit) || transformsFull;
         }
     };
+
+    // The Windows extended-length form of an absolute path (aki-roadmap#115): "\\?\C:\..." or "\\?\UNC\server\share\...".
+    // The ports aren't long-path aware, so a pack file whose full path reached MAX_PATH (260) didn't open (the texture
+    // silently stayed stock), and a folder nested past it threw from the directory walk and ended the game (0xC0000409).
+    // Win32 doesn't normalize a \\?\ path, so this also turns '/' into '\', drops "." and empty components and resolves
+    // "..". Empty, relative or drive-relative ("C:foo") input, and a path already in \\?\ or \\.\ form, come back unchanged.
+    std::wstring extendedLengthPath(const std::wstring &absolutePath);
+
+    // A file inside a pack root (aki-roadmap#115 review): root joined with a pack-relative path. Pack paths come with
+    // '/' (rt64.json entries, Rice names, the forward-slash forms the database builds) and may hold "." or "..", and
+    // Win32 resolves neither inside a \\?\ path, so with an extended-length root the joined path goes through
+    // extendedLengthPath again: '/' becomes '\' and "."/".." are resolved. Any other root is joined as given.
+    std::wstring extendedLengthJoin(const std::wstring &root, const std::wstring &relative);
 
     // Graphics device loss
 
@@ -739,6 +782,380 @@ namespace RT64::WcwLogic {
         void add(bool pairSplit, float drawnChange = -1.0f);
         bool splitLayer() const;
     };
+
+    // Unmapped transforms on generated frames (aki-roadmap#110)
+
+    // Whether a draw's clip-space vertices (x, y, z, w each; vertexCount of them) cross the camera's near plane: some
+    // in front of it (z >= -w, the N64 convention RSPProcessCS keeps) and some just behind it (z < -w). Only vertices
+    // in front of the camera (w > 0) count, so big meshes that reach behind the camera (floors, crowds) don't; vertices
+    // that aren't finite are skipped.
+    bool crossesNearPlane(const float *clip, size_t vertexCount);
+
+    // The view-projection a real frame draws with: the game's (viewProj, 16 floats, row-major) with the projection's
+    // aspect adjustment (ProjectionProcessor's adjustProjectionMatrix: column 0 times projRatioScale, Expand).
+    void drawnViewProj(const float viewProj[16], float projRatioScale, float out[16]);
+
+    // Whether a generated frame draws an unmapped transform (no previous-frame pair: drawn with its current matrix)
+    // with the real frame's view-projection instead of the interpolated one, so that it lands and clips exactly as in
+    // the real frame. Only for transforms whose vertices cross the near plane under the real or the interpolated
+    // view, in a match. World Tour's WCW quick match draws two thin untextured boxes on unmapped transforms right on
+    // the camera's near plane (z/w -0.90 to -1.02). The real frame clips them away (one sliver under the timer); the
+    // generated frame's camera, half a game frame away, brought them in front of it: two dark slabs across the ring
+    // and the mat on one generated frame (luminance 59.1 between 60.6 and 63.2). Hiding unmapped transforms on
+    // generated frames removed the dip. Other unmapped objects keep the interpolated view, so they stay in place
+    // relative to the interpolated scene around them.
+    bool pinUnmappedToRealView(bool inMatch, bool generated, bool realCrosses, bool generatedCrosses);
+
+    // Render target regrow settle (aki-roadmap#4)
+
+    // Render targets newly allocated by one workload (pixels, summed over color and depth) at or above which the
+    // workload waits before recording into them, and how long.
+    constexpr uint64_t RegrowSettleMinPixels = 4ULL * 1024ULL * 1024ULL;
+    constexpr uint32_t RegrowSettleDefaultMs = 100;
+
+    // How long (ms) a workload waits after regrowing its render targets, before it records into them. Supersampling
+    // 2x at 1600x900 / 150% DPI regrows No Mercy's targets from 3840x1920 to 7670x2880 a few seconds in; the first
+    // workload into the new targets hung the GPU every time (NVIDIA Xid 13 GPC SAVE_RESTORE_ADDR_OOB, then
+    // DEVICE_HUNG), even with every rt64 queue serialised and the allocations made while the GPU was idle. Waiting
+    // 50 ms or more after the regrow avoided it (10 ms didn't always). The settings-apply hang (aki-roadmap#4, first
+    // draws after the targets are recreated) is probably the same case; not verified yet. overrideMs: WCW_REGROW_SETTLE_MS (negative = unset, 0 = off). Small regrows
+    // (N64-sized targets, low resolutions) never wait.
+    // deferringRelease: released textures are destroyed later (DeferredReleaseList), which is what the wait really
+    // bought: the hang came from destroying the textures a regrow releases, not from first use of the new ones
+    // (keeping them alive with no wait was clean, destroying them at once with no wait hung). Then nothing waits
+    // unless overrideMs asks for it.
+    uint32_t regrowSettleMs(uint64_t regrownPixels, int32_t overrideMs, bool deferringRelease);
+
+    // Deferred release of render target textures (aki-roadmap#4)
+
+    // When a render target's textures were released: how many presents had started and how many workloads had
+    // finished (their GPU work waited for) by then, and the time.
+    struct ReleaseStamp {
+        uint64_t presentsStarted = 0;
+        uint64_t workloadsDone = 0;
+        uint64_t ms = 0;
+    };
+
+    // Released textures live on for at least this many finished workloads and this long.
+    constexpr uint64_t DeferredReleaseWorkloads = 2;
+    constexpr uint64_t DeferredReleaseMinMs = 100;
+
+    // Whether textures released at stamp can be destroyed: every present that had started by then has finished (the
+    // present thread records the targets' textures without the workload thread's locks), the workload thread has
+    // finished DeferredReleaseWorkloads more workloads, and DeferredReleaseMinMs have passed (the old settle needed
+    // 50 ms or more). A clock that went backwards isn't ready.
+    bool releaseReady(const ReleaseStamp &stamp, uint64_t presentsFinished, uint64_t workloadsDone, uint64_t nowMs);
+
+    // Released render target textures waiting to be destroyed, oldest first. T is the bundle of GPU objects a target
+    // released (destroyed with the entry).
+    template<typename T>
+    class DeferredReleaseList {
+    public:
+        void push(const ReleaseStamp &stamp, uint64_t bytes, std::unique_ptr<T> item) {
+            if (item == nullptr) {
+                return;
+            }
+
+            entries.push_back({ stamp, bytes, std::move(item) });
+            pending += bytes;
+            peakPending = std::max(peakPending, pending);
+        }
+
+        // Destroys the entries that are ready (releaseReady), oldest first, stopping at the first that isn't: stamps
+        // only grow, so later entries aren't ready either. Returns how many were destroyed.
+        size_t collect(uint64_t presentsFinished, uint64_t workloadsDone, uint64_t nowMs) {
+            size_t count = 0;
+            while (!entries.empty() && releaseReady(entries.front().stamp, presentsFinished, workloadsDone, nowMs)) {
+                pending -= entries.front().bytes;
+                entries.pop_front();
+                count++;
+            }
+
+            destroyed += count;
+            return count;
+        }
+
+        // Destroys everything (shutdown, once no queue uses the textures).
+        size_t clear() {
+            const size_t count = entries.size();
+            entries.clear();
+            pending = 0;
+            destroyed += count;
+            return count;
+        }
+
+        uint64_t pendingBytes() const { return pending; }
+        uint64_t peakPendingBytes() const { return peakPending; }
+        uint64_t destroyedCount() const { return destroyed; }
+        size_t size() const { return entries.size(); }
+
+    private:
+        struct Entry {
+            ReleaseStamp stamp;
+            uint64_t bytes;
+            std::unique_ptr<T> item;
+        };
+
+        std::deque<Entry> entries;
+        uint64_t pending = 0;
+        uint64_t peakPending = 0;
+        uint64_t destroyed = 0;
+    };
+
+    // HDR readback for the luminance log and BMP dumps (aki-roadmap#128)
+
+    // An IEEE half float's value (subnormals, infinities and NaNs included).
+    float halfToFloat(uint16_t half);
+
+    // Converts the scRGB (RGBA16F) swap chain read back by WCW_PRESENT_LUM / WCW_BMP_* to 8-bit sRGB BGRA, undoing
+    // the paper white scale, so the luminance log and BMPs stay comparable with SDR, and adds up the nits. Per pixel
+    // this was three powf calls and three half conversions on the present thread: 30+ ms a present at 1280x720,
+    // which took HDR runs with the luminance log from 60 presents/s to 10-20 from present 240 on (where the log
+    // starts). Tables indexed by the half's bits do the same per channel; the sRGB table is rebuilt when the scale
+    // changes.
+    class HdrReadbackConverter {
+    public:
+        // src: width RGBA16F pixels; dst: width BGRA8 pixels. invScale: 1 / the paper white scale.
+        void convertRow(const uint16_t *src, uint8_t *dst, uint32_t width, float invScale, double &nitsSum, float &nitsMax);
+        // How many times the sRGB table was built (tests).
+        uint32_t srgbTableBuilds() const { return srgbBuilds; }
+
+    private:
+        std::vector<float> halfTable;
+        std::vector<uint8_t> srgbTable;
+        float srgbTableScale = 0.0f;
+        uint32_t srgbBuilds = 0;
+    };
+
+    // The 8-bit sRGB value of a linear value (clamped to 0-1), as the readback always converted it.
+    uint8_t linearToSrgb8(float linearValue);
+
+    // In-game Datadog metrics (aki-roadmap#125)
+
+    // WCW_DD_METRICS=1 sends aggregated performance numbers to the local Datadog Agent (DogStatsD, udp
+    // 127.0.0.1:8125) every DdWindowSeconds while the game runs. Off by default. The aggregation and the DogStatsD
+    // lines are here; common/rt64_wcw_dd is the sink. Names follow AkiTools lib\ddmetrics.ps1 (aki.run.*) with the
+    // aki.game. prefix, so one dashboard can show test runs and play sessions side by side.
+    constexpr double DdWindowSeconds = 10.0;
+    // Each UDP packet stays under this, several lines per packet (as ddmetrics.ps1).
+    constexpr size_t DdMaxPacketBytes = 1400;
+    // A present interval above this many times the expected frame time is a hitch.
+    constexpr double DdHitchFactor = 2.0;
+
+    // Whether an environment value turns a switch on: set, not empty and not "0" (WCW_DD_METRICS, WCW_PERF_LOG).
+    bool envSwitchOn(const char *value);
+
+    // One window's numbers. Percentiles and the 1%-low rate need at least one present interval (hasIntervals); the
+    // GPU numbers need GPU timing rows (gpuRenderRows / gpuPresentRows).
+    // Deliberate differences from aki-run's numbers of the same name (aki-shot pacing, from wcw_present_lum.csv):
+    // - hitches: above 2x the larger of the target frame time and the median interval; aki-shot counts above 1.5x
+    //   the target, so a 30 fps scene on a 60 target counts every frame there and none here;
+    // - p50/p95/p99: nearest-rank, aki-shot interpolates (numpy);
+    // - real_fps: presents minus generated presents, so a repeated real frame counts; aki-run prefers distinct
+    //   frames from the luminance log (pacing.game_fps), which the renderer doesn't have.
+    struct DdFrameStats {
+        double seconds = 0.0;
+        uint32_t presents = 0;
+        uint32_t generated = 0;
+        uint32_t repeated = 0;
+        double presentsPerS = 0.0;
+        double realFps = 0.0;
+        double interpolatedPerS = 0.0;
+        double repeatedPerMin = 0.0;
+        bool hasIntervals = false;
+        double p50Ms = 0.0;
+        double p95Ms = 0.0;
+        double p99Ms = 0.0;
+        double maxMs = 0.0;
+        // 1000 / the mean of the slowest 1% of the intervals (at least one).
+        double low1PctFps = 0.0;
+        uint32_t hitches = 0;
+        double hitchesPerMin = 0.0;
+        // Per GPU timing row (one recorded command list; medians as aki-shot perf / aki.run.perf.*).
+        uint32_t gpuRenderRows = 0;
+        double gpuRenderMs = 0.0;
+        double gpuRenderP95Ms = 0.0;
+        double rtBuildMs = 0.0;
+        double rtTraceMs = 0.0;
+        // Per game frame: the rows of one presentId summed (every workload, every interpolated frame rendered from
+        // it), median and p95; and its RT build + trace. Only game frames whose rows all landed in the window.
+        uint32_t gameFrames = 0;
+        double gpuGameFrameMs = 0.0;
+        double gpuGameFrameP95Ms = 0.0;
+        double rtGameFrameMs = 0.0;
+        uint32_t gpuPresentRows = 0;
+        double gpuPresentMs = 0.0;
+    };
+
+    // Collects presents and GPU rows and summarizes them per window. Not thread-safe (the sink locks it).
+    class DdFrameWindow {
+    public:
+        // Starts a window at nowMs (steady clock ms) and forgets its samples. The last present time is kept, so the
+        // first interval of a window spans the boundary.
+        void start(double nowMs);
+        // A present at tMs. generated: an in-between frame; repeated: the real frame shown again.
+        void addPresent(double tMs, bool generated, bool repeated);
+        // GPU time of one render timing row (whole row; its RT build and trace parts), for the game frame presentId
+        // (rows of one game frame arrive together), or of one present.
+        void addGpuRender(uint64_t presentId, double gpuMs, double rtBuildMs, double rtTraceMs);
+        void addGpuPresent(double gpuMs);
+        // Summarizes the window up to nowMs and starts the next one there. fpsTarget: the expected present rate
+        // (ddFpsTarget). A hitch is an interval above DdHitchFactor times the larger of the target's frame time and
+        // the window's median interval, so a game that steadily draws below the target (30 fps on a 60 target) has
+        // no hitches, only its real stalls.
+        DdFrameStats take(double nowMs, uint32_t fpsTarget);
+    private:
+        double windowStartMs = -1.0;
+        double lastPresentMs = -1.0;
+        uint32_t presents = 0;
+        uint32_t generated = 0;
+        uint32_t repeated = 0;
+        std::vector<double> intervals;
+        std::vector<double> gpuRender;
+        std::vector<double> rtBuild;
+        std::vector<double> rtTrace;
+        std::vector<double> gpuPresent;
+        std::vector<double> frameGpu;
+        std::vector<double> frameRt;
+        // The game frame whose rows are arriving (kept across windows).
+        bool frameOpen = false;
+        uint64_t framePresentId = 0;
+        double frameGpuSum = 0.0;
+        double frameRtSum = 0.0;
+    };
+
+    // Nearest-rank percentile (p in 0..1) of unsorted values; 0 for none.
+    double ddPercentile(std::vector<double> values, double p);
+
+    // The present rate to expect: the target rate when the framerate setting sets one (Display, Manual), else the
+    // game's VI rate (Original). 0 when neither is known.
+    uint32_t ddFpsTarget(uint32_t targetRate, uint32_t viOriginalRate);
+
+    // Process numbers (Windows; has = false elsewhere), and VRAM from DXGI QueryVideoMemoryInfo (hasVram).
+    struct DdProcessSample {
+        bool has = false;
+        double privateMb = 0.0;
+        double workingSetMb = 0.0;
+        uint32_t handles = 0;
+        bool hasVram = false;
+        double vramMb = 0.0;
+        double vramBudgetMb = 0.0;
+    };
+
+    // The gauges for one window, by full name (aki.game.*), only those with data.
+    std::vector<std::pair<std::string, double>> ddWindowMetrics(const DdFrameStats &stats, const DdProcessSample &process);
+
+    // Whether the window that started at windowStartMs is due to be sent at nowMs (DdWindowSeconds).
+    bool ddWindowDue(double nowMs, double windowStartMs);
+
+    // One adapter's DXGI QueryVideoMemoryInfo (local segment): this process's usage and its budget, bytes.
+    struct DdVramAdapter {
+        uint64_t usage = 0;
+        uint64_t budget = 0;
+    };
+
+    // The process's VRAM: usage summed over the adapters (it is 0 on the ones it doesn't use), and the budget of
+    // the adapter it uses most (the first one on a tie, so an idle second GPU never replaces the first's budget).
+    DdVramAdapter ddPickVram(const std::vector<DdVramAdapter> &adapters);
+
+    // The settings and scene the numbers belong to, turned into tags. Gauges carry these tags, so they must stay low
+    // cardinality: no per-session ids.
+    struct DdContext {
+        std::string game;
+        uint32_t fpsTarget = 0;
+        // UserConfiguration::RefreshRate: original / display / manual.
+        std::string framerate;
+        bool rt = false;
+        uint32_t rtQuality = 0;
+        std::string resolution;
+        std::string aspect;
+        std::string msaa;
+        int downsample = 1;
+        bool hdr = false;
+        // The CRT preset (a name or a .slangp path; the tag is its file stem), empty when the filter is off.
+        std::string crt;
+        bool beam = false;
+        // The ray tracer's detected venue (rt only), empty when unknown.
+        std::string venue;
+        // WCW_DD_TAGS, already sanitized (ddParseTags).
+        std::vector<std::string> extraTags;
+        bool operator==(const DdContext &o) const;
+        bool operator!=(const DdContext &o) const { return !(*this == o); }
+    };
+
+    const char *rtQualityName(uint32_t quality);
+    // "crt/presets/crt-guest-advanced-ntsc.slangp" -> "crt-guest-advanced-ntsc": no folders (user paths) in tags.
+    std::string ddCrtPresetName(const std::string &preset);
+    // The context's tags. Extra tags whose key is one of these tags' own keys are dropped (WCW_DD_TAGS=game:x would
+    // otherwise add a second game tag).
+    std::vector<std::string> ddContextTags(const DdContext &context);
+    // "rt:off -> rt:on, fps_target:60 -> fps_target:120": the tags that changed, by key; empty when none did.
+    std::string ddTagChanges(const std::vector<std::string> &before, const std::vector<std::string> &after);
+
+    // The aki-run game key from the executable's name: "NoMercyRecompiled.exe" -> "nomercy", "WCWRecompiled" -> "wt"
+    // (AkiTools games.psd1). Unknown names are lowercased without "recompiled" and the extension.
+    std::string ddGameFromExe(const std::string &exeName);
+    // A play session's tags and events. The sink feeds it the renderer's settings every present and the ray tracer's
+    // venue on a change, and sends what it decides:
+    // - the first settings start the session (SessionStart);
+    // - changes in the first DdSettleSeconds after that are the startup settling (the swap chain's rate arriving,
+    //   the saved settings applied) and become the baseline silently; later ones are SettingsChanged, with the tag
+    //   changes as text;
+    // - a venue is a tag only while ray tracing runs (only the ray tracer detects it); a venue change with RT on and
+    //   a session started is VenueChanged.
+    constexpr double DdSettleSeconds = 3.0;
+
+    class DdSession {
+    public:
+        enum class Event {
+            None,
+            SessionStart,
+            SettingsChanged,
+            VenueChanged
+        };
+
+        struct Decision {
+            Event event = Event::None;
+            // SettingsChanged / VenueChanged: ddTagChanges of the tags.
+            std::string changes;
+        };
+
+        // The game and WCW_DD_TAGS, fixed for the session.
+        void setIdentity(const std::string &game, const std::vector<std::string> &extraTags);
+        // The renderer's settings at nowMs (ms); its game, extraTags and venue fields are ignored.
+        Decision noteContext(const DdContext &context, double nowMs);
+        Decision noteVenue(const std::string &venue);
+        bool started() const { return haveContext; }
+        const DdContext &context() const { return current; }
+        // The tags gauges and events carry: the context's, or only the game before the session started.
+        std::vector<std::string> tags() const;
+    private:
+        DdContext current;
+        std::vector<std::string> currentTags;
+        bool haveContext = false;
+        double startMs = 0.0;
+        std::string game;
+        std::vector<std::string> extraTags;
+        std::string venue;
+    };
+
+    // "conversion:btbw,owner:Fire Ant" -> sanitized tags; entries without a ':' or with an empty value are dropped.
+    std::vector<std::string> ddParseTags(const char *list);
+
+    // ddmetrics.ps1 ConvertTo-AkiMetricName: lowercase ASCII letters, digits, '_' and '.', starting with a letter.
+    std::string ddMetricName(const std::string &name);
+    // ddmetrics.ps1 ConvertTo-AkiTag: "key:value", lowercase, other characters as '_', at most 200 characters; empty
+    // when the value is empty.
+    std::string ddTag(const std::string &key, const std::string &value);
+    // '0.######' (ddmetrics.ps1 Format-AkiValue): up to 6 decimals, no trailing zeros, no exponent.
+    std::string ddFormatValue(double value);
+    // "name:value|g|#tag,tag"; empty for a value that isn't finite.
+    std::string ddGaugeLine(const std::string &name, double value, const std::vector<std::string> &tags);
+    // "_e{title,text}:title|text|k:key|s:aki-game|t:alert|#tags" (lengths in bytes; text newlines as \n).
+    std::string ddEventLine(const std::string &title, const std::string &text, const std::vector<std::string> &tags,
+        const std::string &alertType, const std::string &aggregationKey);
+    // Joins lines with '\n' into packets of at most maxBytes; a longer line goes alone.
+    std::vector<std::string> ddPackets(const std::vector<std::string> &lines, size_t maxBytes = DdMaxPacketBytes);
 
     // Ray tracing: painted rope shadows on the ring mat (aki-roadmap#105)
 

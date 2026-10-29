@@ -4,8 +4,12 @@
 
 #include "rt64_workload_queue.h"
 
+#include <chrono>
+#include <thread>
+
 #include "common/rt64_thread.h"
 #include "common/rt64_wcw_logic.h"
+#include "common/rt64_wcw_dd.h"
 #include "common/rt64_wcw_perf.h"
 #include "render/rt64_wcw_device_lost.h"
 
@@ -14,6 +18,12 @@
 #define ENABLE_HIGH_RESOLUTION_RENDERER 1
 
 namespace RT64 {
+    // [wcw fix] WCW_REGROW_SETTLE_MS (aki-roadmap#4): negative when unset.
+    static int32_t wcwRegrowSettleOverride() {
+        static const int32_t value = []() { const char *v = getenv("WCW_REGROW_SETTLE_MS"); return (v != nullptr) ? int32_t(atoi(v)) : -1; }();
+        return value;
+    }
+
     // WorkloadQueue
 
     WorkloadQueue::WorkloadQueue() {
@@ -336,8 +346,9 @@ namespace RT64 {
         const bool usingMSAA = (targetManager.multisampling.sampleCount > 1);
 
         rendererCPUProfiler.start();
-        // [wcw perf] WCW_PERF_LOG: CPU time recording this frame, then waiting for its GPU work.
-        const bool wcwPerf = WcwPerf::enabled();
+        // [wcw perf] WCW_PERF_LOG: CPU time recording this frame, then waiting for its GPU work. The GPU rows also feed
+        // the in-game Datadog metrics (WCW_DD_METRICS).
+        const bool wcwPerf = WcwPerf::timingEnabled();
         // A frame of several workloads records one command list each; each row starts where the last one ended.
         WcwPerf::Clock::time_point wcwRecordStart = wcwPerf ? WcwPerf::Clock::now() : WcwPerf::Clock::time_point();
 
@@ -606,6 +617,7 @@ namespace RT64 {
                         if (dummyDepthTarget == nullptr) {
                             dummyDepthTarget = std::make_unique<RenderTarget>(0, Framebuffer::Type::Depth, targetManager.multisampling, targetManager.usesHDR);
                             dummyDepthTarget->setupDepth(ext.workloadGraphicsWorker, rtWidth, rtHeight);
+                            resizedTargets.emplace(dummyDepthTarget.get());
                         }
 
                         if ((dummyDepthTarget != nullptr) && dummyDepthTarget->resize(ext.workloadGraphicsWorker, rtWidth, rtHeight)) {
@@ -639,8 +651,18 @@ namespace RT64 {
                 }
             }
 
+            uint64_t wcwRegrownPixels = 0;
             for (RenderTarget *renderTarget : resizedTargets) {
                 renderFramebufferManager->destroyAllWithRenderTarget(renderTarget);
+                wcwRegrownPixels += uint64_t(renderTarget->width) * renderTarget->height;
+            }
+
+            // [wcw fix] Let big new render targets settle before the first workload records into them (aki-roadmap#4).
+            // Only with WCW_TARGET_DEFER=0 or WCW_REGROW_SETTLE_MS: released textures are destroyed later instead.
+            const uint32_t wcwSettleMs = WcwLogic::regrowSettleMs(wcwRegrownPixels, wcwRegrowSettleOverride(), RenderTarget::wcwDeferringRelease());
+            if (wcwSettleMs > 0) {
+                fprintf(stderr, "[wcw] render targets regrown (%.1f Mpx); waiting %u ms before using them\n", double(wcwRegrownPixels) / 1e6, wcwSettleMs);
+                std::this_thread::sleep_for(std::chrono::milliseconds(wcwSettleMs));
             }
 
             uint32_t gameCallCursor = 0;
@@ -789,7 +811,14 @@ namespace RT64 {
                         continue;
                     }
 
-                    primeTarget->resize(ext.workloadGraphicsWorker, liveTarget.width, liveTarget.height);
+                    if (primeTarget->resize(ext.workloadGraphicsWorker, liveTarget.width, liveTarget.height)) {
+                        const uint32_t wcwPrimeSettleMs = WcwLogic::regrowSettleMs(uint64_t(primeTarget->width) * primeTarget->height, wcwRegrowSettleOverride(), RenderTarget::wcwDeferringRelease());
+                        if (wcwPrimeSettleMs > 0) {
+                            fprintf(stderr, "[wcw] generated-frame target regrown; waiting %u ms before using it\n", wcwPrimeSettleMs);
+                            std::this_thread::sleep_for(std::chrono::milliseconds(wcwPrimeSettleMs));
+                        }
+                    }
+
                     RenderTextureBarrier primeBarriers[] = {
                         RenderTextureBarrier(liveTarget.texture.get(), RenderTextureLayout::COPY_SOURCE),
                         RenderTextureBarrier(primeTarget->texture.get(), RenderTextureLayout::COPY_DEST)
@@ -952,6 +981,7 @@ namespace RT64 {
             const WcwPerf::Clock::time_point wcwSubmit = wcwPerf ? WcwPerf::Clock::now() : WcwPerf::Clock::time_point();
             ext.workloadGraphicsWorker->execute();
             ext.workloadGraphicsWorker->wait();
+            RenderTarget::wcwNoteWorkloadDone();
             if (wcwPerf) {
                 const WcwPerf::Clock::time_point wcwDone = WcwPerf::Clock::now();
                 WcwPerf::cpuPhase(WcwPerf::CpuPhase::Rt64Record, wcwRecordStart, wcwSubmit);
@@ -966,6 +996,7 @@ namespace RT64 {
                     // game frame is the generated one, drawn into the game target; the real frame goes to an override.
                     wcwRow.generated = WcwLogic::generatedFrame(curFrameWeight);
                     WcwPerf::gpuRow(wcwRow);
+                    WcwDd::noteGpuRow(wcwRow);
                 }
 
                 wcwRecordStart = wcwDone;

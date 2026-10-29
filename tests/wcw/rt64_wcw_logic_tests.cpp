@@ -411,6 +411,82 @@ TEST_CASE("generated frames: shadows don't freeze when real frames are skipped u
     CHECK(traceRender(true, true, MaxGeneratedReuse + 5));
 }
 
+TEST_CASE("acceleration structures: a generated frame that reuses its pass's trace doesn't build them (#36)") {
+    // The reusing generated frame: no build (every generated frame built BLAS + TLAS for nothing).
+    CHECK(!buildForPass(false, true, true, 0, false));
+    CHECK(!buildForPass(false, true, true, MaxGeneratedReuse - 1, false));
+    // Every frame that traces builds: the real frame, a pass with no trace yet, and the reuse limit.
+    CHECK(buildForPass(false, false, true, 0, false));
+    CHECK(buildForPass(false, true, false, 0, false));
+    CHECK(buildForPass(false, true, true, MaxGeneratedReuse, false));
+    // The build follows the trace decision exactly when nothing else forces one.
+    for (int generated = 0; generated < 2; generated++) {
+        for (int haveTrace = 0; haveTrace < 2; haveTrace++) {
+            for (uint32_t reuses = 0; reuses <= MaxGeneratedReuse + 1; reuses++) {
+                CHECK(buildForPass(false, generated != 0, haveTrace != 0, reuses, false) == traceRender(generated != 0, haveTrace != 0, reuses));
+            }
+        }
+    }
+}
+
+TEST_CASE("acceleration structures: a pass still builds when its trace can't be reused this render (#36)") {
+    // WCW_RT_TRACE_GENERATED traces every displayed frame, so every frame builds.
+    CHECK(buildForPass(true, true, true, 0, false));
+    // The trace textures are made again (target size or trace scale changed): the history is dropped and the pass
+    // traces, so it needs the structures even on a reusing generated frame.
+    CHECK(buildForPass(false, true, true, 0, true));
+}
+
+// WCW_RT_MODE_SHADOW and WCW_RT_MODE_AO (src/shared/rt64_wcw_rt.h, not included here): resolved shadows, and AO.
+static constexpr uint32_t ShadowMode = 2;
+static constexpr uint32_t AoMode = 7;
+
+// The trace textures as recordTrace left them after tracing a 1920x1080 target at half scale in shadow mode.
+static TraceTextures tracedAt1080p() {
+    TraceTextures t;
+    t.active = true;
+    t.haveTextures = true;
+    t.outputWidth = 1920;
+    t.outputHeight = 1080;
+    t.traceScale = 0.5f;
+    t.haveHistory = true;
+    t.historyWidth = 960;
+    t.historyHeight = 540;
+    t.historyMode = ShadowMode;
+    return t;
+}
+
+TEST_CASE("acceleration structures: the latest trace stays usable while nothing it was made with changed (#36)") {
+    CHECK(!traceTexturesChange(tracedAt1080p(), 1920, 1080, 0.5f, ShadowMode));
+}
+
+TEST_CASE("acceleration structures: anything that drops the latest trace makes the pass build and trace (#36 review)") {
+    const TraceTextures t = tracedAt1080p();
+    // Another target size or trace scale (an RT quality change between recordBuild and recordTrace).
+    CHECK(traceTexturesChange(t, 2560, 1080, 0.5f, ShadowMode));
+    CHECK(traceTexturesChange(t, 1920, 1440, 0.5f, ShadowMode));
+    CHECK(traceTexturesChange(t, 1920, 1080, 0.75f, ShadowMode));
+    // Another mode: the Lighting editor's debug views write a color, not resolved shadows. A reusing frame
+    // composited the other mode's history for a frame.
+    CHECK(traceTexturesChange(t, 1920, 1080, 0.5f, AoMode));
+    // No textures or history yet, a history made at another trace size, or ray tracing just turned back on.
+    TraceTextures noTextures = t;
+    noTextures.haveTextures = false;
+    CHECK(traceTexturesChange(noTextures, 1920, 1080, 0.5f, ShadowMode));
+    TraceTextures noHistory = t;
+    noHistory.haveHistory = false;
+    CHECK(traceTexturesChange(noHistory, 1920, 1080, 0.5f, ShadowMode));
+    TraceTextures smallHistory = t;
+    smallHistory.historyHeight = 480;
+    CHECK(traceTexturesChange(smallHistory, 1920, 1080, 0.5f, ShadowMode));
+    TraceTextures narrowHistory = t;
+    narrowHistory.historyWidth = 720;
+    CHECK(traceTexturesChange(narrowHistory, 1920, 1080, 0.5f, ShadowMode));
+    TraceTextures reenabled = t;
+    reenabled.active = false;
+    CHECK(traceTexturesChange(reenabled, 1920, 1080, 0.5f, ShadowMode));
+}
+
 TEST_CASE("generated frames: two passes sharing a slot don't reuse each other's trace (generated frames ~5% darker)") {
     // Two No Mercy passes of similar scenes map to one slot. On the real frame each traces in turn, so the slot
     // holds the second pass's trace; on a generated frame the first pass must trace, not composite that trace.
@@ -1124,6 +1200,44 @@ TEST_CASE("interpolation: frames per game frame") {
     CHECK_EQ(framesPerGameFrame(120, 30, 3), 3u);
 }
 
+TEST_CASE("interpolation: a game frame slower than 20 fps doesn't add generated-frame targets (#97)") {
+    // 20 fps (the slowest normal AKI rate) keeps its frames.
+    CHECK_EQ(framesPerGameFrame(60, 20, 0), 3u);
+    CHECK_EQ(framesPerGameFrame(120, 20, 0), 6u);
+    // Slower measured rates (slow ray-traced frames) are capped like 20 fps: they used to need 4-5 frames at 60 fps,
+    // growing every generated-frame target set by one or two 58.5 MB targets for the rest of the run.
+    CHECK_EQ(framesPerGameFrame(60, 15, 0), 3u);
+    CHECK_EQ(framesPerGameFrame(60, 12, 0), 3u);
+    CHECK_EQ(framesPerGameFrame(120, 10, 0), 6u);
+    // Just under 20 fps (the old code gave 4 at 60), and display rates that aren't a multiple of 20.
+    CHECK_EQ(framesPerGameFrame(60, 17, 0), 3u);
+    CHECK_EQ(framesPerGameFrame(144, 15, 0), 7u);
+    CHECK_EQ(framesPerGameFrame(165, 15, 0), 8u);
+    // The debug override still wins.
+    CHECK_EQ(framesPerGameFrame(60, 15, 5), 5u);
+}
+
+TEST_CASE("interpolation: a capped slow game frame skips its earliest generated frames and ends on the real one (#97)") {
+    // 60 fps with the game at 15 fps: 4 frames are due per game frame, 3 are shown; the weights stay in order and the
+    // last is the real frame, and the ticks stay within their bound.
+    InterpolationTicks ticks;
+    for (int gameFrame = 0; gameFrame < 50; gameFrame++) {
+        const uint32_t frames = ticks.beginGameFrame(60, 15, 0);
+        CHECK_EQ(frames, 3u);
+        float lastCur = -1.0f;
+        FrameWeights w;
+        for (uint32_t i = 0; i < frames; i++) {
+            w = ticks.advance(60, 15);
+            CHECK(w.cur > lastCur);
+            lastCur = w.cur;
+        }
+
+        CHECK_NEAR(w.cur, 1.0f, 1e-6);
+        CHECK(ticks.logical >= ticks.display);
+        CHECK((ticks.logical - ticks.display) <= int64_t(60 + 15));
+    }
+}
+
 static void checkIntegerMultipleWeights(uint32_t targetRate, uint32_t viRate) {
     InterpolationTicks ticks;
     const uint32_t n = targetRate / viRate;
@@ -1554,62 +1668,6 @@ TEST_CASE("texture dump: a second dump session keeps the PNGs already in the pac
     CHECK(texDumpWrite(true, true) == TexDumpWrite::Nothing);
 }
 
-TEST_CASE("long pack paths: a drive path gets the \\\\?\\ form, so files past MAX_PATH open (#115)") {
-    CHECK(extendedLengthPath(L"C:\\Users\\me\\depot\\NoMercyRecomp-fullconv\\conversions\\_packages\\Pack") ==
-          L"\\\\?\\C:\\Users\\me\\depot\\NoMercyRecomp-fullconv\\conversions\\_packages\\Pack");
-    CHECK(extendedLengthPath(L"C:\\") == L"\\\\?\\C:\\");
-    CHECK(extendedLengthPath(L"d:\\packs\\") == L"\\\\?\\d:\\packs");
-    // A pack root longer than MAX_PATH keeps every character (the old limit cut in at 260).
-    std::wstring deep = L"C:\\games";
-    for (int i = 0; i < 8; i++) {
-        deep += L"\\" + std::wstring(40, L'a' + i);
-    }
-
-    CHECK(deep.size() > 300);
-    CHECK(extendedLengthPath(deep) == L"\\\\?\\" + deep);
-}
-
-TEST_CASE("long pack paths: \\\\?\\ isn't normalized by Windows, so slashes, '.', '..' and doubled separators are resolved here") {
-    CHECK(extendedLengthPath(L"C:/Users/me/packs/x") == L"\\\\?\\C:\\Users\\me\\packs\\x");
-    CHECK(extendedLengthPath(L"C:\\a\\.\\b\\\\c") == L"\\\\?\\C:\\a\\b\\c");
-    CHECK(extendedLengthPath(L"C:\\a\\b\\..\\c") == L"\\\\?\\C:\\a\\c");
-    // ".." stops at the drive root.
-    CHECK(extendedLengthPath(L"C:\\..\\..\\a") == L"\\\\?\\C:\\a");
-}
-
-TEST_CASE("long pack paths: UNC shares get \\\\?\\UNC\\; other forms come back unchanged") {
-    CHECK(extendedLengthPath(L"\\\\nas\\games\\packs\\Pack") == L"\\\\?\\UNC\\nas\\games\\packs\\Pack");
-    CHECK(extendedLengthPath(L"\\\\nas\\games") == L"\\\\?\\UNC\\nas\\games\\");
-    CHECK(extendedLengthPath(L"\\\\?\\C:\\already") == L"\\\\?\\C:\\already");
-    CHECK(extendedLengthPath(L"\\\\.\\pipe\\x") == L"\\\\.\\pipe\\x");
-    CHECK(extendedLengthPath(L"") == L"");
-    CHECK(extendedLengthPath(L"relative\\pack") == L"relative\\pack");
-    CHECK(extendedLengthPath(L"C:drive-relative") == L"C:drive-relative");
-    CHECK(extendedLengthPath(L"\\rooted\\no-drive") == L"\\rooted\\no-drive");
-}
-
-TEST_CASE("long pack paths: a pack file in a subfolder, named with '/', joins to a \\\\?\\ path Win32 can open (#115 review)") {
-    // Pack paths use '/', and Win32 doesn't turn it into '\' inside a \\?\ path: a texture in any subfolder of a pack
-    // silently didn't load once the root was \\?\ (exists() false, canonical() ERROR_INVALID_NAME), short paths too.
-    CHECK(extendedLengthJoin(L"\\\\?\\C:\\mods\\Pack", L"textures/sub/x.png") == L"\\\\?\\C:\\mods\\Pack\\textures\\sub\\x.png");
-    CHECK(extendedLengthJoin(L"\\\\?\\C:\\mods\\Pack\\", L"x.png") == L"\\\\?\\C:\\mods\\Pack\\x.png");
-    CHECK(extendedLengthJoin(L"\\\\?\\C:\\", L"a/b.png") == L"\\\\?\\C:\\a\\b.png");
-    CHECK(extendedLengthJoin(L"\\\\?\\UNC\\nas\\games\\Pack", L"sub/x.png") == L"\\\\?\\UNC\\nas\\games\\Pack\\sub\\x.png");
-}
-
-TEST_CASE("long pack paths: '.' and '..' in a pack path resolve against a \\\\?\\ root") {
-    CHECK(extendedLengthJoin(L"\\\\?\\C:\\mods\\Pack", L"textures/other/../sub/x.png") == L"\\\\?\\C:\\mods\\Pack\\textures\\sub\\x.png");
-    CHECK(extendedLengthJoin(L"\\\\?\\C:\\mods\\Pack", L"./textures/./x.png") == L"\\\\?\\C:\\mods\\Pack\\textures\\x.png");
-    CHECK(extendedLengthJoin(L"\\\\?\\C:\\mods\\Pack", L"textures//x.png") == L"\\\\?\\C:\\mods\\Pack\\textures\\x.png");
-    CHECK(extendedLengthJoin(L"\\\\?\\C:\\mods\\Pack", L"") == L"\\\\?\\C:\\mods\\Pack");
-}
-
-TEST_CASE("long pack paths: a root that isn't \\\\?\\ is joined as given") {
-    CHECK(extendedLengthJoin(L"packs\\Pack", L"sub/x.png") == L"packs\\Pack\\sub/x.png");
-    CHECK(extendedLengthJoin(L"C:\\mods\\Pack\\", L"x.png") == L"C:\\mods\\Pack\\x.png");
-    CHECK(extendedLengthJoin(L"", L"x.png") == L"x.png");
-}
-
 TEST_CASE("display list budget: a list that loops is ended at the command limit, so the interpreter can't grow memory forever (#116)") {
     // The interpreter loop: take() before every command; false ends the list.
     DisplayListBudget budget;
@@ -1669,6 +1727,62 @@ TEST_CASE("display list budget: the default limits are far above real frames") {
     // Keep a wide margin so no real frame is ever cut.
     CHECK(DisplayListCommandLimit >= 100 * uint64_t(7768));
     CHECK(WorldTransformLimit <= uint64_t(UINT16_MAX));
+}
+
+TEST_CASE("long pack paths: a drive path gets the \\\\?\\ form, so files past MAX_PATH open (#115)") {
+    CHECK(extendedLengthPath(L"C:\\Users\\me\\depot\\NoMercyRecomp-fullconv\\conversions\\_packages\\Pack") ==
+          L"\\\\?\\C:\\Users\\me\\depot\\NoMercyRecomp-fullconv\\conversions\\_packages\\Pack");
+    CHECK(extendedLengthPath(L"C:\\") == L"\\\\?\\C:\\");
+    CHECK(extendedLengthPath(L"d:\\packs\\") == L"\\\\?\\d:\\packs");
+    // A pack root longer than MAX_PATH keeps every character (the old limit cut in at 260).
+    std::wstring deep = L"C:\\games";
+    for (int i = 0; i < 8; i++) {
+        deep += L"\\" + std::wstring(40, L'a' + i);
+    }
+
+    CHECK(deep.size() > 300);
+    CHECK(extendedLengthPath(deep) == L"\\\\?\\" + deep);
+}
+
+TEST_CASE("long pack paths: \\\\?\\ isn't normalized by Windows, so slashes, '.', '..' and doubled separators are resolved here") {
+    CHECK(extendedLengthPath(L"C:/Users/me/packs/x") == L"\\\\?\\C:\\Users\\me\\packs\\x");
+    CHECK(extendedLengthPath(L"C:\\a\\.\\b\\\\c") == L"\\\\?\\C:\\a\\b\\c");
+    CHECK(extendedLengthPath(L"C:\\a\\b\\..\\c") == L"\\\\?\\C:\\a\\c");
+    // ".." stops at the drive root.
+    CHECK(extendedLengthPath(L"C:\\..\\..\\a") == L"\\\\?\\C:\\a");
+}
+
+TEST_CASE("long pack paths: UNC shares get \\\\?\\UNC\\; other forms come back unchanged") {
+    CHECK(extendedLengthPath(L"\\\\nas\\games\\packs\\Pack") == L"\\\\?\\UNC\\nas\\games\\packs\\Pack");
+    CHECK(extendedLengthPath(L"\\\\nas\\games") == L"\\\\?\\UNC\\nas\\games\\");
+    CHECK(extendedLengthPath(L"\\\\?\\C:\\already") == L"\\\\?\\C:\\already");
+    CHECK(extendedLengthPath(L"\\\\.\\pipe\\x") == L"\\\\.\\pipe\\x");
+    CHECK(extendedLengthPath(L"") == L"");
+    CHECK(extendedLengthPath(L"relative\\pack") == L"relative\\pack");
+    CHECK(extendedLengthPath(L"C:drive-relative") == L"C:drive-relative");
+    CHECK(extendedLengthPath(L"\\rooted\\no-drive") == L"\\rooted\\no-drive");
+}
+
+TEST_CASE("long pack paths: a pack file in a subfolder, named with '/', joins to a \\\\?\\ path Win32 can open (#115 review)") {
+    // Pack paths use '/', and Win32 doesn't turn it into '\' inside a \\?\ path: a texture in any subfolder of a pack
+    // silently didn't load once the root was \\?\ (exists() false, canonical() ERROR_INVALID_NAME), short paths too.
+    CHECK(extendedLengthJoin(L"\\\\?\\C:\\mods\\Pack", L"textures/sub/x.png") == L"\\\\?\\C:\\mods\\Pack\\textures\\sub\\x.png");
+    CHECK(extendedLengthJoin(L"\\\\?\\C:\\mods\\Pack\\", L"x.png") == L"\\\\?\\C:\\mods\\Pack\\x.png");
+    CHECK(extendedLengthJoin(L"\\\\?\\C:\\", L"a/b.png") == L"\\\\?\\C:\\a\\b.png");
+    CHECK(extendedLengthJoin(L"\\\\?\\UNC\\nas\\games\\Pack", L"sub/x.png") == L"\\\\?\\UNC\\nas\\games\\Pack\\sub\\x.png");
+}
+
+TEST_CASE("long pack paths: '.' and '..' in a pack path resolve against a \\\\?\\ root") {
+    CHECK(extendedLengthJoin(L"\\\\?\\C:\\mods\\Pack", L"textures/other/../sub/x.png") == L"\\\\?\\C:\\mods\\Pack\\textures\\sub\\x.png");
+    CHECK(extendedLengthJoin(L"\\\\?\\C:\\mods\\Pack", L"./textures/./x.png") == L"\\\\?\\C:\\mods\\Pack\\textures\\x.png");
+    CHECK(extendedLengthJoin(L"\\\\?\\C:\\mods\\Pack", L"textures//x.png") == L"\\\\?\\C:\\mods\\Pack\\textures\\x.png");
+    CHECK(extendedLengthJoin(L"\\\\?\\C:\\mods\\Pack", L"") == L"\\\\?\\C:\\mods\\Pack");
+}
+
+TEST_CASE("long pack paths: a root that isn't \\\\?\\ is joined as given") {
+    CHECK(extendedLengthJoin(L"packs\\Pack", L"sub/x.png") == L"packs\\Pack\\sub/x.png");
+    CHECK(extendedLengthJoin(L"C:\\mods\\Pack\\", L"x.png") == L"C:\\mods\\Pack\\x.png");
+    CHECK(extendedLengthJoin(L"", L"x.png") == L"x.png");
 }
 
 // Graphics device loss
@@ -1854,6 +1968,288 @@ TEST_CASE("matrix split: a pair whose drawn matrix changed more than tenfold dro
     c.add(false, SplitExtremeChange);
     CHECK(!c.splitLayer());
 }
+
+TEST_CASE("near plane: World Tour's camera-near boxes cross it, ordinary draws don't") {
+    // Clip-space vertices of the WCW quick match's box (WCW_DIAG_GENDRAWS, real frame): z/w -1.013 and -0.897.
+    const float box[] = {
+        -37.63f, -136.0f, -100.676f, 99.3569f,
+        -37.30f, -132.5f, -94.4631f, 105.266f,
+        149.69f, -136.9f, -102.331f, 97.7818f,
+    };
+    CHECK(crossesNearPlane(box, 3));
+    // The ring post seen from 500 units away: all in front.
+    const float post[] = {
+        549.73f, 490.19f, 309.871f, 489.875f,
+        537.40f, 505.46f, 329.364f, 508.418f,
+        526.94f, 500.34f, 322.830f, 502.202f,
+    };
+    CHECK(!crossesNearPlane(post, 3));
+    // All behind the camera (w <= 0) or behind the near plane: nothing crosses.
+    const float behind[] = {
+        10.0f, 10.0f, -5.0f, -2.0f,
+        12.0f, 10.0f, -120.0f, 100.0f,
+    };
+    CHECK(!crossesNearPlane(behind, 2));
+    // A mesh reaching behind the camera (w < 0) from in front of it doesn't count: a floor or crowd piece.
+    const float throughCamera[] = {
+        10.0f, 10.0f, 50.0f, 60.0f,
+        10.0f, 10.0f, -5.0f, -2.0f,
+    };
+    CHECK(!crossesNearPlane(throughCamera, 2));
+    // Just behind the near plane (w > 0, z < -w) next to a vertex in front of it.
+    const float nearPair[] = {
+        0.0f, 0.0f, -101.0f, 100.0f,
+        0.0f, 0.0f, -99.0f, 100.0f,
+    };
+    CHECK(crossesNearPlane(nearPair, 2));
+    // Exactly on the near plane counts as in front; a single vertex never crosses; non-finite vertices are skipped.
+    const float onPlane[] = { 0.0f, 0.0f, -100.0f, 100.0f, 0.0f, 0.0f, 50.0f, 100.0f };
+    CHECK(!crossesNearPlane(onPlane, 2));
+    CHECK(!crossesNearPlane(box, 1));
+    const float nan = std::nanf("");
+    const float withNan[] = { 0.0f, 0.0f, nan, 100.0f, 0.0f, 0.0f, 50.0f, 100.0f };
+    CHECK(!crossesNearPlane(withNan, 2));
+    CHECK(!crossesNearPlane(box, 0));
+}
+
+TEST_CASE("unmapped transforms: only near-plane draws on generated frames in a match take the real view") {
+    // The bug: the generated frame drew the box under the interpolated view (dark slabs).
+    CHECK(pinUnmappedToRealView(true, true, true, true));
+    CHECK(pinUnmappedToRealView(true, true, true, false));
+    // Behind the near plane in the real frame, brought in front by the interpolated view.
+    CHECK(pinUnmappedToRealView(true, true, false, true));
+    // Ordinary unmapped objects keep the interpolated view (they stay put in the interpolated scene).
+    CHECK(!pinUnmappedToRealView(true, true, false, false));
+    // Real frames already use the real view; outside a match nothing changes.
+    CHECK(!pinUnmappedToRealView(true, false, true, true));
+    CHECK(!pinUnmappedToRealView(false, true, true, true));
+    CHECK(!pinUnmappedToRealView(false, false, true, true));
+}
+
+TEST_CASE("unmapped transforms: the real view keeps the widescreen aspect adjustment") {
+    // Column 0 (x of the row-vector product) scales by projRatioScale, like adjustProjectionMatrix; the rest stays.
+    float viewProj[16];
+    for (int i = 0; i < 16; i++) {
+        viewProj[i] = float(i + 1);
+    }
+
+    float out[16];
+    drawnViewProj(viewProj, 0.75f, out);
+    for (int i = 0; i < 16; i++) {
+        CHECK(out[i] == (((i % 4) == 0) ? viewProj[i] * 0.75f : viewProj[i]));
+    }
+
+    // 4:3 (Original): unchanged.
+    drawnViewProj(viewProj, 1.0f, out);
+    for (int i = 0; i < 16; i++) {
+        CHECK(out[i] == viewProj[i]);
+    }
+}
+
+// Render target regrow settle (aki-roadmap#4)
+
+TEST_CASE("regrow settle: with deferred release nothing waits (#4 regression: 8.7 presents/s in the settings stress)") {
+    // The 100 ms wait on every big regrow cost No Mercy's settings stress 90% of its presents. Deferring the release
+    // of the old textures is what avoids the hang, so the wait goes.
+    CHECK(regrowSettleMs(2ULL * 7670 * 2880, -1, true) == 0);
+    CHECK(regrowSettleMs(2ULL * 5760 * 2160, -1, true) == 0);
+    // WCW_REGROW_SETTLE_MS still asks for one (diagnosis).
+    CHECK(regrowSettleMs(2ULL * 7670 * 2880, 100, true) == 100);
+}
+
+TEST_CASE("regrow settle: WCW_TARGET_DEFER=0 keeps the old wait for big regrows (SS 2x GPU hang #4)") {
+    // The hang: No Mercy's 3840x1920 targets regrown to 7670x2880 color + depth, used at once.
+    CHECK(regrowSettleMs(2ULL * 7670 * 2880, -1, false) == RegrowSettleDefaultMs);
+    // The settings-apply hang's 5760x2160 targets.
+    CHECK(regrowSettleMs(2ULL * 5760 * 2160, -1, false) == RegrowSettleDefaultMs);
+    CHECK(RegrowSettleDefaultMs >= 50);
+}
+
+TEST_CASE("regrow settle: no regrow or small regrows never wait") {
+    CHECK(regrowSettleMs(0, -1, false) == 0);
+    // N64-sized and 1x targets (480x240 color + depth), and 1080p-class ones.
+    CHECK(regrowSettleMs(2ULL * 480 * 240, -1, false) == 0);
+    CHECK(regrowSettleMs(1920ULL * 1080, -1, false) == 0);
+    CHECK(regrowSettleMs(RegrowSettleMinPixels - 1, -1, false) == 0);
+    CHECK(regrowSettleMs(RegrowSettleMinPixels, -1, false) == RegrowSettleDefaultMs);
+}
+
+TEST_CASE("regrow settle: WCW_REGROW_SETTLE_MS overrides the wait, 0 turns it off") {
+    CHECK(regrowSettleMs(2ULL * 7670 * 2880, 0, false) == 0);
+    CHECK(regrowSettleMs(2ULL * 7670 * 2880, 250, false) == 250);
+    // The size threshold still applies.
+    CHECK(regrowSettleMs(2ULL * 480 * 240, 250, false) == 0);
+    CHECK(regrowSettleMs(2ULL * 480 * 240, 250, true) == 0);
+}
+
+// Deferred release of render target textures (aki-roadmap#4)
+
+static ReleaseStamp releaseStamp(uint64_t presentsStarted, uint64_t workloadsDone, uint64_t ms) {
+    ReleaseStamp stamp;
+    stamp.presentsStarted = presentsStarted;
+    stamp.workloadsDone = workloadsDone;
+    stamp.ms = ms;
+    return stamp;
+}
+
+TEST_CASE("deferred release: released textures outlive the present in flight (#4)") {
+    // Released while present 11 was being recorded (11 started, 10 finished), after workload 50.
+    const ReleaseStamp stamp = releaseStamp(11, 50, 1000);
+    // Everything else is ready; the present that may still hold the old texture hasn't finished.
+    CHECK(!releaseReady(stamp, 10, 60, 5000));
+    CHECK(releaseReady(stamp, 11, 60, 5000));
+    // The present thread was idle (as many finished as started): nothing holds them.
+    CHECK(releaseReady(releaseStamp(10, 50, 1000), 10, 60, 5000));
+}
+
+TEST_CASE("deferred release: released textures outlive two more workloads and the old settle time (#4)") {
+    const ReleaseStamp stamp = releaseStamp(10, 50, 1000);
+    // The workload that released them, and the next one.
+    CHECK(!releaseReady(stamp, 10, 50, 5000));
+    CHECK(!releaseReady(stamp, 10, 51, 5000));
+    CHECK(releaseReady(stamp, 10, 50 + DeferredReleaseWorkloads, 5000));
+    // Not before DeferredReleaseMinMs (the settle needed 50 ms or more; 120 fps workloads come every 8 ms).
+    CHECK(!releaseReady(stamp, 10, 60, 1000));
+    CHECK(!releaseReady(stamp, 10, 60, 1000 + DeferredReleaseMinMs - 1));
+    CHECK(releaseReady(stamp, 10, 60, 1000 + DeferredReleaseMinMs));
+    CHECK(DeferredReleaseMinMs >= 50);
+    // A clock that went backwards isn't ready.
+    CHECK(!releaseReady(stamp, 10, 60, 999));
+}
+
+// A stand-in for the released textures that counts how many were destroyed.
+struct DeferredTestTextures {
+    static int destroyed;
+    int id = 0;
+
+    explicit DeferredTestTextures(int id) : id(id) {}
+    ~DeferredTestTextures() { destroyed++; }
+};
+
+int DeferredTestTextures::destroyed = 0;
+
+TEST_CASE("deferred release: a settings apply's textures are destroyed a few frames later, not at once (#4 regression)") {
+    // SS 2x: a regrow releases No Mercy's 3840x1920 color + depth (the hang came from destroying them right away).
+    DeferredTestTextures::destroyed = 0;
+    DeferredReleaseList<DeferredTestTextures> list;
+    list.push(releaseStamp(5, 100, 1000), 29491200, std::make_unique<DeferredTestTextures>(1));
+    list.push(releaseStamp(5, 100, 1000), 29491200, std::make_unique<DeferredTestTextures>(2));
+    list.push(releaseStamp(5, 100, 1000), 0, nullptr);
+    CHECK(list.size() == 2);
+    CHECK(list.pendingBytes() == 58982400);
+    // The workload that regrew them finishes: nothing destroyed yet.
+    CHECK(list.collect(4, 101, 1016) == 0);
+    CHECK(DeferredTestTextures::destroyed == 0);
+    // Frames go by at 60 fps.
+    uint64_t presents = 5, workloads = 101, ms = 1016;
+    while (list.size() > 0) {
+        presents++;
+        workloads++;
+        ms += 16;
+        list.collect(presents, workloads, ms);
+    }
+
+    CHECK(ms >= 1000 + DeferredReleaseMinMs);
+    CHECK(DeferredTestTextures::destroyed == 2);
+    CHECK(list.pendingBytes() == 0);
+    CHECK(list.peakPendingBytes() == 58982400);
+    CHECK(list.destroyedCount() == 2);
+}
+
+TEST_CASE("deferred release: entries go oldest first and later releases wait their own turn (#4)") {
+    DeferredTestTextures::destroyed = 0;
+    DeferredReleaseList<DeferredTestTextures> list;
+    list.push(releaseStamp(5, 100, 1000), 10, std::make_unique<DeferredTestTextures>(1));
+    list.push(releaseStamp(9, 104, 1200), 20, std::make_unique<DeferredTestTextures>(2));
+    // Ready for the first only.
+    CHECK(list.collect(9, 104, 1150) == 1);
+    CHECK(list.pendingBytes() == 20);
+    CHECK(list.collect(9, 105, 1400) == 0);
+    CHECK(list.collect(9, 106, 1400) == 1);
+    CHECK(DeferredTestTextures::destroyed == 2);
+    // Shutdown destroys what is left.
+    list.push(releaseStamp(20, 200, 3000), 30, std::make_unique<DeferredTestTextures>(3));
+    CHECK(list.clear() == 1);
+    CHECK(DeferredTestTextures::destroyed == 3);
+    CHECK(list.size() == 0);
+    CHECK(list.pendingBytes() == 0);
+    CHECK(list.destroyedCount() == 3);
+}
+
+// HDR readback for the luminance log and BMP dumps (aki-roadmap#128)
+
+TEST_CASE("hdr readback: half floats convert exactly") {
+    CHECK(halfToFloat(0x0000) == 0.0f);
+    CHECK(halfToFloat(0x3C00) == 1.0f);
+    CHECK(halfToFloat(0xC000) == -2.0f);
+    CHECK(halfToFloat(0x3800) == 0.5f);
+    CHECK(halfToFloat(0x7BFF) == 65504.0f);
+    // Subnormals: the smallest is 2^-24.
+    CHECK(halfToFloat(0x0001) == 1.0f / 16777216.0f);
+    CHECK(halfToFloat(0x8001) == -1.0f / 16777216.0f);
+    CHECK(std::isinf(halfToFloat(0x7C00)));
+    CHECK(std::isnan(halfToFloat(0x7E00)));
+}
+
+TEST_CASE("hdr readback: the table conversion gives the same pixels and nits as the per-pixel one (#128)") {
+    // The old present-thread code: halfToFloat + sRGB per channel, nits from the linear values.
+    const float invScale = 1.0f / 3.0f;
+    std::vector<uint16_t> src;
+    for (uint32_t i = 0; i < 65536; i += 7) {
+        src.push_back(uint16_t(i));
+    }
+
+    while ((src.size() % 4) != 0) {
+        src.push_back(0x3C00);
+    }
+
+    const uint32_t width = uint32_t(src.size() / 4);
+    std::vector<uint8_t> dst(width * 4);
+    HdrReadbackConverter converter;
+    double nitsSum = 0.0;
+    float nitsMax = 0.0f;
+    converter.convertRow(src.data(), dst.data(), width, invScale, nitsSum, nitsMax);
+    double refSum = 0.0;
+    float refMax = 0.0f;
+    uint32_t mismatches = 0;
+    for (uint32_t x = 0; x < width; x++) {
+        const uint16_t *pixel = &src[x * 4];
+        const float nits = 80.0f * (0.2126f * halfToFloat(pixel[0]) + 0.7152f * halfToFloat(pixel[1]) + 0.0722f * halfToFloat(pixel[2]));
+        refSum += nits;
+        refMax = std::max(refMax, nits);
+        mismatches += (dst[x * 4 + 0] != linearToSrgb8(halfToFloat(pixel[2]) * invScale)) ? 1 : 0;
+        mismatches += (dst[x * 4 + 1] != linearToSrgb8(halfToFloat(pixel[1]) * invScale)) ? 1 : 0;
+        mismatches += (dst[x * 4 + 2] != linearToSrgb8(halfToFloat(pixel[0]) * invScale)) ? 1 : 0;
+        mismatches += (dst[x * 4 + 3] != 255) ? 1 : 0;
+    }
+
+    CHECK(mismatches == 0);
+    CHECK((std::isnan(refSum) && std::isnan(nitsSum)) || (refSum == nitsSum));
+    CHECK(nitsMax == refMax);
+}
+
+TEST_CASE("hdr readback: paper white maps to sRGB white, black and negatives to 0, and the table follows the scale (#128)") {
+    HdrReadbackConverter converter;
+    // Paper white 240 nits: scRGB 3.0 (0x4200), scale 3.
+    const uint16_t white[4] = { 0x4200, 0x4200, 0x4200, 0x3C00 };
+    const uint16_t black[4] = { 0x0000, 0x8000, 0xBC00, 0x3C00 };
+    uint8_t out[4] = {};
+    double nitsSum = 0.0;
+    float nitsMax = 0.0f;
+    converter.convertRow(white, out, 1, 1.0f / 3.0f, nitsSum, nitsMax);
+    CHECK((out[0] == 255) && (out[1] == 255) && (out[2] == 255) && (out[3] == 255));
+    CHECK(std::fabs(nitsMax - 240.0f) < 0.01f);
+    converter.convertRow(black, out, 1, 1.0f / 3.0f, nitsSum, nitsMax);
+    CHECK((out[0] == 0) && (out[1] == 0) && (out[2] == 0));
+    CHECK(converter.srgbTableBuilds() == 1);
+    // Another HDR Picture setting (paper white 160 nits, scale 2): the same pixel is now over-white, clamped.
+    converter.convertRow(white, out, 1, 1.0f / 2.0f, nitsSum, nitsMax);
+    CHECK(converter.srgbTableBuilds() == 2);
+    CHECK(out[0] == 255);
+    const uint16_t grey[4] = { 0x3C00, 0x3C00, 0x3C00, 0x3C00 };
+    converter.convertRow(grey, out, 1, 1.0f / 2.0f, nitsSum, nitsMax);
+    CHECK(out[0] == linearToSrgb8(0.5f));
+    CHECK(converter.srgbTableBuilds() == 2);
 
 TEST_CASE("VI rate: CPU edits of a frame the RDP drew don't count as game frames (#121, AEW 64 title read as 60 fps)") {
     // The shown framebuffer's RDP write timestamp hasn't moved since the last present: only cheat-code writes changed it.

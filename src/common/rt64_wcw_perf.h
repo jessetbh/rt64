@@ -135,6 +135,9 @@ namespace RT64::WcwPerf {
 
     // Sink (not pure). WCW_PERF_LOG=1 enables it; the files go to the working directory.
     bool enabled();
+    // The GPU pass timer and the CPU timestamps around it run for WCW_PERF_LOG and for the in-game Datadog metrics
+    // (WCW_DD_METRICS, common/rt64_wcw_dd); only WCW_PERF_LOG writes the CSV files.
+    bool timingEnabled();
     using Clock = std::chrono::steady_clock;
     // Milliseconds since the steady clock's epoch, the time base of the other wcw_*.csv logs.
     double clockMs(Clock::time_point t);
