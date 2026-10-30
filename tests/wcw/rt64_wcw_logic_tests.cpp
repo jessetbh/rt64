@@ -14,6 +14,22 @@
 
 #include "wcw_test.h"
 
+// aki-roadmap#171: Revenge clears its next back buffer with fill rectangles at the end of a frame; when the VI still
+// shows that buffer, it was presented black.
+TEST_CASE("trailingClear: only a fill pass after a pass to another buffer") {
+    CHECK(RT64::WcwLogic::trailingClear(true, true));
+    CHECK(!RT64::WcwLogic::trailingClear(true, false));   // a fade or clear drawn on the shown buffer itself
+    CHECK(!RT64::WcwLogic::trailingClear(false, true));   // a real pass to the buffer
+}
+
+TEST_CASE("keepPreviousImage: skip a trailing-cleared buffer once, never freeze") {
+    CHECK(RT64::WcwLogic::keepPreviousImage(true, true, false, false));
+    CHECK(!RT64::WcwLogic::keepPreviousImage(true, false, false, false));  // nothing on screen yet
+    CHECK(!RT64::WcwLogic::keepPreviousImage(false, true, false, false));
+    CHECK(!RT64::WcwLogic::keepPreviousImage(true, true, true, false));    // kept the last one: show this one
+    CHECK(!RT64::WcwLogic::keepPreviousImage(true, true, false, true));    // a CPU write to the buffer
+}
+
 using namespace RT64::WcwLogic;
 
 // Ray-traced shadows

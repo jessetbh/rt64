@@ -101,6 +101,20 @@ namespace RT64 {
         std::unique_lock<std::mutex> threadLock(threadMutex);
     }
 
+    static std::mutex wcwBufferWritesMutex;
+    static std::unordered_map<uint32_t, bool> wcwBufferWrites;
+
+    void wcwNoteBufferWrite(uint32_t address, bool trailingClear) {
+        std::scoped_lock lock(wcwBufferWritesMutex);
+        wcwBufferWrites[address] = trailingClear;
+    }
+
+    bool wcwBufferTrailingClear(uint32_t address) {
+        std::scoped_lock lock(wcwBufferWritesMutex);
+        auto it = wcwBufferWrites.find(address);
+        return (it != wcwBufferWrites.end()) && it->second;
+    }
+
     void WorkloadQueue::waitForWorkloadId(uint64_t waitId) {
         std::unique_lock<std::mutex> workloadLock(workloadIdMutex);
         workloadIdCondition.wait(workloadLock, [&]() {
@@ -1302,6 +1316,15 @@ namespace RT64 {
                 }
 
                 workload.wcwRunSerial = wcwRunSerialCounter;
+                for (uint32_t f = 0; f < workload.fbPairCount; f++) {
+                    const FramebufferPair &pair = workload.fbPairs[f];
+                    bool earlierOther = false;
+                    for (uint32_t g = 0; g < f; g++) {
+                        earlierOther = earlierOther || (!workload.fbPairs[g].fillRectOnly && (workload.fbPairs[g].colorImage.address != pair.colorImage.address));
+                    }
+
+                    wcwNoteBufferWrite(pair.colorImage.address, WcwLogic::trailingClear(pair.fillRectOnly && (pair.gameCallCount > 0), earlierOther));
+                }
                 {
                     const uint32_t step = (wcwLastCompositeRunLength > 0) ? wcwLastCompositeRunLength : 1;
                     if (step < gameFrames.size()) {

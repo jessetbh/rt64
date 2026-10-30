@@ -1454,6 +1454,15 @@ namespace RT64 {
                     continue;
                 }
 
+                // [wcw fix] Don't show a buffer the game has already cleared for its next frame (aki-roadmap#171).
+                static bool wcwPresentedBefore = false;
+                static bool wcwKeptLast = false;
+                const bool wcwKeep = !skipPresent && present.screenVI.visible() &&
+                    WcwLogic::keepPreviousImage(wcwBufferTrailingClear(present.screenVI.fbAddress()), wcwPresentedBefore, wcwKeptLast, !present.fbOperations.empty());
+                wcwKeptLast = wcwKeep;
+                skipPresent = skipPresent || wcwKeep;
+
+                wcwPresentedBefore = wcwPresentedBefore || !skipPresent;
                 if (skipPresent) {
                     skipInterpolation();
                     notifyPresentId(present);
