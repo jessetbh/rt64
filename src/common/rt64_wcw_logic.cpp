@@ -95,8 +95,8 @@ namespace RT64::WcwLogic {
         return fillRectOnly && earlierPassDrewOtherBuffer;
     }
 
-    bool keepPreviousImage(bool shownBufferTrailingClear, bool presentedBefore) {
-        return shownBufferTrailingClear && presentedBefore;
+    bool keepPreviousImage(bool shownBufferTrailingClear, bool presentedBefore, bool keptLast, bool cpuWrites) {
+        return shownBufferTrailingClear && presentedBefore && !keptLast && !cpuWrites;
     }
 
     bool traceRender(bool generated, bool haveTrace, uint32_t reusesSinceTrace, uint32_t maxReuse) {

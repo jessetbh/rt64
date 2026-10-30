@@ -104,9 +104,11 @@ namespace RT64::WcwLogic {
     bool trailingClear(bool fillRectOnly, bool earlierPassDrewOtherBuffer);
 
     // Keep the image already on screen instead of presenting the VI's buffer: only when that buffer's last write was a
-    // trailing clear and something was presented before. A fade to black drawn on the shown buffer itself isn't a
+    // trailing clear, something was presented before, the previous present wasn't kept too (a false positive costs at
+    // most one frame, never a frozen screen) and the present carries no framebuffer operations (a CPU write to the
+    // buffer, which the trailing-clear flag doesn't see). A fade to black drawn on the shown buffer itself isn't a
     // trailing clear, so it still shows.
-    bool keepPreviousImage(bool shownBufferTrailingClear, bool presentedBefore);
+    bool keepPreviousImage(bool shownBufferTrailingClear, bool presentedBefore, bool keptLast, bool cpuWrites);
 
     // A pass's identity: its draws' triangle counts, in any order. A generated frame reuses the trace of the
     // previous game frame's real frame, and No Mercy sorts the wrestlers' draws again every game frame: with the

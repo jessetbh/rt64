@@ -22,10 +22,12 @@ TEST_CASE("trailingClear: only a fill pass after a pass to another buffer") {
     CHECK(!RT64::WcwLogic::trailingClear(false, true));   // a real pass to the buffer
 }
 
-TEST_CASE("keepPreviousImage: skip a trailing-cleared buffer once something was presented") {
-    CHECK(RT64::WcwLogic::keepPreviousImage(true, true));
-    CHECK(!RT64::WcwLogic::keepPreviousImage(true, false));
-    CHECK(!RT64::WcwLogic::keepPreviousImage(false, true));
+TEST_CASE("keepPreviousImage: skip a trailing-cleared buffer once, never freeze") {
+    CHECK(RT64::WcwLogic::keepPreviousImage(true, true, false, false));
+    CHECK(!RT64::WcwLogic::keepPreviousImage(true, false, false, false));  // nothing on screen yet
+    CHECK(!RT64::WcwLogic::keepPreviousImage(false, true, false, false));
+    CHECK(!RT64::WcwLogic::keepPreviousImage(true, true, true, false));    // kept the last one: show this one
+    CHECK(!RT64::WcwLogic::keepPreviousImage(true, true, false, true));    // a CPU write to the buffer
 }
 
 using namespace RT64::WcwLogic;
