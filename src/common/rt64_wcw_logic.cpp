@@ -91,6 +91,14 @@ namespace RT64::WcwLogic {
         return std::max(MaxGeneratedReuse, (framesPerGameFrame * 3) / 2);
     }
 
+    bool trailingClear(bool fillRectOnly, bool earlierPassDrewOtherBuffer) {
+        return fillRectOnly && earlierPassDrewOtherBuffer;
+    }
+
+    bool keepPreviousImage(bool shownBufferTrailingClear, bool presentedBefore) {
+        return shownBufferTrailingClear && presentedBefore;
+    }
+
     bool traceRender(bool generated, bool haveTrace, uint32_t reusesSinceTrace, uint32_t maxReuse) {
         return !generated || !haveTrace || (reusesSinceTrace >= maxReuse);
     }

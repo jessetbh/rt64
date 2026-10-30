@@ -33,6 +33,10 @@
 namespace RT64 {
     struct PresentQueue;
 
+    // [wcw fix] aki-roadmap#171: was each colour buffer's last write a trailing clear (WcwLogic::trailingClear)?
+    void wcwNoteBufferWrite(uint32_t address, bool trailingClear);
+    bool wcwBufferTrailingClear(uint32_t address);
+
     struct WorkloadQueue {
         struct External {
             RenderDevice *device = nullptr;
