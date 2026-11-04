@@ -5,10 +5,12 @@
 #include "rt64_rdp.h"
 
 #include <cassert>
+#include <cstdio>
 
 #include "../include/rt64_extended_gbi.h"
 
 #include "common/rt64_math.h"
+#include "common/rt64_wcw_logic.h"
 #include "gbi/rt64_f3d.h"
 
 #include "rt64_color_converter.h"
@@ -553,6 +555,19 @@ namespace RT64 {
     }
 
     void RDP::loadTLUTOperation(const LoadTile &loadTile, const LoadTexture &loadTexture, bool deferred) {
+        // [wcw fullconv] aki-roadmap#192
+        if (WcwLogic::tlutLoadIsEmpty(loadTile.uls, loadTile.ult, loadTile.lrs, loadTile.lrt)) {
+            if (deferred) {
+                static bool logged = false;
+                if (!logged) {
+                    logged = true;
+                    fprintf(stderr, "[wcw] skipping a TLUT load with an inverted range: address 0x%08X uls %u ult %u lrs %u lrt %u (logged once)\n",
+                        loadTexture.address, loadTile.uls, loadTile.ult, loadTile.lrs, loadTile.lrt);
+                }
+            }
+            return;
+        }
+
         // Deduce loading parameters for TLUT and the texture address.
         const uint32_t bytesOffset = (loadTile.uls >> 2) << loadTexture.siz >> 1;
         const uint32_t bytesPerRow = loadTexture.width << loadTexture.siz >> 1;

@@ -20,6 +20,12 @@
 // free of renderer state so it can be unit tested (tests/wcw). The renderer calls these functions; a change to any
 // of these rules belongs here, with a test.
 namespace RT64::WcwLogic {
+    // Texture loads
+
+    // A TLUT load whose end is before its start loads nothing. The unsigned word count wrapped to about 4 billion and
+    // read until it ran off RDRAM (WWF Legends: Challenge 64, uls 4080 lrs 60 on Superstar Select, aki-roadmap#192).
+    bool tlutLoadIsEmpty(uint32_t uls, uint32_t ult, uint32_t lrs, uint32_t lrt);
+
     // Ray-traced shadows
 
     // Other scenes stay shadow casters for this many game frames after their last build. Counted in game frames,
