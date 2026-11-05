@@ -13,6 +13,16 @@
 #include <vector>
 
 namespace RT64::WcwLogic {
+    bool isBmp(const uint8_t *bytes, size_t size) {
+        // 14-byte file header, then the DIB header's size: 12 (OS/2 core) or at least 40 (BITMAPINFOHEADER and later).
+        if ((bytes == nullptr) || (size < 18) || (bytes[0] != 'B') || (bytes[1] != 'M')) {
+            return false;
+        }
+
+        const uint32_t dibSize = uint32_t(bytes[14]) | (uint32_t(bytes[15]) << 8) | (uint32_t(bytes[16]) << 16) | (uint32_t(bytes[17]) << 24);
+        return (dibSize == 12) || ((dibSize >= 40) && (dibSize <= 124));
+    }
+
     bool tlutLoadIsEmpty(uint32_t uls, uint32_t ult, uint32_t lrs, uint32_t lrt) {
         return ((lrs >> 2) < (uls >> 2)) || ((lrt >> 2) < (ult >> 2));
     }
