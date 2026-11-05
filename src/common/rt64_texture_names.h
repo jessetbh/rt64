@@ -89,6 +89,7 @@ namespace RT64 {
         virtual void computeKey(const TextureNameInput &input, TextureNameKey &key) const = 0;
 
         // Indexes a pack's files (relative paths with forward slashes). nullptr when none of them concern this provider.
+        // Called once per pack, packIndex counting up from 0, whenever the packs are loaded.
         virtual std::unique_ptr<TextureNamePackIndex> createPackIndex(int packIndex, const std::vector<std::string> &relativePaths) const = 0;
 
         // Applies a separate alpha file to decoded RGBA8 pixels. alphaRgba (decoded RGBA8, same size) is nullptr when
