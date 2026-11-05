@@ -16,6 +16,22 @@
 
 using namespace RT64::WcwLogic;
 
+// Texture loads
+
+TEST_CASE("a TLUT load ending before its start is empty (Legends crash: the word count wrapped)") {
+    CHECK(tlutLoadIsEmpty(4080, 0, 60, 0));
+    CHECK(tlutLoadIsEmpty(0, 8, 60, 0));
+}
+
+TEST_CASE("normal TLUT loads aren't empty, including one word") {
+    CHECK(!tlutLoadIsEmpty(0, 0, 60, 0));
+    CHECK(!tlutLoadIsEmpty(0, 0, 1020, 0));
+    CHECK(!tlutLoadIsEmpty(0, 0, 0, 0));
+    CHECK(!tlutLoadIsEmpty(60, 0, 60, 0));
+    // Only whole texels count: fractions of the same one aren't a reversal.
+    CHECK(!tlutLoadIsEmpty(3, 0, 0, 0));
+}
+
 // Ray-traced shadows
 
 TEST_CASE("shadow casters stay fresh for 2 game frames, then age out") {

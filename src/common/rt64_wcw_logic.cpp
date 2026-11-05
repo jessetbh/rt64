@@ -13,6 +13,10 @@
 #include <vector>
 
 namespace RT64::WcwLogic {
+    bool tlutLoadIsEmpty(uint32_t uls, uint32_t ult, uint32_t lrs, uint32_t lrt) {
+        return ((lrs >> 2) < (uls >> 2)) || ((lrt >> 2) < (ult >> 2));
+    }
+
     bool shadowCasterFresh(uint64_t frameCounter, uint64_t builtFrame) {
         return (frameCounter >= builtFrame) && ((frameCounter - builtFrame) <= ShadowCasterStaleFrames);
     }
