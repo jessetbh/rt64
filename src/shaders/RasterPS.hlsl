@@ -5,6 +5,7 @@
 #include "shared/rt64_blender.h"
 #include "shared/rt64_color_combiner.h"
 #include "shared/rt64_raster_params.h"
+#include "shared/rt64_wcw_cvg_clamp.h"
 
 #include "Depth.hlsli"
 #include "FbRendererCommon.hlsli"
@@ -240,7 +241,8 @@ LIBRARY_EXPORT bool RasterPS(const RenderParams rp, float4 vertexPosition, float
     }
     // Write the coverage value clamped to the full value allowed.
     else if (otherMode.cvgDst() == CVG_DST_CLAMP) {
-        resultColor.a = min(resultCvg, 7.0f / cvgRange);
+        // [wcw] With image read off, memory coverage counts as full (shared/rt64_wcw_cvg_clamp.h).
+        resultColor.a = wcwClampCvg(resultCvg, otherMode.imageRead(), cvgRange);
     }
     // Write out the computed coverage. It'll be added on wrap mode.
     else {
