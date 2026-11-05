@@ -524,6 +524,11 @@ namespace RT64::WcwLogic {
 
     // Camera cuts
 
+    // Whether a replacement file's bytes are a Windows BMP ("BM", then an OS/2 core or BITMAPINFOHEADER-or-later DIB
+    // header). The loader decodes them with stb_image like PNGs (aki-roadmap#93); stb_image doesn't read RLE-compressed
+    // BMPs, so those still fail to load.
+    bool isBmp(const uint8_t *bytes, size_t size);
+
     // Relative change between two 4x4 matrices (16 floats each): |cur - prev| / |cur| (Frobenius norms). -1 when a
     // value isn't finite or cur is zero.
     float matrixChange(const float prev[16], const float cur[16]);

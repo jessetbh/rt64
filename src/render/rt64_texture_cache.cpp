@@ -153,17 +153,17 @@ namespace RT64 {
     }
 
     bool ReplacementMap::loadReplacementBytes(uint32_t fileSystemIndex, const std::string &relativePath, std::vector<uint8_t> &bytes,
-        std::vector<uint8_t> &alphaBytes, bool &riceRgb) const
+        std::vector<uint8_t> &alphaBytes, bool &separateAlpha) const
     {
         alphaBytes.clear();
-        riceRgb = false;
+        separateAlpha = false;
         if ((fileSystemIndex >= fileSystems.size()) || !fileSystems[fileSystemIndex]->load(relativePath, bytes)) {
             return false;
         }
 
-        if ((fileSystemIndex < fileSystemRiceIndexes.size()) && WcwRice::isRgbFile(relativePath)) {
-            riceRgb = true;
-            const std::string *alphaPath = fileSystemRiceIndexes[fileSystemIndex].alphaFor(relativePath);
+        const std::string *alphaPath = nullptr;
+        if ((fileSystemIndex < fileSystemNameIndexes.size()) && (fileSystemNameIndexes[fileSystemIndex] != nullptr) && fileSystemNameIndexes[fileSystemIndex]->separateAlpha(relativePath, alphaPath)) {
+            separateAlpha = true;
             if ((alphaPath != nullptr) && !fileSystems[fileSystemIndex]->load(*alphaPath, alphaBytes)) {
                 alphaBytes.clear();
             }
@@ -458,13 +458,13 @@ namespace RT64 {
             if (!streamDesc.relativePath.empty()) {
                 ElapsedTimer elapsedTimer;
                 std::vector<uint8_t> alphaBytes;
-                bool riceRgb = false;
-                bool fileLoaded = textureCache->textureMap.replacementMap.loadReplacementBytes(streamDesc.fileSystemIndex, streamDesc.relativePath, replacementBytes, alphaBytes, riceRgb);
+                bool separateAlpha = false;
+                bool fileLoaded = textureCache->textureMap.replacementMap.loadReplacementBytes(streamDesc.fileSystemIndex, streamDesc.relativePath, replacementBytes, alphaBytes, separateAlpha);
                 textureCache->addStreamLoadTime(elapsedTimer.elapsedMicroseconds());
 
                 if (fileLoaded) {
                     worker->commandList->begin();
-                    Texture *texture = TextureCache::loadTextureFromBytes(worker->device, worker->commandList.get(), replacementBytes, uploadResource, nullptr, nullptr, riceRgb, &alphaBytes);
+                    Texture *texture = TextureCache::loadTextureFromBytes(worker->device, worker->commandList.get(), replacementBytes, uploadResource, nullptr, nullptr, separateAlpha, &alphaBytes);
                     worker->commandList->end();
 
                     // Only execute the command list and wait if the texture was loaded successfully.
@@ -959,7 +959,7 @@ namespace RT64 {
     }
 
     Texture *TextureCache::loadTextureFromBytes(RenderDevice *device, RenderCommandList *commandList, const std::vector<uint8_t> &fileBytes, std::unique_ptr<RenderBuffer> &dstUploadResource, RenderPool *resourcePool, std::mutex *uploadResourcePoolMutex,
-        bool riceRgb, const std::vector<uint8_t> *alphaBytes)
+        bool separateAlpha, const std::vector<uint8_t> *alphaBytes)
     {
         const uint32_t PNG_MAGIC = 0x474E5089;
         if (fileBytes.size() < sizeof(uint32_t)) {
@@ -968,8 +968,8 @@ namespace RT64 {
 
         Texture *replacementTexture = new Texture();
         uint32_t magicNumber = *reinterpret_cast<const uint32_t *>(fileBytes.data());
-        // [wcw] BMP replacements (Rice Video packs) take the PNG path: stb_image decodes both (aki-roadmap#93).
-        if (WcwRice::isBmp(fileBytes.data(), fileBytes.size())) {
+        // [wcw] BMP replacements take the PNG path: stb_image decodes both (aki-roadmap#93).
+        if (WcwLogic::isBmp(fileBytes.data(), fileBytes.size())) {
             magicNumber = PNG_MAGIC;
         }
 
@@ -981,16 +981,17 @@ namespace RT64 {
         case PNG_MAGIC: {
             int width, height;
             stbi_uc *data = stbi_load_from_memory(fileBytes.data(), fileBytes.size(), &width, &height, nullptr, 4);
-            if ((data != nullptr) && riceRgb) {
-                // [wcw] Rice _rgb + _a (GLideN64 TxHiResLoader): alpha from the twin's R component, opaque without one.
+            const TextureNameProvider *nameProvider = textureNameProvider();
+            if ((data != nullptr) && separateAlpha && (nameProvider != nullptr)) {
+                // [wcw] The provider applies a pack's separate alpha file (common/rt64_texture_names.h).
                 if ((alphaBytes != nullptr) && !alphaBytes->empty()) {
                     int alphaWidth, alphaHeight;
                     stbi_uc *alpha = stbi_load_from_memory(alphaBytes->data(), int(alphaBytes->size()), &alphaWidth, &alphaHeight, nullptr, 4);
                     if ((alpha != nullptr) && (alphaWidth == width) && (alphaHeight == height)) {
-                        WcwRice::mergeAlpha(data, alpha, size_t(width) * height);
+                        nameProvider->applySeparateAlpha(data, alpha, size_t(width) * height);
                     }
                     else {
-                        fprintf(stderr, "[wcw rice] _rgb and _a sizes differ (or _a is unreadable); texture skipped\n");
+                        fprintf(stderr, "[wcw] a pack's colour and alpha files differ in size (or the alpha is unreadable); texture skipped\n");
                         stbi_image_free(data);
                         data = nullptr;
                     }
@@ -1000,7 +1001,7 @@ namespace RT64 {
                     }
                 }
                 else {
-                    WcwRice::makeOpaque(data, size_t(width) * height);
+                    nameProvider->applySeparateAlpha(data, nullptr, size_t(width) * height);
                 }
             }
 
@@ -1044,7 +1045,7 @@ namespace RT64 {
         std::vector<RenderTextureBarrier> afterDecodeBarriers;
         std::vector<uint8_t> replacementBytes;
         std::vector<uint8_t> replacementAlphaBytes;
-        bool replacementRiceRgb = false;
+        bool replacementSeparateAlpha = false;
 
         while (uploadThreadRunning) {
             resolvedPathQueueCopy.clear();
@@ -1153,7 +1154,7 @@ namespace RT64 {
                     newTexture->loadTile = upload.loadTile;
                     newTexture->tlut = upload.tlut;
                     newTexture->decodeTMEM = upload.decodeTMEM;
-                    newTexture->riceKey = upload.riceKey;
+                    newTexture->nameKey = upload.nameKey;
 
                     if (!upload.bytesTMEM.empty()) {
                         void *dstData = tmemUploadResources[i]->map();
@@ -1190,7 +1191,7 @@ namespace RT64 {
                         beforeDecodeBarriers.emplace_back(dstTexture->texture.get(), RenderTextureLayout::GENERAL);
                     }
 
-                    addResolvedPaths(upload.hash, upload.width, upload.height, upload.tlut, upload.loadTile, upload.bytesTMEM, upload.decodeTMEM, upload.riceKey, resolvedPathQueueCopy);
+                    addResolvedPaths(upload.hash, upload.width, upload.height, upload.tlut, upload.loadTile, upload.bytesTMEM, upload.decodeTMEM, upload.nameKey, resolvedPathQueueCopy);
                 }
 
                 replacementMapAdditions.clear();
@@ -1237,9 +1238,9 @@ namespace RT64 {
                             replacementTexture = lowMipCacheTexture;
                         }
                         // Load the texture directly on this thread (operation was defined as Stall).
-                        else if (textureMap.replacementMap.loadReplacementBytes(resolvedPath.fileSystemIndex, resolvedPath.relativePath, replacementBytes, replacementAlphaBytes, replacementRiceRgb)) {
+                        else if (textureMap.replacementMap.loadReplacementBytes(resolvedPath.fileSystemIndex, resolvedPath.relativePath, replacementBytes, replacementAlphaBytes, replacementSeparateAlpha)) {
                             replacementUploadResources.emplace_back();
-                            replacementTexture = TextureCache::loadTextureFromBytes(copyWorker->device, copyWorker->commandList.get(), replacementBytes, replacementUploadResources.back(), nullptr, nullptr, replacementRiceRgb, &replacementAlphaBytes);
+                            replacementTexture = TextureCache::loadTextureFromBytes(copyWorker->device, copyWorker->commandList.get(), replacementBytes, replacementUploadResources.back(), nullptr, nullptr, replacementSeparateAlpha, &replacementAlphaBytes);
                             textureMapMutex.lock();
                             textureMap.replacementMap.addLoadedTexture(replacementTexture, resolvedPath.fileSystemIndex, resolvedPath.relativePath, true);
                             textureMapMutex.unlock();
@@ -1336,7 +1337,7 @@ namespace RT64 {
         }
     }
 
-    void TextureCache::queueGPUUploadTMEM(uint64_t hash, uint64_t creationFrame, const uint8_t *bytes, int bytesCount, int width, int height, uint32_t tlut, const LoadTile &loadTile, bool decodeTMEM, const WcwRice::TextureKey &riceKey) {
+    void TextureCache::queueGPUUploadTMEM(uint64_t hash, uint64_t creationFrame, const uint8_t *bytes, int bytesCount, int width, int height, uint32_t tlut, const LoadTile &loadTile, bool decodeTMEM, const TextureNameKey &nameKey) {
         assert(!decodeTMEM || ((width > 0) && (height > 0)));
 
         TextureUpload newUpload;
@@ -1348,7 +1349,7 @@ namespace RT64 {
         newUpload.loadTile = loadTile;
         newUpload.bytesTMEM = (bytes != nullptr) ? std::vector<uint8_t>(bytes, bytes + bytesCount) : std::vector<uint8_t>();
         newUpload.decodeTMEM = decodeTMEM;
-        newUpload.riceKey = riceKey;
+        newUpload.nameKey = nameKey;
 
         {
             std::unique_lock queueLock(uploadQueueMutex);
@@ -1365,7 +1366,7 @@ namespace RT64 {
         });
     }
 
-    void TextureCache::addResolvedPaths(uint64_t hash, uint32_t width, uint32_t height, uint32_t tlut, const LoadTile &loadTile, const std::vector<uint8_t> &bytesTMEM, bool decodeTMEM, const WcwRice::TextureKey &riceKey, std::vector<ReplacementResolvedPath> &resolvedPaths, uint64_t exclusiveDbHash) {
+    void TextureCache::addResolvedPaths(uint64_t hash, uint32_t width, uint32_t height, uint32_t tlut, const LoadTile &loadTile, const std::vector<uint8_t> &bytesTMEM, bool decodeTMEM, const TextureNameKey &nameKey, std::vector<ReplacementResolvedPath> &resolvedPaths, uint64_t exclusiveDbHash) {
         uint64_t hashes[TMEMHasher::CurrentHashVersion + 1] = {};
         for (uint32_t v : textureMap.replacementMap.resolvedHashVersions) {
             if (decodeTMEM && v < TMEMHasher::CurrentHashVersion) {
@@ -1389,51 +1390,20 @@ namespace RT64 {
                 }
             }
 
-            // [wcw] A Rice / GLideN64-named file in the same pack (aki-roadmap#93), at the pack's priority. Not part of
-            // an exclusive reload of one database (those only concern rt64 hashes).
-            if (riceKey.valid && (exclusiveDbHash == 0) && (uint32_t(i) < textureMap.replacementMap.fileSystemRiceIndexes.size())) {
-                const WcwRice::Index &riceIndex = textureMap.replacementMap.fileSystemRiceIndexes[i];
-                const std::string *ricePath = riceIndex.empty() ? nullptr : riceIndex.find(riceKey.crc, riceKey.paletteCrc, riceKey.fmt, riceKey.siz, riceKey.hasPalette);
-                if (ricePath != nullptr) {
+            // [wcw] A file in the same pack named for another renderer (common/rt64_texture_names.h, aki-roadmap#93), at
+            // the pack's priority. Not part of an exclusive reload of one database (those only concern rt64 hashes).
+            if (nameKey.valid && (exclusiveDbHash == 0) && (uint32_t(i) < textureMap.replacementMap.fileSystemNameIndexes.size()) && (textureMap.replacementMap.fileSystemNameIndexes[i] != nullptr)) {
+                const std::string *namedPath = textureMap.replacementMap.fileSystemNameIndexes[i]->find(nameKey, hash, i);
+                if (namedPath != nullptr) {
                     ReplacementResolvedPath resolvedPath;
                     resolvedPath.fileSystemIndex = uint32_t(i);
                     resolvedPath.textureHash = hash;
-                    resolvedPath.relativePath = *ricePath;
+                    resolvedPath.relativePath = *namedPath;
                     resolvedPath.originalOperation = ReplacementOperation::Stream;
                     resolvedPath.resolvedOperation = ReplacementOperation::Stream;
                     resolvedPath.originalShift = ReplacementShift::None;
                     resolvedPath.resolvedShift = ReplacementShift::None;
                     resolvedPaths.emplace_back(resolvedPath);
-                    const uint32_t matches = ++textureMap.replacementMap.riceMatches;
-                    if (WcwRice::logEnabled() || (matches <= 10) || ((matches % 100) == 0)) {
-                        fprintf(stderr, "[wcw rice] match #%u %s %016llx -> pack %d %s\n", matches, WcwRice::textureKeyToString(riceKey).c_str(), (unsigned long long)(hash), i, ricePath->c_str());
-                    }
-
-                    break;
-                }
-            }
-
-            // [wcw] A Jabo Direct3D8-named file in the same pack (common/rt64_wcw_jabo.h), after the Rice names.
-            if (riceKey.jaboValid && (exclusiveDbHash == 0) && (uint32_t(i) < textureMap.replacementMap.fileSystemJaboIndexes.size())) {
-                const WcwJabo::Index &jaboIndex = textureMap.replacementMap.fileSystemJaboIndexes[i];
-                WcwJabo::Digest digest;
-                memcpy(digest.bytes, riceKey.jabo, sizeof(digest.bytes));
-                const std::string *jaboPath = jaboIndex.empty() ? nullptr : jaboIndex.find(digest);
-                if (jaboPath != nullptr) {
-                    ReplacementResolvedPath resolvedPath;
-                    resolvedPath.fileSystemIndex = uint32_t(i);
-                    resolvedPath.textureHash = hash;
-                    resolvedPath.relativePath = *jaboPath;
-                    resolvedPath.originalOperation = ReplacementOperation::Stream;
-                    resolvedPath.resolvedOperation = ReplacementOperation::Stream;
-                    resolvedPath.originalShift = ReplacementShift::None;
-                    resolvedPath.resolvedShift = ReplacementShift::None;
-                    resolvedPaths.emplace_back(resolvedPath);
-                    const uint32_t matches = ++textureMap.replacementMap.jaboMatches;
-                    if (WcwRice::logEnabled() || (matches <= 10) || ((matches % 100) == 0)) {
-                        fprintf(stderr, "[wcw jabo] match #%u %s %016llx -> pack %d %s\n", matches, WcwJabo::toHex(digest).c_str(), (unsigned long long)(hash), i, jaboPath->c_str());
-                    }
-
                     break;
                 }
             }
@@ -1593,7 +1563,7 @@ namespace RT64 {
             for (size_t i = 0; i < textureMap.textures.size(); i++) {
                 if (textureMap.textures[i] != nullptr) {
                     Texture *texture = textureMap.textures[i];
-                    addResolvedPaths(textureMap.hashes[i], texture->width, texture->height, texture->tlut, texture->loadTile, texture->bytesTMEM, texture->decodeTMEM, texture->riceKey, resolvedPathQueue, exclusiveDbHash);
+                    addResolvedPaths(textureMap.hashes[i], texture->width, texture->height, texture->tlut, texture->loadTile, texture->bytesTMEM, texture->decodeTMEM, texture->nameKey, resolvedPathQueue, exclusiveDbHash);
                 }
             }
         }
@@ -1702,44 +1672,23 @@ namespace RT64 {
             textureMap.replacementMap.resolvedHashVersions.insert(textureMap.replacementMap.resolvedHashVersions.end(), knownHashVersions.begin(), knownHashVersions.end());
         }
 
-        // [wcw] Index each pack's Rice / GLideN64-named files (aki-roadmap#93), in case-insensitive path order so the
-        // first file of a duplicated key wins as in GLideN64. Any pack can hold them; rt64.json needs no entries.
-        // Jabo Direct3D8-named files ("<32 hex digits>.png") are indexed the same way (common/rt64_wcw_jabo.h).
-        std::vector<WcwRice::Index> fileSystemRiceIndexes(fileSystems.size());
-        std::vector<WcwJabo::Index> fileSystemJaboIndexes(fileSystems.size());
-        for (size_t i = 0; i < fileSystems.size(); i++) {
-            std::vector<std::string> sortedPaths;
-            for (const std::string &relativePath : *fileSystems[i]) {
-                sortedPaths.emplace_back(FileSystem::toForwardSlashes(relativePath));
-            }
-
-            std::sort(sortedPaths.begin(), sortedPaths.end(), WcwRice::pathLess);
-            size_t riceNames = 0;
-            size_t jaboNames = 0;
-            for (const std::string &relativePath : sortedPaths) {
-                if (relativePath.find('#') != std::string::npos) {
-                    riceNames += fileSystemRiceIndexes[i].add(relativePath) ? 1 : 0;
+        // [wcw] Each pack's files named for other renderers, if the application installed a provider
+        // (common/rt64_texture_names.h, aki-roadmap#93). Any pack can hold them; rt64.json needs no entries.
+        std::vector<std::unique_ptr<TextureNamePackIndex>> fileSystemNameIndexes(fileSystems.size());
+        if (const TextureNameProvider *nameProvider = textureNameProvider()) {
+            for (size_t i = 0; i < fileSystems.size(); i++) {
+                std::vector<std::string> packPaths;
+                for (const std::string &relativePath : *fileSystems[i]) {
+                    packPaths.emplace_back(FileSystem::toForwardSlashes(relativePath));
                 }
-                else {
-                    jaboNames += fileSystemJaboIndexes[i].add(relativePath) ? 1 : 0;
-                }
-            }
 
-            if (riceNames > 0) {
-                fprintf(stderr, "[wcw rice] pack %zu: %zu Rice-named files, %zu keys indexed\n", i, riceNames, fileSystemRiceIndexes[i].size());
-            }
-
-            if (jaboNames > 0) {
-                fprintf(stderr, "[wcw jabo] pack %zu: %zu Jabo-named files, %zu digests indexed\n", i, jaboNames, fileSystemJaboIndexes[i].size());
+                fileSystemNameIndexes[i] = nameProvider->createPackIndex(int(i), packPaths);
             }
         }
 
         // Store the file systems in the replacement map.
         uint32_t fileSystemCount = uint32_t(fileSystems.size());
-        textureMap.replacementMap.fileSystemRiceIndexes = std::move(fileSystemRiceIndexes);
-        textureMap.replacementMap.riceMatches = 0;
-        textureMap.replacementMap.fileSystemJaboIndexes = std::move(fileSystemJaboIndexes);
-        textureMap.replacementMap.jaboMatches = 0;
+        textureMap.replacementMap.fileSystemNameIndexes = std::move(fileSystemNameIndexes);
         textureMap.replacementMap.fileSystems = std::move(fileSystems);
         textureMap.replacementMap.fileSystemResolvedPaths = std::move(fileSystemResolvedPaths);
         textureMap.replacementMap.fileSystemHashVersions = std::move(fileSystemHashVersions);
