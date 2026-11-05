@@ -35,6 +35,11 @@ namespace interop {
             return L & (3U << 8);
         }
 
+        // [wcw]
+        bool imageRead() constmethod {
+            return L & IM_RD;
+        }
+
         bool clrOnCvg() constmethod {
             return L & CLR_ON_CVG;
         }

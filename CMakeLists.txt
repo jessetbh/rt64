@@ -473,6 +473,7 @@ if (RT64_WCW_TESTS AND NOT CMAKE_CROSSCOMPILING)
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_logic_tests.cpp"
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_venues_tests.cpp"
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_sharp_texel_tests.cpp"
+        "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_cvg_clamp_tests.cpp"
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_perf_tests.cpp"
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_wcw_texdump_tests.cpp"
         "${PROJECT_SOURCE_DIR}/tests/wcw/rt64_texture_names_tests.cpp"
