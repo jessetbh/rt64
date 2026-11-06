@@ -160,7 +160,7 @@ namespace RT64 {
     // 
     //                  Length      Hash                    Known instances               
     //     
-    static std::array<GBISegment, 108> textSegments = {
+    static std::array<GBISegment, 110> textSegments = {
             // [wcw2k] WM2000's "F3DLX.Rej xbus 2.08" (AKI 1999): bytes past 0x1000 of the
             // text are VOLATILE at runtime (hashed differently seconds apart mid-run —
             // self-modified or yield-state spill), so match on the stable 0x1000-byte
@@ -169,6 +169,8 @@ namespace RT64 {
             GBISegment{ 0x1000,     0x748B4244A299527EULL,  { &F3DLX2_XBUS_2_08_REJ } },
             // [wcw fullconv] ECW House Party Mixtape's F3DLX.Rej xbus 2.08 text (WM2000's data).
             GBISegment{ 0x1000,     0x33A4793135455458ULL,  { &F3DLX2_XBUS_2_08_REJ } },
+            // [wcw fullconv] WWF WarZone - Badd Blood: name strings in the text's zero padding (0xBD0-0xC92), WM2000's data.
+            GBISegment{ 0x1000,     0x55087332706B6A68ULL,  { &F3DLX2_XBUS_2_08_REJ } },
             // [wcw fullconv] No Mercy's own "F3DLX.Rej xbus 2.08" (stock No Mercy only uses F3DEX2;
             // No Mercy Plus switches to this one). Same stable-prefix match as WM2000's above.
             GBISegment{ 0x1000,     0x99BFB7250167370AULL,  { &F3DLX2_XBUS_2_08_REJ } },
@@ -247,6 +249,8 @@ namespace RT64 {
             // [wcw fullconv] ECW House Party Mixtape (a WM2000 hack): its F3DEX2 xbus 2.08 text differs
             // again, the data is the stock F3DEX2_XBUS_2_08 0x420 bytes.
             GBISegment{ 0x13A0,     0x492C293EFFC7BD31ULL,  { &F3DEX2_XBUS_2_08 } },
+            // [wcw fullconv] WWF WarZone - Badd Blood (a WM2000 hack): name strings in the text's zero padding (0xDE0), the data is stock.
+            GBISegment{ 0x13A0,     0x486A1A8A9119F4B3ULL,  { &F3DEX2_XBUS_2_08 } },
             // [wcw fullconv] VPW64 Deluxe (a VPW2 hack): its F3DEX2 xbus 2.08 text differs, the data is stock.
             GBISegment{ 0x13A0,     0xB68BA59E10265690ULL,  { &F3DEX2_XBUS_2_08 } },
             GBISegment{ 0x1198,     0xD5E0AABE069BA75CULL,  { &F3DLX2_XBUS_2_08_REJ } }, // Needs confirmation.
