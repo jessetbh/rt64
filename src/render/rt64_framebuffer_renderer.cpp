@@ -474,7 +474,7 @@ namespace RT64 {
     }
 
     void FramebufferRenderer::createGPUTiles(const DrawCallTile *callTiles, uint32_t callTileCount, interop::GPUTile *dstGPUTiles, const FramebufferManager *fbManager, 
-        TextureCache *textureCache, uint64_t submissionFrame)
+        TextureCache *textureCache, uint64_t submissionFrame, bool rtEnabled)
     {
         for (uint32_t i = 0; i < callTileCount; i++) {
             const DrawCallTile &callTile = callTiles[i];
@@ -509,6 +509,21 @@ namespace RT64 {
                 bool hasMipmaps = false;
                 bool shiftedByHalf = false;
                 textureCache->useTexture(callTile.tmemHashOrID, submissionFrame, textureIndex, gpuTile.tcScale, gpuTile.textureDimensions, textureReplaced, hasMipmaps, shiftedByHalf);
+
+                // [wcw] aki-roadmap#105: with RT on, a listed mat draws its copy without the painted rope shadows (the
+                // ropes cast real ones). A texture pack's replacement of the mat still wins. WCW_DELINE=2 uses it with RT
+                // off too. The copy is used (touched) with RT off as well, so it isn't evicted and rebuilt every few
+                // frames while nothing draws it.
+                if (!textureReplaced && TextureCache::wcwDelineListed(callTile.tmemHashOrID)) {
+                    uint32_t delinedIndex = 0;
+                    interop::float2 delinedScale;
+                    interop::float3 delinedDimensions;
+                    bool delinedReplaced = false, delinedMipmaps = false, delinedShifted = false;
+                    const bool delinedFound = textureCache->useTexture(WcwLogic::delinedHash(callTile.tmemHashOrID), submissionFrame, delinedIndex, delinedScale, delinedDimensions, delinedReplaced, delinedMipmaps, delinedShifted);
+                    if (delinedFound && (rtEnabled || TextureCache::wcwDelineForced())) {
+                        textureIndex = delinedIndex;
+                    }
+                }
 
                 // Describe the GPU tile for a regular texture.
                 gpuTile.ulScale.x = gpuTile.tcScale.x;

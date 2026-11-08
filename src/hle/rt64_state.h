@@ -99,6 +99,7 @@ namespace RT64 {
         VI lastScreenVI;
         uint64_t lastScreenHash;
         uint32_t lastScreenFactorCounter;
+        uint64_t lastScreenWriteTimestamp; // [wcw] the shown framebuffer's RDP write timestamp at the last present (aki-roadmap#121)
         VIHistory viHistory;
         PresetDrawCallLibrary drawCallLibrary;
         PresetLightsLibrary lightsLibrary;

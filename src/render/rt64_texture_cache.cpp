@@ -8,6 +8,10 @@
 #include "stb/stb_image.h"
 #include "xxHash/xxh3.h"
 
+#include <algorithm>
+#include <cstdlib>
+#include <cstring>
+
 // Needs to be included before other headers.
 #include "gbi/rt64_f3d.h"
 
@@ -146,6 +150,26 @@ namespace RT64 {
         else {
             return nullptr;
         }
+    }
+
+    bool ReplacementMap::loadReplacementBytes(uint32_t fileSystemIndex, const std::string &relativePath, std::vector<uint8_t> &bytes,
+        std::vector<uint8_t> &alphaBytes, bool &separateAlpha) const
+    {
+        alphaBytes.clear();
+        separateAlpha = false;
+        if ((fileSystemIndex >= fileSystems.size()) || !fileSystems[fileSystemIndex]->load(relativePath, bytes)) {
+            return false;
+        }
+
+        const std::string *alphaPath = nullptr;
+        if ((fileSystemIndex < fileSystemNameIndexes.size()) && (fileSystemNameIndexes[fileSystemIndex] != nullptr) && fileSystemNameIndexes[fileSystemIndex]->separateAlpha(relativePath, alphaPath)) {
+            separateAlpha = true;
+            if ((alphaPath != nullptr) && !fileSystems[fileSystemIndex]->load(*alphaPath, alphaBytes)) {
+                alphaBytes.clear();
+            }
+        }
+
+        return true;
     }
 
     uint64_t ReplacementMap::hashFromRelativePath(uint32_t fileSystemIndex, const std::string &relativePath) const {
@@ -433,12 +457,14 @@ namespace RT64 {
             
             if (!streamDesc.relativePath.empty()) {
                 ElapsedTimer elapsedTimer;
-                bool fileLoaded = textureCache->textureMap.replacementMap.fileSystems[streamDesc.fileSystemIndex]->load(streamDesc.relativePath, replacementBytes);
+                std::vector<uint8_t> alphaBytes;
+                bool separateAlpha = false;
+                bool fileLoaded = textureCache->textureMap.replacementMap.loadReplacementBytes(streamDesc.fileSystemIndex, streamDesc.relativePath, replacementBytes, alphaBytes, separateAlpha);
                 textureCache->addStreamLoadTime(elapsedTimer.elapsedMicroseconds());
 
                 if (fileLoaded) {
                     worker->commandList->begin();
-                    Texture *texture = TextureCache::loadTextureFromBytes(worker->device, worker->commandList.get(), replacementBytes, uploadResource);
+                    Texture *texture = TextureCache::loadTextureFromBytes(worker->device, worker->commandList.get(), replacementBytes, uploadResource, nullptr, nullptr, separateAlpha, &alphaBytes);
                     worker->commandList->end();
 
                     // Only execute the command list and wait if the texture was loaded successfully.
@@ -932,10 +958,21 @@ namespace RT64 {
         return true;
     }
 
-    Texture *TextureCache::loadTextureFromBytes(RenderDevice *device, RenderCommandList *commandList, const std::vector<uint8_t> &fileBytes, std::unique_ptr<RenderBuffer> &dstUploadResource, RenderPool *resourcePool, std::mutex *uploadResourcePoolMutex) {
+    Texture *TextureCache::loadTextureFromBytes(RenderDevice *device, RenderCommandList *commandList, const std::vector<uint8_t> &fileBytes, std::unique_ptr<RenderBuffer> &dstUploadResource, RenderPool *resourcePool, std::mutex *uploadResourcePoolMutex,
+        bool separateAlpha, const std::vector<uint8_t> *alphaBytes)
+    {
         const uint32_t PNG_MAGIC = 0x474E5089;
+        if (fileBytes.size() < sizeof(uint32_t)) {
+            return nullptr;
+        }
+
         Texture *replacementTexture = new Texture();
         uint32_t magicNumber = *reinterpret_cast<const uint32_t *>(fileBytes.data());
+        // [wcw] BMP replacements take the PNG path: stb_image decodes both (aki-roadmap#93).
+        if (WcwLogic::isBmp(fileBytes.data(), fileBytes.size())) {
+            magicNumber = PNG_MAGIC;
+        }
+
         bool loadedTexture = false;
         switch (magicNumber) {
         case ddspp::DDS_MAGIC:
@@ -944,6 +981,30 @@ namespace RT64 {
         case PNG_MAGIC: {
             int width, height;
             stbi_uc *data = stbi_load_from_memory(fileBytes.data(), fileBytes.size(), &width, &height, nullptr, 4);
+            const TextureNameProvider *nameProvider = textureNameProvider();
+            if ((data != nullptr) && separateAlpha && (nameProvider != nullptr)) {
+                // [wcw] The provider applies a pack's separate alpha file (common/rt64_texture_names.h).
+                if ((alphaBytes != nullptr) && !alphaBytes->empty()) {
+                    int alphaWidth, alphaHeight;
+                    stbi_uc *alpha = stbi_load_from_memory(alphaBytes->data(), int(alphaBytes->size()), &alphaWidth, &alphaHeight, nullptr, 4);
+                    if ((alpha != nullptr) && (alphaWidth == width) && (alphaHeight == height)) {
+                        nameProvider->applySeparateAlpha(data, alpha, size_t(width) * height);
+                    }
+                    else {
+                        fprintf(stderr, "[wcw] a pack's colour and alpha files differ in size (or the alpha is unreadable); texture skipped\n");
+                        stbi_image_free(data);
+                        data = nullptr;
+                    }
+
+                    if (alpha != nullptr) {
+                        stbi_image_free(alpha);
+                    }
+                }
+                else {
+                    nameProvider->applySeparateAlpha(data, nullptr, size_t(width) * height);
+                }
+            }
+
             if (data != nullptr) {
                 uint32_t rowPitch = uint32_t(width) * 4;
                 size_t byteCount = uint32_t(height) * rowPitch;
@@ -983,6 +1044,8 @@ namespace RT64 {
         std::vector<RenderTextureBarrier> beforeDecodeBarriers;
         std::vector<RenderTextureBarrier> afterDecodeBarriers;
         std::vector<uint8_t> replacementBytes;
+        std::vector<uint8_t> replacementAlphaBytes;
+        bool replacementSeparateAlpha = false;
 
         while (uploadThreadRunning) {
             resolvedPathQueueCopy.clear();
@@ -1091,6 +1154,7 @@ namespace RT64 {
                     newTexture->loadTile = upload.loadTile;
                     newTexture->tlut = upload.tlut;
                     newTexture->decodeTMEM = upload.decodeTMEM;
+                    newTexture->nameKey = upload.nameKey;
 
                     if (!upload.bytesTMEM.empty()) {
                         void *dstData = tmemUploadResources[i]->map();
@@ -1127,7 +1191,7 @@ namespace RT64 {
                         beforeDecodeBarriers.emplace_back(dstTexture->texture.get(), RenderTextureLayout::GENERAL);
                     }
 
-                    addResolvedPaths(upload.hash, upload.width, upload.height, upload.tlut, upload.loadTile, upload.bytesTMEM, upload.decodeTMEM, resolvedPathQueueCopy);
+                    addResolvedPaths(upload.hash, upload.width, upload.height, upload.tlut, upload.loadTile, upload.bytesTMEM, upload.decodeTMEM, upload.nameKey, resolvedPathQueueCopy);
                 }
 
                 replacementMapAdditions.clear();
@@ -1174,9 +1238,9 @@ namespace RT64 {
                             replacementTexture = lowMipCacheTexture;
                         }
                         // Load the texture directly on this thread (operation was defined as Stall).
-                        else if (textureMap.replacementMap.fileSystems[resolvedPath.fileSystemIndex]->load(resolvedPath.relativePath, replacementBytes)) {
+                        else if (textureMap.replacementMap.loadReplacementBytes(resolvedPath.fileSystemIndex, resolvedPath.relativePath, replacementBytes, replacementAlphaBytes, replacementSeparateAlpha)) {
                             replacementUploadResources.emplace_back();
-                            replacementTexture = TextureCache::loadTextureFromBytes(copyWorker->device, copyWorker->commandList.get(), replacementBytes, replacementUploadResources.back());
+                            replacementTexture = TextureCache::loadTextureFromBytes(copyWorker->device, copyWorker->commandList.get(), replacementBytes, replacementUploadResources.back(), nullptr, nullptr, replacementSeparateAlpha, &replacementAlphaBytes);
                             textureMapMutex.lock();
                             textureMap.replacementMap.addLoadedTexture(replacementTexture, resolvedPath.fileSystemIndex, resolvedPath.relativePath, true);
                             textureMapMutex.unlock();
@@ -1273,7 +1337,7 @@ namespace RT64 {
         }
     }
 
-    void TextureCache::queueGPUUploadTMEM(uint64_t hash, uint64_t creationFrame, const uint8_t *bytes, int bytesCount, int width, int height, uint32_t tlut, const LoadTile &loadTile, bool decodeTMEM) {
+    void TextureCache::queueGPUUploadTMEM(uint64_t hash, uint64_t creationFrame, const uint8_t *bytes, int bytesCount, int width, int height, uint32_t tlut, const LoadTile &loadTile, bool decodeTMEM, const TextureNameKey &nameKey) {
         assert(!decodeTMEM || ((width > 0) && (height > 0)));
 
         TextureUpload newUpload;
@@ -1285,6 +1349,7 @@ namespace RT64 {
         newUpload.loadTile = loadTile;
         newUpload.bytesTMEM = (bytes != nullptr) ? std::vector<uint8_t>(bytes, bytes + bytesCount) : std::vector<uint8_t>();
         newUpload.decodeTMEM = decodeTMEM;
+        newUpload.nameKey = nameKey;
 
         {
             std::unique_lock queueLock(uploadQueueMutex);
@@ -1301,7 +1366,7 @@ namespace RT64 {
         });
     }
 
-    void TextureCache::addResolvedPaths(uint64_t hash, uint32_t width, uint32_t height, uint32_t tlut, const LoadTile &loadTile, const std::vector<uint8_t> &bytesTMEM, bool decodeTMEM, std::vector<ReplacementResolvedPath> &resolvedPaths, uint64_t exclusiveDbHash) {
+    void TextureCache::addResolvedPaths(uint64_t hash, uint32_t width, uint32_t height, uint32_t tlut, const LoadTile &loadTile, const std::vector<uint8_t> &bytesTMEM, bool decodeTMEM, const TextureNameKey &nameKey, std::vector<ReplacementResolvedPath> &resolvedPaths, uint64_t exclusiveDbHash) {
         uint64_t hashes[TMEMHasher::CurrentHashVersion + 1] = {};
         for (uint32_t v : textureMap.replacementMap.resolvedHashVersions) {
             if (decodeTMEM && v < TMEMHasher::CurrentHashVersion) {
@@ -1324,12 +1389,48 @@ namespace RT64 {
                     break;
                 }
             }
+
+            // [wcw] A file in the same pack named for another renderer (common/rt64_texture_names.h, aki-roadmap#93), at
+            // the pack's priority. Not part of an exclusive reload of one database (those only concern rt64 hashes).
+            if (nameKey.valid && (exclusiveDbHash == 0) && (uint32_t(i) < textureMap.replacementMap.fileSystemNameIndexes.size()) && (textureMap.replacementMap.fileSystemNameIndexes[i] != nullptr)) {
+                const std::string *namedPath = textureMap.replacementMap.fileSystemNameIndexes[i]->find(nameKey, hash, i);
+                if (namedPath != nullptr) {
+                    ReplacementResolvedPath resolvedPath;
+                    resolvedPath.fileSystemIndex = uint32_t(i);
+                    resolvedPath.textureHash = hash;
+                    resolvedPath.relativePath = *namedPath;
+                    resolvedPath.originalOperation = ReplacementOperation::Stream;
+                    resolvedPath.resolvedOperation = ReplacementOperation::Stream;
+                    resolvedPath.originalShift = ReplacementShift::None;
+                    resolvedPath.resolvedShift = ReplacementShift::None;
+                    resolvedPaths.emplace_back(resolvedPath);
+                    break;
+                }
+            }
         }
     }
 
     bool TextureCache::useTexture(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex, interop::float2 &textureScale, interop::float3 &textureDimensions, bool &textureReplaced, bool &hasMipmaps, bool &shiftedByHalf) {
         std::unique_lock lock(textureMapMutex);
         return textureMap.use(hash, submissionFrame, textureIndex, textureScale, textureDimensions, textureReplaced, hasMipmaps, shiftedByHalf);
+    }
+
+    bool TextureCache::wcwDelineListed(uint64_t hash) {
+        static const std::vector<uint64_t> hashes = [] {
+            const char *enabled = getenv("WCW_DELINE");
+            return WcwLogic::delineHashes(getenv("WCW_DELINE_HASHES"), (enabled != nullptr) && (strcmp(enabled, "0") == 0));
+        }();
+
+        return std::find(hashes.begin(), hashes.end(), hash) != hashes.end();
+    }
+
+    bool TextureCache::wcwDelineForced() {
+        static const bool forced = [] {
+            const char *value = getenv("WCW_DELINE");
+            return (value != nullptr) && (strcmp(value, "2") == 0);
+        }();
+
+        return forced;
     }
 
     bool TextureCache::useTexture(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex) {
@@ -1462,7 +1563,7 @@ namespace RT64 {
             for (size_t i = 0; i < textureMap.textures.size(); i++) {
                 if (textureMap.textures[i] != nullptr) {
                     Texture *texture = textureMap.textures[i];
-                    addResolvedPaths(textureMap.hashes[i], texture->width, texture->height, texture->tlut, texture->loadTile, texture->bytesTMEM, texture->decodeTMEM, resolvedPathQueue, exclusiveDbHash);
+                    addResolvedPaths(textureMap.hashes[i], texture->width, texture->height, texture->tlut, texture->loadTile, texture->bytesTMEM, texture->decodeTMEM, texture->nameKey, resolvedPathQueue, exclusiveDbHash);
                 }
             }
         }
@@ -1571,8 +1672,23 @@ namespace RT64 {
             textureMap.replacementMap.resolvedHashVersions.insert(textureMap.replacementMap.resolvedHashVersions.end(), knownHashVersions.begin(), knownHashVersions.end());
         }
 
+        // [wcw] Each pack's files named for other renderers, if the application installed a provider
+        // (common/rt64_texture_names.h, aki-roadmap#93). Any pack can hold them; rt64.json needs no entries.
+        std::vector<std::unique_ptr<TextureNamePackIndex>> fileSystemNameIndexes(fileSystems.size());
+        if (const TextureNameProvider *nameProvider = textureNameProvider()) {
+            for (size_t i = 0; i < fileSystems.size(); i++) {
+                std::vector<std::string> packPaths;
+                for (const std::string &relativePath : *fileSystems[i]) {
+                    packPaths.emplace_back(FileSystem::toForwardSlashes(relativePath));
+                }
+
+                fileSystemNameIndexes[i] = nameProvider->createPackIndex(int(i), packPaths);
+            }
+        }
+
         // Store the file systems in the replacement map.
         uint32_t fileSystemCount = uint32_t(fileSystems.size());
+        textureMap.replacementMap.fileSystemNameIndexes = std::move(fileSystemNameIndexes);
         textureMap.replacementMap.fileSystems = std::move(fileSystems);
         textureMap.replacementMap.fileSystemResolvedPaths = std::move(fileSystemResolvedPaths);
         textureMap.replacementMap.fileSystemHashVersions = std::move(fileSystemHashVersions);
