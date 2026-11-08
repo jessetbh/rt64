@@ -1,4 +1,4 @@
-//
+﻿//
 // RT64
 //
 
@@ -20,6 +20,12 @@
 // free of renderer state so it can be unit tested (tests/wcw). The renderer calls these functions; a change to any
 // of these rules belongs here, with a test.
 namespace RT64::WcwLogic {
+    // Texture loads
+
+    // A TLUT load whose end is before its start loads nothing. The unsigned word count wrapped to about 4 billion and
+    // read until it ran off RDRAM (WWF Legends: Challenge 64, uls 4080 lrs 60 on Superstar Select, aki-roadmap#192).
+    bool tlutLoadIsEmpty(uint32_t uls, uint32_t ult, uint32_t lrs, uint32_t lrt);
+
     // Ray-traced shadows
 
     // Other scenes stay shadow casters for this many game frames after their last build. Counted in game frames,
@@ -326,6 +332,16 @@ namespace RT64::WcwLogic {
     // at or below the game rate) and without the beam simulator (it paces its own presents). 0 rates are unknown.
     bool holdPresentsToGameRate(uint32_t displayRate, uint32_t targetRate, uint32_t viOriginalRate, bool beamActive);
 
+    // VI rate estimate (aki-roadmap#121)
+
+    // A present for screen RAM that changed while the VI stayed the same counts as a game frame (its VIs feed the rate
+    // estimate) when the CPU drew the screen (no RDP framebuffer is tracked there) or the RDP drew into the shown
+    // framebuffer since the last present (single buffering): its write timestamp moved. Without either, only the CPU
+    // edited a frame the RDP drew earlier, which isn't a new frame. AEW 64's cheat codes write body-shape data and
+    // scratch variables at the top of RDRAM, No Mercy's second framebuffer outside matches, every frame: counted as
+    // frames, they read as 60 fps and turned frame interpolation off at the 60 fps setting.
+    bool screenChangeIsGameFrame(bool rdpFramebufferAtScreen, uint64_t fbWriteTimestamp, uint64_t writeTimestampAtLastPresent);
+
     // Holds a frame that arrives early until one game frame period after the previous present's target, so the
     // presents settle at the later phase (on hardware's: the frame shows 1 VI later than at the early phase) and come
     // one game frame apart. A late frame moves the grid to its arrival. A hold of a whole game frame period or more
@@ -527,6 +543,11 @@ namespace RT64::WcwLogic {
     bool dropRunGeneratedFrame(bool layerSkipped, bool cutInRun);
 
     // Camera cuts
+
+    // Whether a replacement file's bytes are a Windows BMP ("BM", then an OS/2 core or BITMAPINFOHEADER-or-later DIB
+    // header). The loader decodes them with stb_image like PNGs (aki-roadmap#93); stb_image doesn't read RLE-compressed
+    // BMPs, so those still fail to load.
+    bool isBmp(const uint8_t *bytes, size_t size);
 
     // Relative change between two 4x4 matrices (16 floats each): |cur - prev| / |cur| (Frobenius norms). -1 when a
     // value isn't finite or cur is zero.
@@ -1171,4 +1192,58 @@ namespace RT64::WcwLogic {
         const std::string &alertType, const std::string &aggregationKey);
     // Joins lines with '\n' into packets of at most maxBytes; a longer line goes alone.
     std::vector<std::string> ddPackets(const std::vector<std::string> &lines, size_t maxBytes = DdMaxPacketBytes);
+
+    // Ray tracing: painted rope shadows on the ring mat (aki-roadmap#105)
+
+    // No Mercy paints the ropes' shadows into its mat texture: dark lines at columns and rows 1, 4 and 8 near the
+    // edges. With RT on, the real ropes cast shadows too, so the mat showed both. When RT is on, the renderer uses a
+    // copy of the listed mat textures with those lines filled in. Only listed hashes: run on the 132 CI4 textures of
+    // six NM venue dumps, the detector also found lines in 53 others (borders, trim, sign edges that are meant to be
+    // there).
+
+    // One painted line: a column (or row) index and its width in texels.
+    struct DelineLine {
+        bool column = false;
+        uint32_t index = 0;
+        uint32_t width = 0;
+        float dip = 0.0f;
+        float share = 0.0f;
+    };
+
+    // A line is darker than the texels on both sides of it by at least this much on average (luminance, 0-255).
+    constexpr float DelineMinDip = 10.0f;
+    // And darker than both of them in at least this share of its texels: a stripe, not a few dark spots.
+    constexpr float DelineMinShare = 0.6f;
+    // Not part of a wider dark band: each side is at least DelineMinDip * this brighter than the line, and the texels
+    // beyond the sides are at most that much brighter than the sides.
+    constexpr float DelineBorderRatio = 0.5f;
+    // Lines are searched for only in this share of the texture at each edge, never at the outermost texel.
+    constexpr float DelineEdgeBand = 0.2f;
+
+    // The painted lines in a texture's luminance (row-major, width * height). A line is 1 or 2 texels wide. A wider
+    // dark border is not a line, and neither is anything in the middle of the texture. Stronger lines win: each
+    // line also claims the texels on both sides of it, and a weaker candidate on the same axis that overlaps a
+    // claimed texel is dropped.
+    std::vector<DelineLine> delineFind(const std::vector<float> &luminance, uint32_t width, uint32_t height);
+
+    // Fills each line of an RGBA8 image (row-major, width * height * 4) in place, interpolating every texel from the
+    // two texels on either side of its line in the image as it was before the call.
+    void delineFill(std::vector<uint8_t> &rgba, uint32_t width, uint32_t height, const std::vector<DelineLine> &lines);
+
+    // The palette entry (RGBA8, count entries) closest to a colour (squared distance, alpha included). Ties go to the
+    // lower index.
+    uint32_t nearestPaletteIndex(const uint8_t rgba[4], const uint8_t *palette, uint32_t count);
+
+    // The TMEM byte that holds texel (x, y) of a 4-bit tile with a palette: tileAddress and stride are in bytes. Odd
+    // rows swap the 32-bit words of each 64-bit TMEM word, and palette textures address only the low half of TMEM.
+    // The texel is the byte's high nibble for an even x and the low one for an odd x.
+    uint32_t tmem4bTexelByte(uint32_t tileAddress, uint32_t stride, uint32_t x, uint32_t y);
+
+    // The texture cache key of a mat's de-lined copy. It never equals the texture's own hash.
+    uint64_t delinedHash(uint64_t hash);
+
+    // The mat textures to de-line: No Mercy's ring mat (the same texture in every venue), plus the hex hashes
+    // (comma separated) of extraList, the WCW_DELINE_HASHES environment variable. disabled (WCW_DELINE=0) lists none.
+    // WCW_DELINE=2 also uses the copies with RT off (comparisons only).
+    std::vector<uint64_t> delineHashes(const char *extraList, bool disabled);
 };

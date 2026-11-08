@@ -749,7 +749,7 @@ namespace RT64 {
                 gpuTileRange.first = 0;
                 gpuTileRange.second = workload.drawData.gpuTiles.size();
                 framebufferRenderer->createGPUTiles(workload.drawData.callTiles.data(), uint32_t(workload.drawData.gpuTiles.size()),
-                    workload.drawData.gpuTiles.data(), &fbManager, ext.textureCache, workload.submissionFrame);
+                    workload.drawData.gpuTiles.data(), &fbManager, ext.textureCache, workload.submissionFrame, workloadConfig.raytracingEnabled);
 
                 // Upload the GPU tiles.
                 ext.workloadTilesUploader->submit(ext.workloadGraphicsWorker, {

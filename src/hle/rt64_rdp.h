@@ -102,6 +102,10 @@ namespace RT64 {
 
         struct {
             LoadOperation lastLoadOpByTMEM[RDP_TMEM_WORDS] = {};
+            // [wcw] Load order of each entry above (aki-roadmap#93), for texture name providers: which recorded TLUT
+            // load of a palette entry is newer.
+            uint64_t lastLoadSeqByTMEM[RDP_TMEM_WORDS] = {};
+            uint64_t loadSeq = 0;
         } rice;
 
         GBI *gbi;

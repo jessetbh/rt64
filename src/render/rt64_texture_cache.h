@@ -15,6 +15,7 @@
 #include <json/json.hpp>
 
 #include "common/rt64_replacement_database.h"
+#include "common/rt64_texture_names.h"
 #include "hle/rt64_draw_call.h"
 
 #include "rt64_descriptor_sets.h"
@@ -44,6 +45,7 @@ namespace RT64 {
         LoadTile loadTile;
         std::vector<uint8_t> bytesTMEM;
         bool decodeTMEM;
+        TextureNameKey nameKey;
     };
 
     struct LowMipCacheTexture {
@@ -93,6 +95,14 @@ namespace RT64 {
         uint64_t maxTexturePoolSize = 0;
         ReplacementDatabase directoryDatabase;
         bool fileSystemIsDirectory = false;
+        // [wcw] Each pack's files named for other renderers (common/rt64_texture_names.h, aki-roadmap#93), matched when
+        // a texture's rt64 hash has no entry in that pack. A pack's entry is null when nothing in it concerns the provider.
+        std::vector<std::unique_ptr<TextureNamePackIndex>> fileSystemNameIndexes;
+
+        // [wcw] A replacement file's bytes, ready for loadTextureFromBytes: for a file whose alpha is kept apart also
+        // that file (alphaBytes, empty when the pack has none) and separateAlpha = true.
+        bool loadReplacementBytes(uint32_t fileSystemIndex, const std::string &relativePath, std::vector<uint8_t> &bytes,
+            std::vector<uint8_t> &alphaBytes, bool &separateAlpha) const;
 
         ReplacementMap();
         ~ReplacementMap();
@@ -234,11 +244,16 @@ namespace RT64 {
         TextureCache(RenderWorker *directWorker, RenderWorker *copyWorker, uint32_t threadCount, const ShaderLibrary *shaderLibrary);
         ~TextureCache();
         void uploadThreadLoop();
-        void queueGPUUploadTMEM(uint64_t hash, uint64_t creationFrame, const uint8_t *bytes, int bytesCount, int width, int height, uint32_t tlut, const LoadTile &loadTile, bool decodeTMEM);
+        void queueGPUUploadTMEM(uint64_t hash, uint64_t creationFrame, const uint8_t *bytes, int bytesCount, int width, int height, uint32_t tlut, const LoadTile &loadTile, bool decodeTMEM, const TextureNameKey &nameKey = TextureNameKey());
         void waitForGPUUploads();
-        void addResolvedPaths(uint64_t hash, uint32_t width, uint32_t height, uint32_t tlut, const LoadTile &loadTile, const std::vector<uint8_t> &bytesTMEM, bool decodeTMEM, std::vector<ReplacementResolvedPath> &resolvedPaths, uint64_t exclusiveDbHash = 0);
+        void addResolvedPaths(uint64_t hash, uint32_t width, uint32_t height, uint32_t tlut, const LoadTile &loadTile, const std::vector<uint8_t> &bytesTMEM, bool decodeTMEM, const TextureNameKey &nameKey, std::vector<ReplacementResolvedPath> &resolvedPaths, uint64_t exclusiveDbHash = 0);
         bool useTexture(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex, interop::float2 &textureScale, interop::float3 &textureDimensions, bool &textureReplaced, bool &hasMipmaps, bool &shiftedByHalf);
         bool useTexture(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex);
+        // [wcw] Whether a texture is one of the mats whose painted rope shadows the renderer fills in with RT on
+        // (WcwLogic::delineHashes, read once from WCW_DELINE / WCW_DELINE_HASHES; aki-roadmap#105).
+        static bool wcwDelineListed(uint64_t hash);
+        // [wcw] WCW_DELINE=2: the renderer uses the de-lined copies with RT off too (before/after comparisons).
+        static bool wcwDelineForced();
         bool addReplacement(uint64_t hash, const std::string &relativePath, ReplacementShift shift);
         bool hasReplacement(uint64_t hash);
         void clearReplacementDirectories();
@@ -264,6 +279,9 @@ namespace RT64 {
         static void setRGBA32(Texture *dstTexture, RenderDevice *device, RenderCommandList *commandList, const uint8_t *bytes, size_t byteCount, uint32_t width, uint32_t height, uint32_t rowPitch, std::unique_ptr<RenderBuffer> &dstUploadResource, RenderPool *uploadResourcePool = nullptr, std::mutex *uploadResourcePoolMutex = nullptr);
         static bool setDDS(Texture *dstTexture, RenderDevice *device, RenderCommandList *commandList, const uint8_t *bytes, size_t byteCount, std::unique_ptr<RenderBuffer> &dstUploadResource, RenderPool *uploadResourcePool = nullptr, std::mutex *uploadResourcePoolMutex = nullptr);
         static bool setLowMipCache(RenderDevice *device, RenderCommandList *commandList, const uint8_t *bytes, size_t byteCount, std::unique_ptr<RenderBuffer> &dstUploadResource, uint32_t fileSystemIndex, std::unordered_map<std::string, LowMipCacheTexture> &dstTextureMap, uint64_t &totalMemory);
-        static Texture *loadTextureFromBytes(RenderDevice *device, RenderCommandList *commandList, const std::vector<uint8_t> &fileBytes, std::unique_ptr<RenderBuffer> &dstUploadResource, RenderPool *resourcePool = nullptr, std::mutex *uploadResourcePoolMutex = nullptr);
+        // [wcw] separateAlpha: the file's alpha is kept apart, in alphaBytes (empty when the pack has none); the texture
+        // name provider applies it. An alpha file of another size rejects the pair.
+        static Texture *loadTextureFromBytes(RenderDevice *device, RenderCommandList *commandList, const std::vector<uint8_t> &fileBytes, std::unique_ptr<RenderBuffer> &dstUploadResource, RenderPool *resourcePool = nullptr, std::mutex *uploadResourcePoolMutex = nullptr,
+            bool separateAlpha = false, const std::vector<uint8_t> *alphaBytes = nullptr);
     };
 };

@@ -4,18 +4,102 @@
 
 #include "rt64_rdp_tmem.h"
 
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cassert>
 #include <cinttypes>
+#include <cstring>
 
 #include "xxHash/xxh3.h"
 
 #include "common/rt64_tmem_hasher.h"
 #include "common/rt64_wcw_logic.h"
 #include "common/rt64_wcw_texdump.h"
+#include "common/rt64_texture_names.h"
 
 #include "rt64_state.h"
 
 namespace RT64 {
+    // [wcw] What rt64 knows about a new texture, for the application's TextureNameProvider if it installed one
+    // (common/rt64_texture_names.h): names from other renderers' texture packs, aki-roadmap#93.
+    static TextureNameKey computeTextureNames(const State *state, const LoadTile &drawTile, uint16_t width, uint16_t height, uint32_t tlut) {
+        TextureNameKey key;
+        const TextureNameProvider *provider = textureNameProvider();
+        if (provider == nullptr) {
+            return key;
+        }
+
+        const LoadOperation &loadOp = state->rdp->rice.lastLoadOpByTMEM[drawTile.tmem & (RDP_TMEM_WORDS - 1)];
+        if (loadOp.texture.address == 0) {
+            return key;
+        }
+
+        TextureNameInput input;
+        input.rdram = reinterpret_cast<const uint8_t *>(state->RDRAM);
+        input.rdramBytes = uint64_t(RDRAMSize) + 1;
+        if (loadOp.type == LoadOperation::Type::Tile) {
+            input.load.type = TextureNameLoad::Type::Tile;
+        }
+        else if (loadOp.type == LoadOperation::Type::Block) {
+            input.load.type = TextureNameLoad::Type::Block;
+        }
+
+        input.load.siz = loadOp.tile.siz;
+        input.load.masks = loadOp.tile.masks;
+        input.load.maskt = loadOp.tile.maskt;
+        input.load.uls = loadOp.tile.uls;
+        input.load.ult = loadOp.tile.ult;
+        input.load.lrs = loadOp.tile.lrs;
+        input.load.lrt = loadOp.tile.lrt;
+        input.load.address = loadOp.texture.address;
+        input.load.textureSiz = loadOp.texture.siz;
+        input.load.textureWidth = loadOp.texture.width;
+        input.drawTile.fmt = drawTile.fmt;
+        input.drawTile.siz = drawTile.siz;
+        input.drawTile.line = drawTile.line;
+        input.drawTile.palette = drawTile.palette;
+        input.drawTile.cms = drawTile.cms;
+        input.drawTile.cmt = drawTile.cmt;
+        input.drawTile.masks = drawTile.masks;
+        input.drawTile.maskt = drawTile.maskt;
+        input.drawTile.uls = drawTile.uls;
+        input.drawTile.ult = drawTile.ult;
+        input.drawTile.lrs = drawTile.lrs;
+        input.drawTile.lrt = drawTile.lrt;
+        input.width = width;
+        input.height = height;
+        input.tlut = tlut;
+
+        // The TLUT loads recorded at the palette half of TMEM (entry = TMEM word - 256).
+        std::vector<TextureNamePaletteLoad> paletteLoads;
+        if ((tlut != 0) || (drawTile.fmt == G_IM_FMT_CI)) {
+            const uint32_t paletteBase = RDP_TMEM_WORDS >> 1;
+            for (uint32_t t = paletteBase; t < RDP_TMEM_WORDS; t++) {
+                const LoadOperation &op = state->rdp->rice.lastLoadOpByTMEM[t];
+                if ((op.type != LoadOperation::Type::TLUT) || (op.texture.address == 0)) {
+                    continue;
+                }
+
+                const int columns = std::max((op.tile.lrs >> 2) - (op.tile.uls >> 2), 0) + 1;
+                const int rows = std::max((op.tile.lrt >> 2) - (op.tile.ult >> 2), 0) + 1;
+                TextureNamePaletteLoad paletteLoad;
+                paletteLoad.firstEntry = t - paletteBase;
+                paletteLoad.count = std::min(uint32_t(columns * rows), 256U - paletteLoad.firstEntry);
+                paletteLoad.address = op.texture.address;
+                paletteLoad.sequence = state->rdp->rice.lastLoadSeqByTMEM[t];
+                paletteLoads.emplace_back(paletteLoad);
+            }
+
+            input.paletteLoads = paletteLoads.data();
+            input.paletteLoadCount = paletteLoads.size();
+        }
+
+        provider->computeKey(input, key);
+        return key;
+    }
+
     // TextureManager
 
     void TextureManager::uploadEmpty(State *state, TextureCache *textureCache, uint64_t creationFrame, uint16_t width, uint16_t height, uint64_t replacementHash) {
@@ -51,12 +135,128 @@ namespace RT64 {
         return hash;
     }
 
+    // [wcw] aki-roadmap#105: a CI4 mat's TMEM with its painted rope-shadow lines filled in. Each line texel takes the
+    // palette entry nearest the colour interpolated from the texels on both sides of its line, so the GPU decodes the
+    // copy like any other texture. Returns empty when the texture has no lines.
+    // The listed mat hashes (WcwLogic::delineHashes) are TMEM hash v5: a new hash version needs them measured again.
+    static_assert(TMEMHasher::CurrentHashVersion == 5, "aki-roadmap#105: re-measure WcwLogic::delineHashes for the new hash version");
+
+    static std::vector<uint8_t> wcwDelineTMEM(const uint8_t *TMEM, const LoadTile &loadTile, uint32_t width, uint32_t height, uint32_t tlut, uint32_t &changedTexels) {
+        changedTexels = 0;
+        WcwTexDump::TileFormat tileFormat;
+        tileFormat.fmt = loadTile.fmt;
+        tileFormat.siz = loadTile.siz;
+        tileFormat.address = uint32_t(loadTile.tmem) << 3;
+        tileFormat.stride = uint32_t(loadTile.line) << 3;
+        tileFormat.tlut = tlut;
+        tileFormat.palette = loadTile.palette;
+        const std::vector<uint8_t> rgba = WcwTexDump::decodeTexture(TMEM, width, height, tileFormat);
+        std::vector<float> luminance(size_t(width) * height);
+        for (size_t i = 0; i < luminance.size(); i++) {
+            luminance[i] = 0.299f * rgba[i * 4 + 0] + 0.587f * rgba[i * 4 + 1] + 0.114f * rgba[i * 4 + 2];
+        }
+
+        const std::vector<WcwLogic::DelineLine> lines = WcwLogic::delineFind(luminance, width, height);
+        if (lines.empty()) {
+            return {};
+        }
+
+        std::vector<uint8_t> filled = rgba;
+        WcwLogic::delineFill(filled, width, height, lines);
+
+        // The tile's 16 palette colours, decoded like WcwTexDump does.
+        uint8_t palette[16 * 4];
+        for (uint32_t i = 0; i < 16; i++) {
+            const uint32_t address = 0x800 + (uint32_t(loadTile.palette) << 7) + (i << 3);
+            const uint32_t value = (uint32_t(TMEM[address & 0xFFF]) << 8) | TMEM[(address + 1) & 0xFFF];
+            uint8_t *c = &palette[i * 4];
+            if (tlut == WcwTexDump::TlutIA16) {
+                c[0] = c[1] = c[2] = uint8_t(value >> 8);
+                c[3] = uint8_t(value & 0xFF);
+            }
+            else {
+                const uint32_t r = (value >> 11) & 0x1F, g = (value >> 6) & 0x1F, b = (value >> 1) & 0x1F;
+                c[0] = uint8_t((r << 3) | (r >> 2));
+                c[1] = uint8_t((g << 3) | (g >> 2));
+                c[2] = uint8_t((b << 3) | (b >> 2));
+                c[3] = (value & 1) ? 255 : 0;
+            }
+        }
+
+        std::vector<uint8_t> bytes(TMEM, TMEM + RDP_TMEM_BYTES);
+        for (uint32_t y = 0; y < height; y++) {
+            for (uint32_t x = 0; x < width; x++) {
+                const size_t i = (size_t(y) * width + x) * 4;
+                if (memcmp(&filled[i], &rgba[i], 4) == 0) {
+                    continue;
+                }
+
+                const uint32_t index = WcwLogic::nearestPaletteIndex(&filled[i], palette, 16);
+                const uint32_t byte = WcwLogic::tmem4bTexelByte(tileFormat.address, tileFormat.stride, x, y);
+                const uint8_t updated = (x & 1) ? uint8_t((bytes[byte] & 0xF0) | index) : uint8_t((bytes[byte] & 0x0F) | (index << 4));
+                changedTexels += (updated != bytes[byte]) ? 1 : 0;
+                bytes[byte] = updated;
+            }
+        }
+
+        return bytes;
+    }
+
     uint64_t TextureManager::uploadTexture(State *state, const LoadTile &loadTile, TextureCache *textureCache, uint64_t creationFrame, uint16_t width, uint16_t height, uint32_t tlut) {
         const uint8_t *TMEM = reinterpret_cast<const uint8_t *>(state->rdp->TMEM);
+        // [wcw] aki-roadmap#119 (experiment): WCW_TEXHASH_LOG=1 logs, every 2 s, how many texture hashes ran, their time,
+        // how many were new, and the slowest call's tile.
+        static const bool wcwHashLog = getenv("WCW_TEXHASH_LOG") != nullptr;
+        std::chrono::steady_clock::time_point wcwT0;
+        if (wcwHashLog) wcwT0 = std::chrono::steady_clock::now();
         uint64_t hash = TMEMHasher::hash(TMEM, loadTile, width, height, tlut, TMEMHasher::CurrentHashVersion);
+        if (wcwHashLog) {
+            static std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
+            static uint64_t calls = 0, fresh = 0, rowCalls = 0;
+            static double totalUs = 0.0, maxUs = 0.0;
+            static uint32_t maxW = 0, maxH = 0, maxLine = 0, maxSiz = 0, maxFmt = 0, maxTlut = 0, maxTmem = 0, maxRows = 0;
+            const auto now = std::chrono::steady_clock::now();
+            const double us = std::chrono::duration<double, std::micro>(now - wcwT0).count();
+            const bool rows = TMEMHasher::needsToHashRowsIndividually(loadTile, width);
+            calls++;
+            rowCalls += rows ? 1 : 0;
+            fresh += (hashSet.find(hash) == hashSet.end()) ? 1 : 0;
+            totalUs += us;
+            if (us > maxUs) {
+                maxUs = us; maxW = width; maxH = height; maxLine = loadTile.line; maxSiz = loadTile.siz; maxFmt = loadTile.fmt;
+                maxTlut = tlut; maxTmem = loadTile.tmem; maxRows = rows;
+            }
+            if (std::chrono::duration<double>(now - last).count() >= 2.0) {
+                fprintf(stderr, "[wcw][texhash] %llu calls (%llu row-by-row, %llu new) %.1f ms; slowest %.0f us: %ux%u line %u siz %u fmt %u tlut %u tmem %u rows %u\n",
+                    (unsigned long long)calls, (unsigned long long)rowCalls, (unsigned long long)fresh, totalUs / 1000.0, maxUs,
+                    maxW, maxH, maxLine, maxSiz, maxFmt, maxTlut, maxTmem, maxRows);
+                last = now; calls = fresh = rowCalls = 0; totalUs = maxUs = 0.0;
+            }
+        }
         if (hashSet.find(hash) == hashSet.end()) {
             hashSet.insert(hash);
-            textureCache->queueGPUUploadTMEM(hash, creationFrame, TMEM, RDP_TMEM_BYTES, width, height, tlut, loadTile, true);
+            const TextureNameKey nameKey = computeTextureNames(state, loadTile, width, height, tlut);
+            textureCache->queueGPUUploadTMEM(hash, creationFrame, TMEM, RDP_TMEM_BYTES, width, height, tlut, loadTile, true, nameKey);
+        }
+
+        // [wcw] aki-roadmap#105: the listed mats also get a copy with their painted rope shadows filled in, which the
+        // renderer uses with RT on. It has its own cache key, so it is evicted and uploaded again like any texture.
+        if ((loadTile.fmt == WcwTexDump::FmtCI) && (loadTile.siz == WcwTexDump::Siz4b) && (tlut != 0) && TextureCache::wcwDelineListed(hash)) {
+            const uint64_t delinedHash = WcwLogic::delinedHash(hash);
+            if (hashSet.find(delinedHash) == hashSet.end()) {
+                hashSet.insert(delinedHash);
+                uint32_t changedTexels = 0;
+                const std::vector<uint8_t> delined = wcwDelineTMEM(TMEM, loadTile, width, height, tlut, changedTexels);
+                if (!delined.empty()) {
+                    textureCache->queueGPUUploadTMEM(delinedHash, creationFrame, delined.data(), int(delined.size()), width, height, tlut, loadTile, true);
+                }
+
+                static bool logged = false;
+                if (!logged) {
+                    logged = true;
+                    fprintf(stderr, "[wcw][deline] %016" PRIx64 ": %u texels filled in (RT on uses the copy)\n", hash, changedTexels);
+                }
+            }
         }
 
         // Dump memory contents into a file if the process is active.
