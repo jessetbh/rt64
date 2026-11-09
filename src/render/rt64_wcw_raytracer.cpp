@@ -203,6 +203,7 @@ namespace RT64 {
         mode = envMode;
         activeVenue = -1;
         venueSelector.reset();
+        roomGate.reset();
         presetsEdited = false;
         if (ec) {
             applyPresetFile();
@@ -271,6 +272,8 @@ namespace RT64 {
 
         frameTextureTris.clear();
         const double presentSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        roomSeconds = presentSeconds;
+        roomMeasured = presentMin[0] <= presentMax[0];
         static const bool venueCuts = (getenv("WCW_RT_VENUE_CUT") == nullptr) || (strcmp(getenv("WCW_RT_VENUE_CUT"), "0") != 0);
         venueSelector.cutsEnabled = venueCuts;
         const int recentBefore = venueSelector.recent();
@@ -324,7 +327,6 @@ namespace RT64 {
             }
         }
 
-        roomSeconds = presentSeconds;
         updateRoomPreset();
 
         static const bool venueLog = getenv("WCW_RT_VENUE_LOG") != nullptr;
@@ -363,7 +365,7 @@ namespace RT64 {
         const float extentZ = sceneMax[2] - sceneMin[2];
         const bool wasActive = roomActive;
         // Through a gate with hysteresis, not per frame: close-ups and cuts swing the measured size (aki-roadmap#244).
-        roomActive = roomGate.update(roomEnabled && (activeVenue < 0), sceneBoundsValid, std::max(extentX, extentZ), roomMaxExtent, roomSeconds);
+        roomActive = roomGate.update(roomEnabled && (activeVenue < 0), sceneBoundsValid && roomMeasured, std::max(extentX, extentZ), roomMaxExtent, roomSeconds);
         if (roomActive != wasActive) {
             fprintf(stderr, "[wcw rt] venue: %s\n", roomActive ? "room (fallback)" : "default");
         }

@@ -788,11 +788,11 @@ TEST_CASE("room gate: a small room turns it on after OnSeconds, and a wide scene
     RoomGate gate;
     double t = 0.0;
     for (; t < RoomGate::OnSeconds - 0.1; t += 1.0 / 30.0) {
-        CHECK(!gate.update(true, true, 1500.0f, 3000.0f, t));
+        CHECK(!gate.update(true, true, 2500.0f, 3000.0f, t));
     }
 
     for (; t < RoomGate::OnSeconds + 0.2; t += 1.0 / 30.0) {
-        gate.update(true, true, 1500.0f, 3000.0f, t);
+        gate.update(true, true, 2500.0f, 3000.0f, t);
     }
 
     CHECK(gate.active());
@@ -812,6 +812,50 @@ TEST_CASE("room gate: a small room turns it on after OnSeconds, and a wide scene
 
     CHECK(t - wideFrom >= RoomGate::OffSeconds - 1e-6);
     CHECK(t - wideFrom < RoomGate::OffSeconds + 0.1);
+}
+
+TEST_CASE("room gate: a cut frame during the wait doesn't restart it") {
+    RoomGate gate;
+    double t = 0.0;
+    bool sawSpike = false;
+    for (int i = 0; t < RoomGate::OnSeconds + 0.1; i++, t += 1.0 / 30.0) {
+        // One wide frame early in the wait (a cut frame).
+        const bool spike = (i == 5);
+        sawSpike = sawSpike || spike;
+        gate.update(true, true, spike ? 8000.0f : 1200.0f, 3000.0f, t);
+    }
+
+    CHECK(sawSpike);
+    CHECK(gate.active());
+}
+
+TEST_CASE("room gate: presents without 3D keep the state, and a gap between updates restarts the wait") {
+    RoomGate gate;
+    double t = 0.0;
+    // A long 2D screen after a close-up doesn't turn the room rig on.
+    gate.update(true, true, 1200.0f, 3000.0f, t);
+    for (t += 1.0 / 30.0; t < 5.0; t += 1.0 / 30.0) {
+        CHECK(!gate.update(true, false, 1200.0f, 3000.0f, t));
+    }
+
+    // Two small samples 2 s apart (RT was off, or a load) don't count as a room that stayed small.
+    gate.reset();
+    CHECK(!gate.update(true, true, 1200.0f, 3000.0f, 10.0));
+    CHECK(!gate.update(true, true, 1200.0f, 3000.0f, 12.0));
+}
+
+TEST_CASE("room gate: a matched venue during the wait starts it over") {
+    RoomGate gate;
+    double t = 0.0;
+    for (; t < RoomGate::OnSeconds * 0.8; t += 1.0 / 30.0) {
+        gate.update(true, true, 2500.0f, 3000.0f, t);
+    }
+
+    CHECK(!gate.update(false, true, 2500.0f, 3000.0f, t));
+    const double from = t + 1.0 / 30.0;
+    for (t = from; t < from + RoomGate::OnSeconds - 0.1; t += 1.0 / 30.0) {
+        CHECK(!gate.update(true, true, 2500.0f, 3000.0f, t));
+    }
 }
 
 TEST_CASE("room gate: a matched venue or a disabled room turns it off at once") {

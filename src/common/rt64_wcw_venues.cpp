@@ -456,14 +456,20 @@ namespace RT64::WcwLogic {
         return best;
     }
 
-    bool RoomGate::update(bool allowed, bool boundsValid, float extent, float maxExtent, double seconds) {
+    bool RoomGate::update(bool allowed, bool measured, float extent, float maxExtent, double seconds) {
+        const bool gap = (lastSeconds >= 0.0) && ((seconds - lastSeconds) > GapSeconds);
+        lastSeconds = seconds;
+        if (gap) {
+            pending = false;
+        }
+
         if (!allowed) {
             on = false;
             pending = false;
             return on;
         }
 
-        if (!boundsValid) {
+        if (!measured) {
             return on;
         }
 
@@ -471,7 +477,11 @@ namespace RT64::WcwLogic {
         const bool wantsOn = !on && (extent <= maxExtent);
         const bool wantsOff = on && (extent > maxExtent * OffMargin);
         if (!wantsOn && !wantsOff) {
-            pending = false;
+            // A short run of the other kind (a cut frame) doesn't restart the wait.
+            if (pending && ((seconds - pendingLastAgree) > SpikeSeconds)) {
+                pending = false;
+            }
+
             return on;
         }
 
@@ -480,7 +490,9 @@ namespace RT64::WcwLogic {
             pendingSince = seconds;
         }
 
-        if ((seconds - pendingSince) >= (on ? OffSeconds : OnSeconds)) {
+        pendingLastAgree = seconds;
+        const double needed = on ? OffSeconds : OnSeconds;
+        if ((seconds - pendingSince) >= needed) {
             on = !on;
             pending = false;
         }
@@ -492,6 +504,8 @@ namespace RT64::WcwLogic {
         on = false;
         pending = false;
         pendingSince = 0.0;
+        pendingLastAgree = 0.0;
+        lastSeconds = -1.0;
     }
 
     VenueSelector::Change VenueSelector::update(const std::vector<LightPreset> &venues, const std::vector<uint64_t> &textures, double seconds) {
