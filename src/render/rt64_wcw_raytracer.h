@@ -240,6 +240,8 @@ namespace RT64 {
         // in any preset (shadow, size, ...).
         bool roomEnabled = false;
         bool roomActive = false;
+        WcwLogic::RoomGate roomGate;
+        double roomSeconds = 0.0;
         float roomMaxExtent = 3000.0f;
         uint32_t roomCount = 3;
         float roomHeight = 0.85f;

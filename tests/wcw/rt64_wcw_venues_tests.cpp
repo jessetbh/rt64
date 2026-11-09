@@ -766,6 +766,68 @@ TEST_CASE("venue switching: a long 2D screen lets the venue go once, without sta
     CHECK_EQ(switches, 1);
 }
 
+// aki-roadmap#244: an unmatched arena whose camera alternates close-ups (small bounds) and wide shots (large bounds)
+// every second. Per frame, the room rig flipped on every close-up; through the gate it never turns on.
+TEST_CASE("room gate: close-ups in an unmatched arena don't turn the room rig on and off") {
+    RoomGate gate;
+    int flips = 0;
+    bool last = false;
+    double t = 0.0;
+    for (int i = 0; i < 30 * 40; i++, t += 1.0 / 30.0) {
+        const bool closeUp = (int(t) % 2) == 0;
+        const bool on = gate.update(true, true, closeUp ? 1200.0f : 6000.0f, 3000.0f, t);
+        flips += (on != last) ? 1 : 0;
+        last = on;
+    }
+
+    CHECK_EQ(flips, 0);
+    CHECK(!gate.active());
+}
+
+TEST_CASE("room gate: a small room turns it on after OnSeconds, and a wide scene turns it off after OffSeconds") {
+    RoomGate gate;
+    double t = 0.0;
+    for (; t < RoomGate::OnSeconds - 0.1; t += 1.0 / 30.0) {
+        CHECK(!gate.update(true, true, 1500.0f, 3000.0f, t));
+    }
+
+    for (; t < RoomGate::OnSeconds + 0.2; t += 1.0 / 30.0) {
+        gate.update(true, true, 1500.0f, 3000.0f, t);
+    }
+
+    CHECK(gate.active());
+    // One wide frame (a fade, a cut out and back) and the band between maxExtent and the margin don't drop it.
+    CHECK(gate.update(true, true, 9000.0f, 3000.0f, t));
+    t += 1.0 / 30.0;
+    for (double end = t + 2.0; t < end; t += 1.0 / 30.0) {
+        CHECK(gate.update(true, true, 3500.0f, 3000.0f, t));
+    }
+
+    // No bounds (a 2D screen) keeps the state.
+    CHECK(gate.update(true, false, 0.0f, 3000.0f, t));
+    const double wideFrom = t;
+    while (gate.update(true, true, 9000.0f, 3000.0f, t)) {
+        t += 1.0 / 30.0;
+    }
+
+    CHECK(t - wideFrom >= RoomGate::OffSeconds - 1e-6);
+    CHECK(t - wideFrom < RoomGate::OffSeconds + 0.1);
+}
+
+TEST_CASE("room gate: a matched venue or a disabled room turns it off at once") {
+    RoomGate gate;
+    double t = 0.0;
+    for (; t < RoomGate::OnSeconds + 0.5; t += 1.0 / 30.0) {
+        gate.update(true, true, 1000.0f, 3000.0f, t);
+    }
+
+    CHECK(gate.active());
+    CHECK(!gate.update(false, true, 1000.0f, 3000.0f, t));
+    // And it needs the full OnSeconds again afterwards.
+    t += 1.0 / 30.0;
+    CHECK(!gate.update(true, true, 1000.0f, 3000.0f, t));
+}
+
 TEST_CASE("venue switching: a frame from before a 2D screen doesn't pair with the next scene's first frame") {
     // World Tour: the DOA arena also draws every WCW texture, and the menu before it draws only WCW's. A menu frame
     // left over from before the VS screen plus the arena's first frame pointed to WCW; the arena is DOA (the later venue

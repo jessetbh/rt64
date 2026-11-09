@@ -310,6 +310,33 @@ namespace RT64::WcwLogic {
         double candidateSince = 0.0;
     };
 
+    // Whether the room fallback rig is on (aki-roadmap#244). The scene's size comes from each frame's bounds, which swing
+    // with the camera: in an arena no venue matches (an entrance stage, a hack's arena), a close-up or a cut measures
+    // "small" and the next wide shot "large", so deciding per frame turned the room rig on and off every few seconds
+    // (the lights went off and on). The gate:
+    // - turns off at once when the room can't apply (room disabled, or a venue matched: its rig wins);
+    // - turns on only after the scene stayed within maxExtent for OnSeconds;
+    // - turns off only after the scene stayed above maxExtent * OffMargin for OffSeconds (a single wide frame, a fade or
+    //   a 2D screen doesn't drop it);
+    // - keeps its state while the bounds aren't known (no 3D drawn).
+    class RoomGate {
+    public:
+        static constexpr double OnSeconds = 3.0;
+        static constexpr double OffSeconds = 0.5;
+        static constexpr float OffMargin = 1.25f;
+
+        // allowed: the room rig is enabled and no venue is active. extent: the larger of the scene's X and Z sizes;
+        // boundsValid: false when nothing was measured. Returns whether the room rig is on.
+        bool update(bool allowed, bool boundsValid, float extent, float maxExtent, double seconds);
+        bool active() const { return on; }
+        void reset();
+
+    private:
+        bool on = false;
+        bool pending = false;
+        double pendingSince = 0.0;
+    };
+
     std::vector<uint64_t> newVenueMatch(const std::vector<std::pair<uint64_t, uint32_t>> &stableTextures,
         const std::vector<LightPreset> &venues, size_t maxCount = 15);
 };

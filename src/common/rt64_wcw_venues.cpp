@@ -456,6 +456,44 @@ namespace RT64::WcwLogic {
         return best;
     }
 
+    bool RoomGate::update(bool allowed, bool boundsValid, float extent, float maxExtent, double seconds) {
+        if (!allowed) {
+            on = false;
+            pending = false;
+            return on;
+        }
+
+        if (!boundsValid) {
+            return on;
+        }
+
+        // Inside the band between maxExtent and maxExtent * OffMargin, nothing pulls either way.
+        const bool wantsOn = !on && (extent <= maxExtent);
+        const bool wantsOff = on && (extent > maxExtent * OffMargin);
+        if (!wantsOn && !wantsOff) {
+            pending = false;
+            return on;
+        }
+
+        if (!pending) {
+            pending = true;
+            pendingSince = seconds;
+        }
+
+        if ((seconds - pendingSince) >= (on ? OffSeconds : OnSeconds)) {
+            on = !on;
+            pending = false;
+        }
+
+        return on;
+    }
+
+    void RoomGate::reset() {
+        on = false;
+        pending = false;
+        pendingSince = 0.0;
+    }
+
     VenueSelector::Change VenueSelector::update(const std::vector<LightPreset> &venues, const std::vector<uint64_t> &textures, double seconds) {
         std::vector<uint64_t> unique = textures;
         std::sort(unique.begin(), unique.end());

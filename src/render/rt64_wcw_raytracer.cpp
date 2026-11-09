@@ -324,6 +324,7 @@ namespace RT64 {
             }
         }
 
+        roomSeconds = presentSeconds;
         updateRoomPreset();
 
         static const bool venueLog = getenv("WCW_RT_VENUE_LOG") != nullptr;
@@ -361,7 +362,8 @@ namespace RT64 {
         const float extentX = sceneMax[0] - sceneMin[0];
         const float extentZ = sceneMax[2] - sceneMin[2];
         const bool wasActive = roomActive;
-        roomActive = roomEnabled && (activeVenue < 0) && sceneBoundsValid && (std::max(extentX, extentZ) <= roomMaxExtent);
+        // Through a gate with hysteresis, not per frame: close-ups and cuts swing the measured size (aki-roadmap#244).
+        roomActive = roomGate.update(roomEnabled && (activeVenue < 0), sceneBoundsValid, std::max(extentX, extentZ), roomMaxExtent, roomSeconds);
         if (roomActive != wasActive) {
             fprintf(stderr, "[wcw rt] venue: %s\n", roomActive ? "room (fallback)" : "default");
         }
