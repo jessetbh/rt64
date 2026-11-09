@@ -310,6 +310,39 @@ namespace RT64::WcwLogic {
         double candidateSince = 0.0;
     };
 
+    // Whether the room fallback rig is on (aki-roadmap#244). The scene's size comes from each frame's bounds, which swing
+    // with the camera: in an arena no venue matches (an entrance stage, a hack's arena), a close-up or a cut measures
+    // "small" and the next wide shot "large", so deciding per frame turned the room rig on and off every few seconds
+    // (the lights went off and on). The gate:
+    // - turns off at once when the room can't apply (room disabled, or a venue matched: its rig wins);
+    // - turns on after the scene stayed within maxExtent for OnSeconds (a real room waits that long on the default rig;
+    //   shorter brings the flicker back: close-ups in an arena measure as small as a room);
+    // - turns off only after the scene stayed above maxExtent * OffMargin for OffSeconds;
+    // - lets frames of the other kind shorter than SpikeSeconds (a cut frame, one wide frame) not restart the wait;
+    // - keeps its state for presents that measured no 3D (a 2D screen, a fade), and starts the wait over after a gap of
+    //   more than GapSeconds between updates (RT off, a load), so two samples far apart never count as "stayed".
+    class RoomGate {
+    public:
+        static constexpr double OnSeconds = 2.0;
+        static constexpr double OffSeconds = 0.5;
+        static constexpr float OffMargin = 1.25f;
+        static constexpr double SpikeSeconds = 0.2;
+        static constexpr double GapSeconds = 0.25;
+
+        // allowed: the room rig is enabled and no venue is active. measured: this present drew 3D, so extent (the larger
+        // of the scene's X and Z sizes) is this present's. Returns whether the room rig is on.
+        bool update(bool allowed, bool measured, float extent, float maxExtent, double seconds);
+        bool active() const { return on; }
+        void reset();
+
+    private:
+        bool on = false;
+        bool pending = false;
+        double pendingSince = 0.0;
+        double pendingLastAgree = 0.0;
+        double lastSeconds = -1.0;
+    };
+
     std::vector<uint64_t> newVenueMatch(const std::vector<std::pair<uint64_t, uint32_t>> &stableTextures,
         const std::vector<LightPreset> &venues, size_t maxCount = 15);
 };

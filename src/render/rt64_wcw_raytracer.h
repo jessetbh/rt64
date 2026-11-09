@@ -240,6 +240,9 @@ namespace RT64 {
         // in any preset (shadow, size, ...).
         bool roomEnabled = false;
         bool roomActive = false;
+        WcwLogic::RoomGate roomGate;
+        double roomSeconds = 0.0;
+        bool roomMeasured = false; // the last present drew 3D (its bounds are sceneMin/sceneMax)
         float roomMaxExtent = 3000.0f;
         uint32_t roomCount = 3;
         float roomHeight = 0.85f;
