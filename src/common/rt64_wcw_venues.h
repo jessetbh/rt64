@@ -264,11 +264,20 @@ namespace RT64::WcwLogic {
     //   camera swing inside a venue still shows textures from the frames before it (the ring, the floor), so it waits
     //   for the window as before. Without this the No Mercy intro lit its Raw ring shots (no rig recognizes them) with
     //   the Backlash entrance rig for 2.3 s.
+    // - Losing an established venue (aki-roadmap#244): once the window has confirmed the active venue for
+    //   EstablishSeconds (and the last frames show it on their own), the window drops it to no venue only after its
+    //   textures were missing from the window for LoseSeconds, not HoldSeconds. Close-ups in a match (a hold, a pin, a taunt) draw a few floor and ring textures
+    //   and none of the venue's own: after 2.3 s of that the rig went to default, and the next wide shot cut straight
+    //   back, so the lights went off and on. Real scene changes still leave at once through the cut rules (another
+    //   venue, or a new unmatched scene), and a venue that was never confirmed (a two-frame false match) still goes
+    //   after the hold.
     // The window and hold are in seconds (they were 60 and 10 presents), so they don't depend on the game's rate.
     class VenueSelector {
     public:
         static constexpr double WindowSeconds = 2.0;
         static constexpr double HoldSeconds = 1.0 / 3.0;
+        static constexpr double EstablishSeconds = 2.0;
+        static constexpr double LoseSeconds = 6.0;
         static constexpr uint32_t CutFrames = 2;
         // Textured frames older than this don't count towards a cut (they are from before a 2D screen or a pause).
         static constexpr double RecentSeconds = 0.25;
@@ -295,6 +304,7 @@ namespace RT64::WcwLogic {
 
     private:
         void restartWindow(double seconds);
+        void setActive(int venue, double seconds);
 
         struct Frame {
             double seconds;
@@ -308,6 +318,9 @@ namespace RT64::WcwLogic {
         int recentVenue = -1;
         int candidateVenue = -1;
         double candidateSince = 0.0;
+        // When the active venue took over, and whether the window has confirmed it for EstablishSeconds since.
+        double activeSince = 0.0;
+        bool established = false;
     };
 
     // Whether the room fallback rig is on (aki-roadmap#244). The scene's size comes from each frame's bounds, which swing

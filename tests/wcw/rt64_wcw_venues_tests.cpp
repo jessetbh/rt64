@@ -666,18 +666,18 @@ TEST_CASE("venue switching: a close-up showing only the shared ring texture keep
     CHECK_EQ(selector.active(), 0);
 }
 
-TEST_CASE("venue switching: a cut to an unmatched scene with few textures waits for the window, at the same time at any game rate") {
+TEST_CASE("venue switching: a cut to an unmatched scene with few textures waits for the window and the lose time, at the same time at any game rate") {
     const std::vector<LightPreset> venues = twoVenues();
-    // Fewer new textures than NewSceneMin: too little to call it a new scene.
+    // Fewer new textures than NewSceneMin: too little to call it a new scene (a close-up looks the same).
     const std::vector<uint64_t> unmatched = { 0xC1, 0xC2 };
     double delays[2];
     const double rates[2] = { 30.0, 60.0 };
     for (int r = 0; r < 2; r++) {
         VenueSelector selector;
         const double t = feed(selector, venues, ArenaA, 0.0, 3.0, rates[r]);
-        delays[r] = timeUntil(selector, venues, unmatched, -1, t, rates[r]);
-        CHECK(delays[r] >= VenueSelector::WindowSeconds);
-        CHECK(delays[r] <= VenueSelector::WindowSeconds + VenueSelector::HoldSeconds + 2.0 / rates[r]);
+        delays[r] = timeUntil(selector, venues, unmatched, -1, t, rates[r], 15.0);
+        CHECK(delays[r] >= VenueSelector::WindowSeconds + VenueSelector::LoseSeconds);
+        CHECK(delays[r] <= VenueSelector::WindowSeconds + VenueSelector::LoseSeconds + 2.0 / rates[r]);
     }
 
     CHECK_NEAR(delays[0], delays[1], 2.0 / 30.0);
@@ -764,6 +764,80 @@ TEST_CASE("venue switching: a long 2D screen lets the venue go once, without sta
 
     CHECK_EQ(selector.active(), -1);
     CHECK_EQ(switches, 1);
+}
+
+// aki-roadmap#244, the venue half: in a match, close-ups (a hold, a pin) draw a few floor textures and none of the
+// venue's own. Each one longer than the window plus the hold (2.3 s) dropped the rig to default, and the next wide shot
+// cut straight back: two switches per close-up, the lights going off and on.
+namespace {
+    const std::vector<uint64_t> CloseUp = { 0xF1, 0xF2, 0xF3 };
+
+    int closeUpSwitches(VenueSelector &selector, const std::vector<LightPreset> &venues, double rate) {
+        double t = feed(selector, venues, ArenaA, 0.0, 3.0, rate);
+        int switches = 0;
+        for (int round = 0; round < 10; round++) {
+            for (int i = 0; i < int(3.0 * rate); i++, t += 1.0 / rate) {
+                switches += (selector.update(venues, CloseUp, t) != VenueSelector::Change::None) ? 1 : 0;
+            }
+
+            for (int i = 0; i < int(1.0 * rate); i++, t += 1.0 / rate) {
+                switches += (selector.update(venues, ArenaA, t) != VenueSelector::Change::None) ? 1 : 0;
+            }
+        }
+
+        return switches;
+    }
+}
+
+TEST_CASE("venue switching: 3 s close-ups between wide shots keep an established venue (no off/on flip-flop)") {
+    const std::vector<LightPreset> venues = twoVenues();
+    for (double rate : { 30.0, 60.0 }) {
+        VenueSelector selector;
+        CHECK_EQ(closeUpSwitches(selector, venues, rate), 0);
+        CHECK_EQ(selector.active(), 0);
+    }
+}
+
+TEST_CASE("venue switching: an established venue still goes after a long absence, once") {
+    const std::vector<LightPreset> venues = twoVenues();
+    VenueSelector selector;
+    double t = feed(selector, venues, ArenaA, 0.0, 3.0, 30.0);
+    int switches = 0;
+    for (int i = 0; i < 30 * 12; i++, t += 1.0 / 30.0) {
+        switches += (selector.update(venues, CloseUp, t) != VenueSelector::Change::None) ? 1 : 0;
+    }
+
+    CHECK_EQ(selector.active(), -1);
+    CHECK_EQ(switches, 1);
+}
+
+TEST_CASE("venue switching: real cuts still switch at once from an established venue") {
+    const std::vector<LightPreset> venues = twoVenues();
+    VenueSelector selector;
+    double t = feed(selector, venues, wideShotA(), 0.0, 3.0, 30.0);
+    // Another venue.
+    CHECK_NEAR(timeUntil(selector, venues, ArenaB, 1, t, 30.0), 2.0 / 30.0, 1e-6);
+    t = feed(selector, venues, ArenaB, t + 2.0 / 30.0, 3.0, 30.0);
+    // A new unmatched scene.
+    std::vector<uint64_t> elsewhere;
+    for (uint64_t h = 0xD0; h < 0xD0 + VenueSelector::NewSceneMin; h++) {
+        elsewhere.push_back(h);
+    }
+
+    CHECK_NEAR(timeUntil(selector, venues, elsewhere, -1, t, 30.0), 2.0 / 30.0, 1e-6);
+}
+
+TEST_CASE("venue switching: a two-frame false match is never established and goes after the hold") {
+    // BTBW's attract: an unmatched arena showed the Boiler room's textures on two frames now and then.
+    const std::vector<LightPreset> venues = twoVenues();
+    VenueSelector selector;
+    double t = feed(selector, venues, CloseUp, 0.0, 1.0, 30.0);
+    selector.update(venues, ArenaB, t);
+    selector.update(venues, ArenaB, t + 1.0 / 30.0);
+    CHECK_EQ(selector.active(), 1);
+    const double delay = timeUntil(selector, venues, CloseUp, -1, t + 2.0 / 30.0, 30.0);
+    CHECK(delay > 0.0);
+    CHECK(delay <= VenueSelector::WindowSeconds + VenueSelector::HoldSeconds + 2.0 / 30.0);
 }
 
 // aki-roadmap#244: an unmatched arena whose camera alternates close-ups (small bounds) and wide shots (large bounds)
@@ -879,7 +953,7 @@ TEST_CASE("venue switching: a frame from before a 2D screen doesn't pair with th
     const std::vector<LightPreset> venues = twoVenues();
     VenueSelector selector;
     double t = feed(selector, venues, ArenaA, 0.0, 3.0, 30.0);
-    t = feed(selector, venues, {}, t, 3.0, 30.0);
+    t = feed(selector, venues, {}, t, VenueSelector::WindowSeconds + VenueSelector::LoseSeconds + 1.0, 30.0);
     CHECK_EQ(selector.active(), -1);
     std::vector<uint64_t> both = ArenaA;
     both.insert(both.end(), ArenaB.begin(), ArenaB.end());
