@@ -26,6 +26,21 @@ namespace RT64::WcwLogic {
     // read until it ran off RDRAM (WWF Legends: Challenge 64, uls 4080 lrs 60 on Superstar Select, aki-roadmap#192).
     bool tlutLoadIsEmpty(uint32_t uls, uint32_t ult, uint32_t lrs, uint32_t lrt);
 
+    // Microcode (GBI) lookup
+
+    enum class GbiPick {
+        Matched,    // the text and data hashes share an instance: use it
+        DataOnly,   // the data hash names exactly one instance: use it although the text missed or disagreed
+        None        // no lookup result: the interpreter keeps the GBI it had (never a null GBI to run lists with)
+    };
+
+    // Which GBI a ucode gets from its text and data segment hashes. ROM hacks put hook code and name strings in the
+    // text's unused padding, so its hash misses (VPW64 Deluxe, Badd Blood, Mixtape: one hash entry per hack build,
+    // aki-roadmap#218, #222), while the data segment, which holds the ucode's name and tables, stays stock. A data
+    // match naming exactly one ucode is enough (aki-roadmap#282: the 0.3.0 import's Deluxe build had new text
+    // hashes and crashed reading a null GBI's map, READ 0x6F0).
+    GbiPick gbiPick(bool textMatched, bool dataMatched, bool sharedInstance, size_t dataInstances);
+
     // Ray-traced shadows
 
     // Other scenes stay shadow casters for this many game frames after their last build. Counted in game frames,

@@ -2503,6 +2503,21 @@ TEST_CASE("mat de-line: the de-lined copy has its own cache key, and the list ho
     CHECK(delineHashes("00000000000000ff", true).empty());
 }
 
+TEST_CASE("gbiPick: a stock data segment naming one ucode is enough when a hack changed the text (aki-roadmap#282)") {
+    CHECK(gbiPick(true, true, true, 1) == GbiPick::Matched);
+    CHECK(gbiPick(true, true, true, 3) == GbiPick::Matched);
+    // VPW64 Deluxe from the 0.3.0 import: F3DLX.Rej xbus 2.08 text with hook code (no entry), data 0x420 stock.
+    CHECK(gbiPick(false, true, false, 1) == GbiPick::DataOnly);
+    // Text and data matched different ucodes: a one-ucode data segment decides.
+    CHECK(gbiPick(true, true, false, 1) == GbiPick::DataOnly);
+    // A data segment several ucodes share can't tell them apart.
+    CHECK(gbiPick(false, true, false, 2) == GbiPick::None);
+    CHECK(gbiPick(true, true, false, 2) == GbiPick::None);
+    // Nothing known about the data: no pick (the text alone has never been trusted).
+    CHECK(gbiPick(true, false, false, 0) == GbiPick::None);
+    CHECK(gbiPick(false, false, false, 0) == GbiPick::None);
+}
+
 int main() {
     return WcwTest::runAll("rt64 wcw tests");
 }

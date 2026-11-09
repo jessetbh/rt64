@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cinttypes>
 
+#include "common/rt64_wcw_logic.h"
 #include "rt64_gbi_extended.h"
 #include "rt64_gbi_f3d.h"
 #include "rt64_gbi_f3dgolden.h"
@@ -478,7 +479,37 @@ namespace RT64 {
             hashSegment(i, dataSegments[i], dataSegmentIndex);
         }
 
-        if (textSegmentIndex < 0 || dataSegmentIndex < 0) {
+        // Search for the first intersection available between both segments.
+        const GBIInstance *matchingInstance = nullptr;
+        if ((textSegmentIndex >= 0) && (dataSegmentIndex >= 0)) {
+            for (const GBIInstance *textInstance : textSegments[textSegmentIndex].instances) {
+                for (const GBIInstance *dataInstance : dataSegments[dataSegmentIndex].instances) {
+                    if (textInstance == dataInstance) {
+                        matchingInstance = dataInstance;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // [wcw] aki-roadmap#282: a hack's text (hooks in its padding) misses, its stock data names the ucode.
+        const size_t dataInstances = (dataSegmentIndex >= 0) ? dataSegments[dataSegmentIndex].instances.size() : 0;
+        const WcwLogic::GbiPick pick = WcwLogic::gbiPick(textSegmentIndex >= 0, dataSegmentIndex >= 0, matchingInstance != nullptr, dataInstances);
+        if (pick == WcwLogic::GbiPick::DataOnly) {
+            matchingInstance = dataSegments[dataSegmentIndex].instances[0];
+            static int dataOnlyLogs = 0;   // the lookup runs on every switch between a game's ucodes
+            if (dataOnlyLogs++ < 4) fprintf(stderr, "[wcw][gbi] text hash %s; the data segment names '%s': using it (text=0x%X data=0x%X texthash(0x1000)=0x%016" PRIX64 "ULL)\n",
+                (textSegmentIndex < 0) ? "not in the database" : "names another ucode", matchingInstance->name, textAddress, dataAddress,
+                XXH3_64bits(&RDRAM[textAddress], 0x1000));
+        }
+
+        if (pick == WcwLogic::GbiPick::None) {
+            // An unknown ucode now keeps the previous GBI (rt64_interpreter.cpp), so this can repeat every ucode switch.
+            static int missLogs = 0;
+            if (missLogs++ >= 4) {
+                return nullptr;
+            }
+
             fprintf(stderr, "Unable to find a matching GBI in the current database. This game is not supported in HLE.\n");
             deduceGBIInformation(RDRAM, textAddress, dataAddress);
             // [wcw2k] DIAGNOSTIC: print hashes at common segment sizes so an unknown ucode
@@ -492,24 +523,6 @@ namespace RT64 {
                 fprintf(stderr, "[wcw][gbi] datahash(len=0x%X)=0x%016" PRIX64 "ULL data=0x%X\n",
                     dlen, XXH3_64bits(&RDRAM[dataAddress], dlen), dataAddress);
             }
-            return nullptr;
-        }
-
-        // Search for the first intersection available between both segments.
-        const GBISegment &textSegment = textSegments[textSegmentIndex];
-        const GBISegment &dataSegment = dataSegments[dataSegmentIndex];
-        const GBIInstance *matchingInstance = nullptr;
-        for (const GBIInstance *textInstance : textSegment.instances) {
-            for (const GBIInstance *dataInstance : dataSegment.instances) {
-                if (textInstance == dataInstance) {
-                    matchingInstance = dataInstance;
-                    break;
-                }
-            }
-        }
-
-        if (matchingInstance == nullptr) {
-            fprintf(stderr, "Unable to find a GBI that is shared between the text and data segment. Is the GBI database configured incorrectly?\n");
             return nullptr;
         }
 
