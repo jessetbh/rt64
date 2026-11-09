@@ -27,6 +27,18 @@ namespace RT64::WcwLogic {
         return ((lrs >> 2) < (uls >> 2)) || ((lrt >> 2) < (ult >> 2));
     }
 
+    GbiPick gbiPick(bool textMatched, bool dataMatched, bool sharedInstance, size_t dataInstances) {
+        if (textMatched && dataMatched && sharedInstance) {
+            return GbiPick::Matched;
+        }
+
+        if (dataMatched && (dataInstances == 1)) {
+            return GbiPick::DataOnly;
+        }
+
+        return GbiPick::None;
+    }
+
     bool shadowCasterFresh(uint64_t frameCounter, uint64_t builtFrame) {
         return (frameCounter >= builtFrame) && ((frameCounter - builtFrame) <= ShadowCasterStaleFrames);
     }

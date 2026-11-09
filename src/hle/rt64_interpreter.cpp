@@ -35,9 +35,16 @@ namespace RT64 {
         const uint32_t maskedTextAddress = textAddress & AddressMask;
         const uint32_t maskedDataAddress = dataAddress & AddressMask;
         if ((UCode.textAddress != maskedTextAddress) || (UCode.dataAddress != maskedDataAddress)) {
-            hleGBI = gbiManager.getGBIForUCode(state->RDRAM, maskedTextAddress, maskedDataAddress);
-            if (hleGBI != nullptr) {
+            // [wcw] aki-roadmap#282: an unknown ucode keeps the GBI it had instead of a null one, which the next display
+            // list dereferenced (READ 0x6F0: map[0xDE]). The first unknown one runs no lists (processDisplayLists).
+            GBI *found = gbiManager.getGBIForUCode(state->RDRAM, maskedTextAddress, maskedDataAddress);
+            if (found != nullptr) {
+                hleGBI = found;
                 state->rsp->setGBI(hleGBI);
+            }
+            else if (hleGBI != nullptr) {
+                static int keptLogs = 0;
+                if (keptLogs++ < 4) fprintf(stderr, "[wcw][gbi] unknown ucode (text=0x%X data=0x%X): keeping the previous GBI\n", maskedTextAddress, maskedDataAddress);
             }
 
             UCode.textAddress = maskedTextAddress;
@@ -157,7 +164,15 @@ namespace RT64 {
     }
 
     void Interpreter::processDisplayLists(uint32_t dlStartAdddress, DisplayList *dlStart) {
-        assert(hleGBI != nullptr);
+        // [wcw] aki-roadmap#282: no GBI known yet (the first ucode is unknown): run nothing rather than crash.
+        if (hleGBI == nullptr) {
+            static bool warned = false;
+            if (!warned) {
+                warned = true;
+                fprintf(stderr, "[wcw][gbi] no known GBI for this ucode: display lists skipped until one is loaded\n");
+            }
+            return;
+        }
 
         state->dlCpuProfiler.start();
 
