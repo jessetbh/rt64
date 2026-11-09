@@ -568,7 +568,7 @@ namespace RT64::WcwLogic {
 
         recentVenue = (recentFrames.size() == CutFrames) ? bestVenue(venues, seenOnEach, MinScore) : -1;
         if (activeVenue >= int(venues.size())) {
-            activeVenue = -1;
+            setActive(-1, seconds);
         }
 
         if (cutsEnabled && textured && (recentVenue >= 0) && (recentVenue != activeVenue) &&
@@ -602,7 +602,7 @@ namespace RT64::WcwLogic {
             return Change::None;
         }
 
-        // Not confirmed on every frame since it took over: the confirmation starts over.
+        // The window stopped agreeing before the venue was established: the confirmation starts over.
         if (!established) {
             activeSince = seconds;
         }

@@ -266,7 +266,10 @@ namespace RT64::WcwLogic {
     //   the Backlash entrance rig for 2.3 s.
     // - Losing an established venue (aki-roadmap#244): once the window has confirmed the active venue for
     //   EstablishSeconds (and the last frames show it on their own), the window drops it to no venue only after its
-    //   textures were missing from the window for LoseSeconds, not HoldSeconds. Close-ups in a match (a hold, a pin, a taunt) draw a few floor and ring textures
+    //   textures were missing from the window for LoseSeconds, not HoldSeconds: 6 s after they were last drawn
+    //   (WindowSeconds + LoseSeconds) instead of 2.3 s. Kept short of longer because an unmatched 3D scene that shares
+    //   textures with the venue (wrestlers carried over) can't trigger the new-scene cut and keeps the rig that long.
+    //   Close-ups in a match (a hold, a pin, a taunt) draw a few floor and ring textures
     //   and none of the venue's own: after 2.3 s of that the rig went to default, and the next wide shot cut straight
     //   back, so the lights went off and on. Real scene changes still leave at once through the cut rules (another
     //   venue, or a new unmatched scene), and a venue that was never confirmed (a two-frame false match) still goes
@@ -277,7 +280,7 @@ namespace RT64::WcwLogic {
         static constexpr double WindowSeconds = 2.0;
         static constexpr double HoldSeconds = 1.0 / 3.0;
         static constexpr double EstablishSeconds = 2.0;
-        static constexpr double LoseSeconds = 6.0;
+        static constexpr double LoseSeconds = 4.0;
         static constexpr uint32_t CutFrames = 2;
         // Textured frames older than this don't count towards a cut (they are from before a 2D screen or a pause).
         static constexpr double RecentSeconds = 0.25;

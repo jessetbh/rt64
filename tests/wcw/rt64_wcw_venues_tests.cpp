@@ -836,6 +836,21 @@ TEST_CASE("venue switching: a two-frame false match is never established and goe
     selector.update(venues, ArenaB, t + 1.0 / 30.0);
     CHECK_EQ(selector.active(), 1);
     const double delay = timeUntil(selector, venues, CloseUp, -1, t + 2.0 / 30.0, 30.0);
+    CHECK(delay >= VenueSelector::WindowSeconds - 2.0 / 30.0);
+    CHECK(delay <= VenueSelector::WindowSeconds + VenueSelector::HoldSeconds + 2.0 / 30.0);
+}
+
+TEST_CASE("venue switching: a venue reached through the window doesn't inherit the previous venue's established state") {
+    const std::vector<LightPreset> venues = twoVenues();
+    VenueSelector selector;
+    selector.cutsEnabled = false;
+    double t = feed(selector, venues, ArenaA, 0.0, 4.0, 30.0);
+    CHECK_EQ(selector.active(), 0);
+    // B takes over through the window (no cuts), then a close-up right away: B isn't established, so it goes after
+    // the hold, not the lose time.
+    t = feed(selector, venues, ArenaB, t, 1.0, 30.0);
+    CHECK_EQ(selector.active(), 1);
+    const double delay = timeUntil(selector, venues, CloseUp, -1, t, 30.0);
     CHECK(delay > 0.0);
     CHECK(delay <= VenueSelector::WindowSeconds + VenueSelector::HoldSeconds + 2.0 / 30.0);
 }
