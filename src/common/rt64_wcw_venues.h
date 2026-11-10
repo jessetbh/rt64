@@ -336,10 +336,14 @@ namespace RT64::WcwLogic {
     // - turns off only after the scene stayed above maxExtent * OffMargin for OffSeconds;
     // - lets frames of the other kind shorter than SpikeSeconds (a cut frame, one wide frame) not restart the wait;
     // - keeps its state for presents that measured no 3D (a 2D screen, a fade), and starts the wait over after a gap of
-    //   more than GapSeconds between updates (RT off, a load), so two samples far apart never count as "stayed".
+    //   more than GapSeconds between updates (RT off, a load), so two samples far apart never count as "stayed";
+    // - comes back at once when it was on and the room couldn't apply for at most BriefSeconds (a brief venue cut hit:
+    //   BTBW's entrance matched the Boiler room and the Locker room for ~1.2 s each). It went room -> venue -> default
+    //   for OnSeconds -> room; now room -> venue -> room. Longer than BriefSeconds, it waits OnSeconds as before.
     class RoomGate {
     public:
         static constexpr double OnSeconds = 2.0;
+        static constexpr double BriefSeconds = 2.0;
         static constexpr double OffSeconds = 0.5;
         static constexpr float OffMargin = 1.25f;
         static constexpr double SpikeSeconds = 0.2;
@@ -357,6 +361,9 @@ namespace RT64::WcwLogic {
         double pendingSince = 0.0;
         double pendingLastAgree = 0.0;
         double lastSeconds = -1.0;
+        // It was on when the room stopped applying, at blockedSince (resumes at once within BriefSeconds).
+        bool resumable = false;
+        double blockedSince = 0.0;
     };
 
     std::vector<uint64_t> newVenueMatch(const std::vector<std::pair<uint64_t, uint32_t>> &stableTextures,

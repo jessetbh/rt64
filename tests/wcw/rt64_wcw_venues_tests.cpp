@@ -956,9 +956,67 @@ TEST_CASE("room gate: a matched venue or a disabled room turns it off at once") 
 
     CHECK(gate.active());
     CHECK(!gate.update(false, true, 1000.0f, 3000.0f, t));
-    // And it needs the full OnSeconds again afterwards.
-    t += 1.0 / 30.0;
-    CHECK(!gate.update(true, true, 1000.0f, 3000.0f, t));
+    // Blocked for longer than BriefSeconds, it needs the full OnSeconds again afterwards.
+    for (const double end = t + RoomGate::BriefSeconds + 0.5; t < end; t += 1.0 / 30.0) {
+        CHECK(!gate.update(false, true, 1000.0f, 3000.0f, t));
+    }
+
+    const double from = t;
+    for (; t < from + RoomGate::OnSeconds - 0.1; t += 1.0 / 30.0) {
+        CHECK(!gate.update(true, true, 1000.0f, 3000.0f, t));
+    }
+}
+
+// aki-roadmap#244 follow-up: BTBW's entrance (no venue matches, the room rig on) briefly matched the Boiler room and
+// the Locker room through cut hits, ~1.2 s each. The room rig went room -> venue -> default for OnSeconds -> room
+// (two extra rig switches per hit); it comes back at once now.
+TEST_CASE("room gate: a brief venue cut hit goes straight back to the room rig") {
+    RoomGate gate;
+    double t = 0.0;
+    for (; t < RoomGate::OnSeconds + 0.5; t += 1.0 / 30.0) {
+        gate.update(true, true, 2500.0f, 3000.0f, t);
+    }
+
+    CHECK(gate.active());
+    int switches = 0;
+    bool last = true;
+    for (int hit = 0; hit < 2; hit++) {
+        for (const double end = t + 1.2; t < end; t += 1.0 / 30.0) {
+            const bool on = gate.update(false, true, 2500.0f, 3000.0f, t);
+            switches += (on != last) ? 1 : 0;
+            last = on;
+        }
+
+        // The first present after the hit is the room rig again.
+        CHECK(gate.update(true, true, 2500.0f, 3000.0f, t));
+        switches += last ? 0 : 1;
+        last = true;
+        t += 1.0 / 30.0;
+        for (const double end = t + 5.0; t < end; t += 1.0 / 30.0) {
+            const bool on = gate.update(true, true, 2500.0f, 3000.0f, t);
+            switches += (on != last) ? 1 : 0;
+            last = on;
+        }
+    }
+
+    CHECK(gate.active());
+    CHECK_EQ(switches, 4);  // off and back on for each hit, nothing in between
+    // Back to a wide scene after the hit: it still turns off after OffSeconds.
+    const double wideFrom = t;
+    while (gate.update(true, true, 9000.0f, 3000.0f, t)) {
+        t += 1.0 / 30.0;
+    }
+
+    CHECK(t - wideFrom < RoomGate::OffSeconds + 0.1);
+    // A gap in the updates (RT off, a load) during the block forgets the room.
+    for (; t < wideFrom + 10.0; t += 1.0 / 30.0) {
+        gate.update(true, true, 2500.0f, 3000.0f, t);
+    }
+
+    CHECK(gate.active());
+    CHECK(!gate.update(false, true, 2500.0f, 3000.0f, t));
+    t += 1.0;
+    CHECK(!gate.update(true, true, 2500.0f, 3000.0f, t));
 }
 
 TEST_CASE("venue switching: a frame from before a 2D screen doesn't pair with the next scene's first frame") {
