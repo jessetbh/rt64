@@ -339,7 +339,8 @@ namespace RT64::WcwLogic {
     //   more than GapSeconds between updates (RT off, a load), so two samples far apart never count as "stayed";
     // - comes back at once when it was on and the room couldn't apply for at most BriefSeconds (a brief venue cut hit:
     //   BTBW's entrance matched the Boiler room and the Locker room for ~1.2 s each). It went room -> venue -> default
-    //   for OnSeconds -> room; now room -> venue -> room. Longer than BriefSeconds, it waits OnSeconds as before.
+    //   for OnSeconds -> room; now room -> venue -> room. Longer than BriefSeconds, or when the first present after it is
+    //   wider than maxExtent * OffMargin, it waits OnSeconds as before.
     class RoomGate {
     public:
         static constexpr double OnSeconds = 2.0;

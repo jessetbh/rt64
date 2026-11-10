@@ -475,10 +475,12 @@ namespace RT64::WcwLogic {
             return on;
         }
 
-        // A brief venue cut hit (or a brief disable) while the room rig was on: back to the room at once.
+        // A brief venue cut hit (or a brief disable) while the room rig was on: back to the room at once, unless the
+        // first present after it is already a wide scene (that stays on the default rig, as before).
         if (resumable) {
             resumable = false;
-            if ((seconds - blockedSince) <= BriefSeconds) {
+            const bool wide = measured && (extent > maxExtent * OffMargin);
+            if (!wide && ((seconds - blockedSince) <= BriefSeconds)) {
                 on = true;
                 pending = false;
             }

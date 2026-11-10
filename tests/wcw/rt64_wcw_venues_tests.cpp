@@ -988,9 +988,10 @@ TEST_CASE("room gate: a brief venue cut hit goes straight back to the room rig")
         }
 
         // The first present after the hit is the room rig again.
-        CHECK(gate.update(true, true, 2500.0f, 3000.0f, t));
-        switches += last ? 0 : 1;
-        last = true;
+        const bool back = gate.update(true, true, 2500.0f, 3000.0f, t);
+        CHECK(back);
+        switches += (back != last) ? 1 : 0;
+        last = back;
         t += 1.0 / 30.0;
         for (const double end = t + 5.0; t < end; t += 1.0 / 30.0) {
             const bool on = gate.update(true, true, 2500.0f, 3000.0f, t);
@@ -1016,6 +1017,34 @@ TEST_CASE("room gate: a brief venue cut hit goes straight back to the room rig")
     CHECK(gate.active());
     CHECK(!gate.update(false, true, 2500.0f, 3000.0f, t));
     t += 1.0;
+    CHECK(!gate.update(true, true, 2500.0f, 3000.0f, t));
+}
+
+TEST_CASE("room gate: no resume after a brief hit when the next scene is wide, or after reset") {
+    RoomGate gate;
+    double t = 0.0;
+    for (; t < RoomGate::OnSeconds + 0.5; t += 1.0 / 30.0) {
+        gate.update(true, true, 2500.0f, 3000.0f, t);
+    }
+
+    CHECK(gate.active());
+    for (const double end = t + 1.0; t < end; t += 1.0 / 30.0) {
+        gate.update(false, true, 2500.0f, 3000.0f, t);
+    }
+
+    // A wide first present after the hit stays on the default rig.
+    CHECK(!gate.update(true, true, 9000.0f, 3000.0f, t));
+    t += 1.0 / 30.0;
+    CHECK(!gate.update(true, true, 2500.0f, 3000.0f, t));
+    // Room on again, blocked, then reset (a preset reload): no resume.
+    for (const double end = t + RoomGate::OnSeconds + 0.5; t < end; t += 1.0 / 30.0) {
+        gate.update(true, true, 2500.0f, 3000.0f, t);
+    }
+
+    CHECK(gate.active());
+    gate.update(false, true, 2500.0f, 3000.0f, t);
+    gate.reset();
+    t += 1.0 / 30.0;
     CHECK(!gate.update(true, true, 2500.0f, 3000.0f, t));
 }
 
