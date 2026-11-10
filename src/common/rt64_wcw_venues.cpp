@@ -461,12 +461,29 @@ namespace RT64::WcwLogic {
         lastSeconds = seconds;
         if (gap) {
             pending = false;
+            resumable = false;
         }
 
         if (!allowed) {
+            if (on) {
+                resumable = true;
+                blockedSince = seconds;
+            }
+
             on = false;
             pending = false;
             return on;
+        }
+
+        // A brief venue cut hit (or a brief disable) while the room rig was on: back to the room at once, unless the
+        // first present after it is already a wide scene (that stays on the default rig, as before).
+        if (resumable) {
+            resumable = false;
+            const bool wide = measured && (extent > maxExtent * OffMargin);
+            if (!wide && ((seconds - blockedSince) <= BriefSeconds)) {
+                on = true;
+                pending = false;
+            }
         }
 
         if (!measured) {
@@ -506,6 +523,8 @@ namespace RT64::WcwLogic {
         pendingSince = 0.0;
         pendingLastAgree = 0.0;
         lastSeconds = -1.0;
+        resumable = false;
+        blockedSince = 0.0;
     }
 
     VenueSelector::Change VenueSelector::update(const std::vector<LightPreset> &venues, const std::vector<uint64_t> &textures, double seconds) {
