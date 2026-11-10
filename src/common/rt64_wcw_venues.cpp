@@ -568,14 +568,14 @@ namespace RT64::WcwLogic {
 
         recentVenue = (recentFrames.size() == CutFrames) ? bestVenue(venues, seenOnEach, MinScore) : -1;
         if (activeVenue >= int(venues.size())) {
-            activeVenue = -1;
+            setActive(-1, seconds);
         }
 
         if (cutsEnabled && textured && (recentVenue >= 0) && (recentVenue != activeVenue) &&
             ((activeVenue < 0) || (venueMatchScore(venues[activeVenue], seenRecently) <= CutActiveMax)))
         {
             restartWindow(seconds);
-            activeVenue = recentVenue;
+            setActive(recentVenue, seconds);
             candidateVenue = recentVenue;
             return Change::Cut;
         }
@@ -586,7 +586,7 @@ namespace RT64::WcwLogic {
             const std::pair<uint32_t, uint32_t> fresh = recentNew();
             if ((fresh.first >= NewSceneMin) && (float(fresh.first) >= NewSceneShare * float(fresh.second))) {
                 restartWindow(seconds);
-                activeVenue = -1;
+                setActive(-1, seconds);
                 candidateVenue = -1;
                 return Change::Cut;
             }
@@ -595,7 +595,16 @@ namespace RT64::WcwLogic {
         const int best = bestVenue(venues, [this](uint64_t h) { return windowCounts.count(h) > 0; }, MinScore);
         if (best == activeVenue) {
             candidateVenue = best;
+            if (!established && (activeVenue >= 0) && (recentVenue == activeVenue) && ((seconds - activeSince) >= EstablishSeconds)) {
+                established = true;
+            }
+
             return Change::None;
+        }
+
+        // The window stopped agreeing before the venue was established: the confirmation starts over.
+        if (!established) {
+            activeSince = seconds;
         }
 
         if (best != candidateVenue) {
@@ -603,12 +612,20 @@ namespace RT64::WcwLogic {
             candidateSince = seconds;
         }
 
-        if (seconds - candidateSince >= HoldSeconds) {
-            activeVenue = best;
+        // An established venue goes to no venue only after a long absence (close-ups); to another venue after the hold.
+        const double hold = (established && (best < 0)) ? LoseSeconds : HoldSeconds;
+        if (seconds - candidateSince >= hold) {
+            setActive(best, seconds);
             return Change::Window;
         }
 
         return Change::None;
+    }
+
+    void VenueSelector::setActive(int venue, double seconds) {
+        activeVenue = venue;
+        activeSince = seconds;
+        established = false;
     }
 
     void VenueSelector::restartWindow(double seconds) {
@@ -679,6 +696,8 @@ namespace RT64::WcwLogic {
         recentVenue = -1;
         candidateVenue = -1;
         candidateSince = 0.0;
+        activeSince = 0.0;
+        established = false;
     }
 
     float outsideDarknessFactor(float receiverDistance, float radius, float edge, float darkness) {
